@@ -1,0 +1,19 @@
+Question Batch 008: Crate Name / Publication Gate
+
+1. Should the first public `Vapor` repo task be to reserve/publish the core crate names on crates.io as soon as legally/practically acceptable, even if the crates are minimal?
+A: Yes.
+
+2. Are the intended crates.io names exactly `vapor_core`, `vapor_sdk`, `vapor_launcher`, `vapor_steam`, and maybe `vapor_macros`?
+A: Yes, although the SDK is both a crate, and an encompassing like actual Source Development Kit, a sin tooling to develop stuff, like a vendored rust toolchain and configured xtasks or whatever to make this all streamlined and easily configurable into a sort of template repo maybe even? Yk? Idk.
+
+3. Should `vapor_core` be the only crate that must exist before the others, or should all intended crate names be created together as empty/minimal workspace members?
+A: Well, we kinda need it all early-on, yeah.
+
+4. Should downstream repos prefer released crates.io versions once available, while local development can temporarily override them?
+A: Yes, exactly. Same as with any old content developed through the authoring pipeline(s)/"stuff", yk? Teaching myself and others to do stuff my way, yk?
+
+5. Should branch-based dependencies like `main`/`develop` be avoided for normal development because they make builds less reproducible?
+A: Not avoided per se, but branch-based dependencies can only be done in development builds, NOT allowed in release builds, yk? Release dependencies must be on crates.io and a fixed exact version.
+
+6. Before publishing anything to crates.io, should we do a short policy/name-availability check rather than assuming "reserve minimal crates" is acceptable?
+A: Nah, they're available, but also: We have NOTHING to publish yet, yk? Lol.

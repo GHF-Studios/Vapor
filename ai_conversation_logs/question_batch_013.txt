@@ -1,0 +1,37 @@
+Question Batch 013: Vapor AGENT.md Shape
+
+1. Should `Vapor/AGENT.md` be the first active planning artifact for the new repo era?
+A: Yes.
+
+2. Should `Vapor-Examples/AGENT.md` exist too, but much smaller and explicitly satellite-oriented?
+A: Yes.
+
+3. Should `AGENT.md` be process/authority guidance only, not product doctrine?
+A: Yes. Extremely concise and to the point. Like a set of commandments, kinda.
+
+4. Should `Vapor/AGENT.md` include the strict collaboration rule: questions by default, no edits unless explicitly approved?
+A: Yes, all that jazz, exactly.
+
+5. Should it include the repo dependency law: `Vapor` must not depend on or name Spacetime Engine or Loo Cast internals?
+A: Yes, but only because Vapor is sort of the ""root project/repo"", yk?
+
+6. Should it include the docs reset rule: no `/docs` folder by default, prefer README/rustdoc/module-local docs?
+A: Yes, absolutely.
+
+7. Should it include the crate-publication rule: release builds use crates.io versions, while dev builds may use branch/git dependencies?
+A: Yes.
+
+8. Should it include the version posture: active work targets `0.5.0` as rolling pre-alpha metadata until real alpha release?
+A: Yes.
+
+9. Should it mention that old Loo-Cast glossary/RFC/diagram material is archaeology/quarry only?
+A: Yes.
+
+10. Should `ai_conversation_logs/` exist in `Vapor`, even though `/docs` should not?
+A: Yes.
+
+11. If yes, should those logs be raw-ish question batches only, not polished doctrine?
+A: Just the exact format that the original ai_conversation_logs question batches used.
+
+12. Should the current Batch 006+ answers eventually be copied into `Vapor/ai_conversation_logs/`, or should logs start only after the Vapor repo receives its first committed files?
+A: Nono, we wanna do this NOW.

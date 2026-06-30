@@ -1,0 +1,37 @@
+Question Batch 018: First Vapor Repo Mutation
+
+1. Should the first approved Vapor change create both operating files and crate skeletons in one pass?
+A: Yes.
+
+2. Should initial crates be exactly `vapor_core`, `vapor_sdk`, `vapor_launcher`, `vapor_steam`, and `vapor_macros`?
+A: Yes, well and the Vapor-Examples repo is needed to test the Vapor stuff in any capacity beyond ultra simplistic hard-coded local testing, yk?
+
+3. Should all five crates exist in `crates/` even if some contain only crate-level rustdoc and no real logic yet?
+A: Yes.
+
+4. Should `vapor_launcher`, `vapor_steam`, and `vapor_macros` be excluded from publication until they have real substance, even if the folders exist?
+A: Yes.
+
+5. Should `vapor_core` and `vapor_sdk` be the only crates treated as active immediately?
+A: Those, plus the whole Vapor-Examples repo, which leads me to believe that vapor_sdk will indeed really have to be it's whole separate thing, maybe a separate repo? Same as the launcher maybe? I know this is a random heavy pivot, but don't you agree?
+
+6. Should the root workspace `Cargo.toml` use version `0.5.0` for all crates through workspace package metadata?
+A: Yes.
+
+7. Should every crate have a minimal `lib.rs` except `vapor_launcher`, which eventually may become a binary crate?
+A: Yes, but this kinda leads me to believe that we may need a separate Vapor-SDK repo for the sdk crate AND the whole like repo-level sdk mechanics and tooling and locked cargo toolchain vendoring and all that jazz, yk? Don't you agree? And then we have a few repo templates, and also templates for doing in-repo stuff, yk? I wanna be able to do some CLI shit and create a Vapor project, or a vapor crate, or remove a vapor crate, or create a specific type of crate, say an extension mod, or a full on entire packagepack, or an engine, or an engine bundled with a game, yk? This clearly needs some elaboration lmao, but I like the idea of CLI as an interface between the raw vapor_core and vapor_sdk, and the actual tools, aka the binaries and/or scripts (we can use rust-script and shell-command-crate(s) to get a nice script-y experience with rust) to create and maintain and edit and remove mods, engines, games, extension modpacks, engine modpacks, entire projects bundling however many and whatever type of these concepts
+
+8. Should `vapor_launcher` start as a library crate for now, not an app binary, to avoid premature UI shell work?
+A: vapor_launcher should be the CLI-tools for selecting and installing and validating content and launching and such, the player/modpack-author facing stuff. And the vapor_sdk stuff should be the CLI-tools for content authoring and validation and publishing and distribution and such, yk?  But ofc we wanna split the UIs from the backend CLI stuff, so it seems to make sense to create two "Vapor-SDK" and "Vapor-Launcher" repos, yk? Those would then respectively contain vapor_sdk_core and vapor_sdk_cli, and vapor_sdk_gui, yk? Clear boundaries and all.
+
+9. Should `vapor_steam` contain no Steamworks dependency until real Steam integration starts?
+A: Yes.
+
+10. Should `vapor_macros` be a proc-macro crate immediately, or just omitted until macro work is real?
+A: Proc-macro immediately, it's like two lines in a toml file lol.
+
+11. Should the first pass avoid tests entirely unless you separately approve validation?
+A: Yes.
+
+12. Should I ask for final approval after this batch before writing anything?
+A: Nah. Go ahead. I can always undo your work, just don't lash out too much. Keep yourself constrained and critical of your own decisions, okay?

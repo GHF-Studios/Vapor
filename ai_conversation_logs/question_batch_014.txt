@@ -1,0 +1,25 @@
+Question Batch 014: Vapor AI Conversation Log Seed
+
+1. Should the Vapor repo's first log file be `ai_conversation_logs/question_batch_001.txt`, even though it contains material from old chat Batch 006?
+A: No, please start at 006 then.
+
+2. Should copied batches be renumbered for the Vapor repo, starting from `001`, rather than preserving old numbers `006+`?
+A: Nono, preserve old numbers.
+
+3. Should the first Vapor log contain only multi-repo/Vapor-era batches, starting at the four-repo topology discussion?
+A: Yes exactly.
+
+4. Should owner answers be copied raw, including profanity, uncertainty, side comments, and "yk?" phrasing?
+A: Yes, especially the profanity lmao. Nah but jokes aside: Yeah, just copy them raw, as-is, to preserve the full raw signal as it came from me, yk?
+
+5. Should assistant questions be copied exactly enough to preserve the original Q&A context, without polishing into doctrine?
+A: Wdym?
+
+6. Should short "captured / locked / unlocks" summaries be excluded from the raw log unless they were part of the actual Q&A flow?
+A: Not, exactly. Only the questions, but also ofc a potential header section and a potential tail section, yk? So kinda like, we caaaan include that, seems reasonable, yk?
+
+7. Should each log file remain one batch per file, not one mega-log?
+A: Yes, exactly.
+
+8. Should `Vapor-Examples` get its own `ai_conversation_logs/`, or should only `Vapor` keep the current Q&A logs for now?
+A: Every repo should get it's own tbh. this "Loo-Cast" repo curently really just still exists so I can have *YOU*, a centralized coding assistant that is aware of the legacy stuff, and all the new repos, used to bootstrap this new multi-repo environment basically so we can quickly enter real authoring workflows and such, yk?

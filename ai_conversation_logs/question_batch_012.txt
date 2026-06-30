@@ -1,0 +1,31 @@
+Question Batch 012: Vapor Repo First Commit Shape
+
+1. Should the first `Vapor` commit contain only root-level repo identity files first, before any Rust crates?
+A: Yes.
+
+2. Should the first `Vapor` `README.md` be extremely short: what Vapor is, what repos depend on it, and what exists now?
+A: Yes.
+
+3. Should the first `Vapor` repo include an `AGENT.md`-style collaboration protocol, or should AI workflow rules stay outside the repo for now?
+A: Lmao, yeah, guess I just answered that xd.
+
+4. Should the first `Vapor` workspace immediately include all intended crates as folders, even if some are minimal and unpublished?
+A: Yes, inside a "crates" folder ofc.
+
+5. Should `vapor_launcher` be omitted from the first workspace until it has real substance, despite being an intended crate?
+A: Yes.
+
+6. Should `vapor_steam` be omitted from the first workspace until real Steamworks integration begins?
+A: Yes.
+
+7. Should `vapor_macros` be omitted until macro-backed metadata is known to be needed?
+A: Yes.
+
+8. Should `vapor_sdk` exist early even if its first substance is only CLI/tooling scaffolding around `vapor_core`?
+A: Yes, cause it is in fact a big part of the whole experience of like having a template for creating content even at the repo-level, which ofc implies that vapor_sdk, not only purely as the rust crate, must be a real implemented thing very early on. Hope that answer helped.
+
+9. Should `vapor_core` be the only crate with actual logic in the first meaningful code commit?
+A: I'm on the fence regarding this one tbh.
+
+10. Should the initial workspace version be `0.5.0` across every crate that exists?
+A: Yes. We wanna have 0.5.0 be the version we're basically working on rn, with everything rn intended to be purely branch-based ultra-up-to-date, with explicit temporary test publishings of propers versions of stuff, like yeah we wnana test that shit, but 0.5.0 will stay our target version for a long time, like..... once we are in Alpha and version 0.5.0 of everything is DONE, then do I only officially make this a version and not just some metadata, yk what I mean? For now, we pretend to be 0.5.0, a rolling local pre-release sort of, with temporary versions indeed published but quickly removed again to not pollute the ecosystem with false data. Idk if that made sense tbh D:

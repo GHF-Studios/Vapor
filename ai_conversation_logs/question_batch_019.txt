@@ -1,0 +1,34 @@
+Question Batch 019: SDK / Launcher Repo Split
+
+1. Should we add two more repos: `Vapor-SDK` and `Vapor-Launcher`?
+A: Already did it. You just have to clone them.
+
+2. If yes, should `Vapor` stop owning `vapor_sdk` and `vapor_launcher` crates?
+A: Yes. Vapor should just be vapor_core, and vapor_steam should be integrated into that, NOT a separate crate, yk?
+
+3. Should `Vapor` own only foundational crates like `vapor_core`, `vapor_macros`, and maybe small shared protocol crates?
+A: Yeah, exactly.
+
+4. Should `Vapor-SDK` own crates like `vapor_sdk_core`, `vapor_sdk_cli`, and later `vapor_sdk_gui`?
+A: Yes.
+
+5. Should `Vapor-Launcher` own crates like `vapor_launcher_core`, `vapor_launcher_cli`, and later `vapor_launcher_gui`?
+A: Yes.
+
+6. Should SDK mean authoring/project/template/toolchain/publishing workflows?
+A: Yes.
+
+7. Should Launcher mean install/select/validate/compose/launch player and modpack-author workflows?
+A: Yes.
+
+8. Should publishing belong to SDK, Launcher, or both with shared backend semantics?
+A: The SDK 100%, but the launcher can be used to create packs from existing content tbf.
+
+9. Should `vapor_steam` live in `Vapor`, `Vapor-SDK`, `Vapor-Launcher`, or its own future repo?
+A: I explained that previously.
+
+10. Should `Vapor-Examples` depend on `Vapor-SDK` and `Vapor-Launcher`, or only on `Vapor` plus generated/installed artifacts?
+A: Only on Vapor, cause wtf do SDK or Launcher have to do with the examples in terms of dependency in that way, yk?
+
+11. Should the first actual edit now be only `AGENT.md` + logs, delaying crate skeletons until this split is locked?
+A: Yes, good idea.

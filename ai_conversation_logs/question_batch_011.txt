@@ -1,0 +1,31 @@
+Question Batch 011: Documentation Surface Reset
+
+1. Should the new repos avoid `/docs` folders entirely unless a specific repo later proves it needs one?
+A: Yes.
+
+2. Should each repo's root `README.md` be the highest-level documentation surface for that repo?
+A: Yes.
+
+3. Should each Rust crate's `lib.rs` / `main.rs` rustdoc be the canonical crate-level explanation?
+A: Yes.
+
+4. Should module-level `mod.rs` rustdoc explain local architecture only where the module boundary is real and useful?
+A: Yes.
+
+5. Should TOML files carry only the comments needed to make local configuration understandable, not broader doctrine?
+A: Yes, and only when absolutely needed (not that it has downsides, I just wanna be conservative and tend to just use good names instead of adding comments to explain weird abbreviated names, yk?
+
+6. Should glossary-style concept pages be retired for active work, with concepts instead explained where they are implemented or declared?
+A: Yes, I do think that's the best way forward. The glossary stuff was nice - IS nice - but we cannot mutate it anymore, we must treat as archeological, kinda. You know what I mean; I hope.
+
+7. Should diagrams be avoided for now unless they directly explain a concrete implemented crate/module boundary?
+A: Yes, only do diagram(s) when it's absolutely and unequivocally necessary and helps us understand something muuuch better, and if *I* largely dictate how the diagram(s) looks, okay?
+
+8. Should old glossary/diagram/RFC material remain legacy quarry only, not something we try to port wholesale?
+A: Yes.
+
+9. Should public-facing conceptual docs wait until the implementation has enough shape to avoid aspirational drift?
+A: Yes.
+
+10. Should examples in `Vapor-Examples` become the main teaching surface once real authoring patterns exist?
+A: Nah. It should just be examples I guess, Vapor should still be able to document and explain itself. Vapor-Examples is just for when you've done all that, and you actually wanna see a more realistic real-world example, yk? At least in terms of scale of usage of the framework, yk? So Examples are kinda like Part 2/2 of the "main teaching surface", yk? And yes, real authoring patterns do not really exist yet. But it's good we got these new repos, cause now we got blank slates to basically use any technologies we want to use, yk? I hope that made sense.

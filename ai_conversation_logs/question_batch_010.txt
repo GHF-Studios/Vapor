@@ -1,0 +1,31 @@
+Question Batch 010: Collaboration / Approval Protocol
+
+1. Should I treat "questions only" as the default mode until you explicitly say something like "now implement this" or "make these files"?
+A: Yeeeeeeeeees.
+
+2. Before any implementation, should I always first present a concrete change packet with repo, files, purpose, non-goals, and validation plan?
+A: You CAN present those intricate details and all that upon request, but by default I just wanna see the substance. Not really the purpose or the non-goals or a validation plan, just the cold hard facts for me to read and potentially request more information on, aight?
+
+3. Should that change packet require your explicit approval before I write anything?
+A: Obviously, yes.
+
+4. Should docs edits follow the same approval gate as code edits?
+A: Yes, cause for this new multi-repo era we just wanna do in-code or like in-substance documentation, no mentally (and literally) disconnected stuff like the glossary or the diagrams, no "/docs" folder a all really, just """inline""" docs, yk?
+
+5. Should generated planning text stay in chat unless you explicitly ask me to write it into a repo?
+A: Yes. I want this to basically be a shadow op where we just fuck the glossary-like explicit "/docs" documentation and focus on in-code or in-crate or like in-stuff documentation as god meant for it to be like, yk?
+
+6. When I think a technical choice is obvious, should I still ask if it affects public API, repo layout, crate names, dependency policy, workflow, or terminology?
+A: Yes, exactly, I want you to not hide any code from me basically. I mean I want no explanations at all by default, just the code or rustdocs or toml stuff or whatever, and I will explicitly request clarifications if and when I need them. So, explain nothing, but present and consult on everything.
+
+7. Am I allowed to make purely mechanical corrections without asking, like formatting after an approved edit, or should even that be explicitly mentioned in the approved packet?
+A: No formatting or the sorts. No compile checking or running tests or anything like that unless I explicitly ask you to.
+
+8. Should each approved implementation slice be small enough that you can review the whole intended file list before I start?
+A: Basically? The whole structure as a whole tbh, so that "report" would need to be quite extensive, like really fucking extensive and complex, basically elaborating on and clarifying a ton of very major Vapor concepts, yk?
+
+9. If I discover during implementation that the approved plan is wrong or underspecified, should I stop and ask rather than improvise?
+A: Yes, 1000%.
+
+10. Should every question batch end with a short "what this unlocks" note, or would that feel like pressure toward implementation?
+A: Oh yeah I like that direction, cause it kinda makes it obvious to me what we can now define (better) because of this new information or locked-in decision. I don't want this to be implementation-oriented however, cause this feels more like a feature of the questions-mechanism, not the actual implemenation-related stuff, yk? This should be a way to *design* and *plan*, yk? Not something that aids in implementations, buuuuut ofc we can make exceptions if they make sense, yes.

@@ -1,0 +1,37 @@
+Question Batch 006: Multi-Repo Authoring Topology Gate
+
+1. Should the four-repo split be treated as active architecture immediately, not future intent?
+A: Yes.
+
+2. Are the intended active repos exactly `Vapor`, `Spacetime-Engine`, `Loo-Cast-Game`, and `Vapor-Examples` for now?
+A: Yes.
+
+3. Should the old `Loo-Cast` repo become a source archive / quarry once the split is active, rather than an active development workspace?
+A: Yes. And I intend to rename it to Loo-Cast_legacy, although that will bring it's own problems, so I'll do that manually on my own, later.
+
+4. Should `Vapor` be strictly forbidden from depending on or naming first-party Spacetime Engine / Loo Cast game internals?
+A: Yes.
+
+5. Should `Spacetime-Engine` depend on `Vapor` as a consumer, with no reverse dependency?
+A: Yes.
+
+6. Should `Loo-Cast-Game` depend on `Spacetime-Engine` and `Vapor`, with no reverse dependency?
+A: Yes.
+
+7. Should examples/tests live in `Vapor-Examples` even when they are needed to prove Vapor behavior?
+A: Yesn't. Only official testing/example full on content in any sort of form. Be it a single mod of a mod, or something as complex as an engine mod, or a whole ass engine, or a whole game, or just an extension modpack, or an engine modpack, or a mixed modpack aka packagepack, yk? Like, yk?
+
+8. Should local development use sibling repo checkouts directly, without a super-workspace, git submodules, or vendored copies for now?
+A: I have noooo idea actually. Can't we just specify cargo dependencies as git/web-based, yk? Like, yk? Ofc we can like do actzual repo checkouts to get the up-to-date stuff we depend on but develop ourselves for test runs and release builds and all, yeah, yk?
+
+9. Should cross-repo integration initially use local path dependencies, then later switch to git/version dependencies when each repo stabilizes?
+A: Nah, I think the repo arrangement is stable *now*. It's just that each repo in itself is viretually, or actually kinda literally, non-existent.
+
+10. Should each repo own its own docs/glossary subset, instead of one central docs repo trying to describe the whole ecosystem?
+A: Yes, good idea actually.
+
+11. Should project management be per-repo GitHub issues/PRs, or should one repo remain the coordination hub for ecosystem-wide planning?
+A: No coordination hub, just dependencies, aka one repo depends on another's work, yk? In some direct or indirect form. As a direct rust dependency, or as a distributed and automatically installed artifact in the form of user-selectable content/mods, yk?
+
+12. Before any code is added, should each new repo receive only a minimal README/AGENT-style orientation, or should even that wait until the topology answers are settled?
+A: Nono that's indeed a good idea. We want to do as LITTLE work as humanly possible, and focus on getting each tiny bit we add ABSOLUTELY and perfectly right with questions and reaffirmations and shit to really make sure that any old thing we happen to be working on must be *solid* before we can move on, yk?

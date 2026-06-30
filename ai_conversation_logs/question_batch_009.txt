@@ -1,0 +1,25 @@
+Question Batch 009: Minimal Publishable Vapor Crates
+
+1. Should each Vapor crate be publishable only once it has at least one real public responsibility, not as an empty name-reservation shell?
+A: Yes, basically, even if that bar is fairly low, but still, yeah.
+
+2. Should `vapor_core` be the first crate with real substance, because every other Vapor crate depends on its types/contracts?
+A: Yeah, basically.
+
+3. Should `vapor_sdk` the crate be only the Rust/CLI/tooling implementation crate, while "Vapor SDK" the product/toolchain can include templates, vendored toolchain policy, docs, examples, and repo scaffolding outside that crate?
+A: Yeah, pretty much.
+
+4. Should `vapor_launcher` be delayed until `vapor_core` and `vapor_sdk` have enough real behavior to drive it, to avoid another premature launcher shell?
+A: Yeah, cause let's be honest: The launcher kiiiinda is just a convenience feature. An INCREDIBLY useful one at that, but yes, it's a convenience ""only"".
+
+5. Should `vapor_steam` be allowed to start as trait/adapter shape without live Steamworks calls, or must it wait until real Steamworks integration is ready?
+A: Either proper working steamworks integration, or no deal.
+
+6. Should `vapor_macros` exist only if macro-backed metadata is needed immediately, instead of reserving it before the macro surface is understood?
+A: Yes.
+
+7. Should all Vapor crates use the same initial version, for example `0.1.0`, even if their maturity differs?
+A: Yes, but make it 0.5.0 please.
+
+8. Should release builds in downstream repos require exact dependency versions like `=0.1.0`, not semver ranges like `^0.1.0`?
+A: Meh, why not allow both for the added flexibility.

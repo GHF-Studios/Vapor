@@ -1,0 +1,19 @@
+Question Batch 007: Cross-Repo Dependency Source Model
+
+1. Should Rust code dependencies between these repos default to Git dependencies from GitHub, rather than local path dependencies?
+A: Well, yes, as in I want these to be as independent and separated as possible. They are all separate projects.
+
+2. Should local sibling checkouts be treated as an override/development convenience, not the canonical dependency identity?
+A: Yeah.
+
+3. Should Cargo `[patch]` be the preferred mechanism for temporarily pointing Git dependencies at local sibling checkouts during active development?
+A: Nah, I haven't even heard of it before yk?
+
+4. Should `Vapor` crates eventually be published to crates.io, or should Git dependencies remain the canonical distribution path for the foreseeable future?
+A: crates.io as soon as possible, we gotta reserve those names!
+
+5. Should first-party repos depend on specific commits/tags of upstream repos, rather than floating branches like `main` or `develop`?
+A: As in? Like I don't quite understand this tbh.
+
+6. Should `Vapor-Examples` depend on the other repos the same way external users would, even if that makes local iteration slightly less convenient?
+A: Yes, 100%, that is like baaasically more or less kinda THE core premise of this pass/multi-pass-agenda we are working on rn, yk?

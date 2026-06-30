@@ -1,0 +1,37 @@
+Question Batch 017: AGENT.md Content Lock
+
+1. Should `Vapor/AGENT.md` be short enough to read in under 2 minutes?
+A: Yes.
+
+2. Should it explicitly say "This file is allowed to be stricter than normal Codex behavior"?
+A: Yes?
+
+3. Should it instruct agents to ask before even proposing implementation if the user seems to be in questions-only mode?
+A: Yes.
+
+4. Should it allow agents to suggest that an action may now be useful, as long as they do not perform it?
+A: Yes, 100000%. Curiosity and Eagerness is god, but with limits, yk?
+
+5. Should product stack wording be this minimal: "Vapor defines the root ecosystem layer for generic Engines, Games, Mods, packs, SDK, launcher, capability/Rhai authoring, validation, and distribution"?
+A: Yes! This is NOT just a rust application. This is more, much more. I like this framing. Remember the template repos tho! I wanna have that working somewhat early as well.
+
+6. Should repo stack wording be this minimal: "Vapor <- Spacetime-Engine <- Loo-Cast-Game; Vapor-Examples consumes the stack as official example/test content"?
+A: Yes, but Vapor Examples is a multi-project project which will define many Engines, Games, and Mods, and Extension Mods, and entire packs of various kinds, yk? I want it to be possible to jam it all into a single project if you want, and so Vapor Examples is kinda that, yk? Does that make sense?
+
+7. Should AGENT.md mention Steam at all, or defer Steam details to future `vapor_steam` code/docs?
+A: Defer tio vapor_steam code/docs, yes.
+
+8. Should AGENT.md mention `0.5.0` target version, or is that too product/process-specific for the agent protocol?
+A: Not needed, can be easily read by reading the Cargo.toml or whatever, yk?
+
+9. Should AGENT.md say crate names are intended as `vapor_core`, `vapor_sdk`, `vapor_launcher`, `vapor_steam`, `vapor_macros`, but only create crates when approved?
+A: I mean tbh, we can just create the damn crates. Seems like a clear actionable step, or not?
+
+10. Should AGENT.md tell agents not to create `/docs`, diagrams, RFCs, or glossary pages unless explicitly requested?
+A: Yes.
+
+11. Should AGENT.md tell agents that saved question batches preserve raw owner answers, including informal language?
+A: Yes.
+
+12. Should `Vapor-Examples/AGENT.md` mostly point back to Vapor's rules, plus say this repo is official examples/tests only?
+A: Yes.

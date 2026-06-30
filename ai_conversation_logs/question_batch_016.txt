@@ -1,0 +1,43 @@
+Question Batch 016: Vapor AGENT.md Structure
+
+1. Should `Vapor/AGENT.md` be plain Markdown, but written more like a compact operating protocol than normal documentation?
+A: Yes.
+
+2. Should it have only a few top-level sections, maybe `Purpose`, `Authority`, `Default Mode`, `Approval Rules`, `Repo Boundaries`, `Dependency Rules`, `Docs Rules`, and `Question Batches`?
+A: Yes, but be mindful of pre-emptive definition of categories or sections or organizational buckets of any kind, yk? But, fundamentally, yes.
+
+3. Should `Purpose` explicitly say Vapor is the root repo of the ecosystem, while avoiding product doctrine details?
+A: Oh no, product doctrine/stack details are very much (somewhat at least) relevant here I think.
+
+4. Should `Authority` say owner answers in chat are high-authority raw input, but not automatically doctrine until integrated?
+A: Yes.
+
+5. Should `Default Mode` say: ask questions first, prefer question batches for broad uncertainty, and do not rush synthesis?
+A: Yes.
+
+6. Should `Approval Rules` explicitly include no formatting, no tests, no validation, and no file creation without approval?
+A: Yes.
+
+7. Should `Repo Boundaries` name the current four repos and dependency direction?
+A: Yes.
+
+8. Should `Repo Boundaries` forbid Vapor from importing/naming Spacetime Engine or Loo Cast internals, but allow generic examples like "engine" and "game"?
+A: Yes, exactly. The roles of an engine and a game and mods for those and extension mods and all that other shit, yes, that's clearly part of vapor, but the concrete *instances* of these concepts are NOT, yk?
+
+9. Should `Dependency Rules` distinguish development dependencies, release dependencies, and distributed content/artifact dependencies?
+A: Yes?
+
+10. Should `Docs Rules` explicitly ban `/docs` by default while allowing `ai_conversation_logs/` as a special raw-history folder?
+A: Yes.
+
+11. Should `Question Batches` specify the original format: title, optional note/context, numbered questions, `A:` slots, raw owner answers?
+A: Yes.
+
+12. Should `Question Batches` say one batch per file and preserve numbering from the wider project history?
+A: Yes.
+
+13. Should it include a short "what this unlocks" convention for chat batches, even if the saved raw logs may omit those summaries?
+A: Yes.
+
+14. Should it tell future agents to inspect old `Loo-Cast` material only as quarry, never as directly active Vapor doctrine?
+A: Yes.

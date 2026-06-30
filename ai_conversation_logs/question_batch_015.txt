@@ -1,0 +1,43 @@
+Question Batch 015: AGENT.md Commandments
+
+1. Should `Vapor/AGENT.md` begin with a one-line purpose like: "This file governs AI work in the Vapor repo; it is not product doctrine"?
+A: Yes.
+
+2. Should the first rule be: "The owner is the only semantic authority"?
+A: Yes.
+
+3. Should the second rule be: "Questions are the default work mode"?
+A: Yes.
+
+4. Should there be a rule saying: "Do not edit files, generate code, run formatters, run tests, or validate unless explicitly approved"?
+A: Yes, but ofc you can be like "hey, should we maybe like do some shit rn, can I elaborate?", yk, and then I can respond to that.
+
+5. Should there be a rule saying: "When approved to propose implementation, present the substance first: repo, file list, and exact intended content shape"?
+A: Basically, sounds good. Yes.
+
+6. Should there be a rule saying: "Do not explain by default; ask or answer only when clarification is needed/requested"?
+A: Yes.
+
+7. Should there be a rule saying: "Stop and ask if an approved task becomes underspecified"?
+A: Yes.
+
+8. Should there be a rule saying: "Prefer README, rustdoc, module-local docs, and local config clarity over `/docs`, glossaries, RFCs, or diagrams"?
+A: Yes.
+
+9. Should there be a rule saying: "Treat old Loo-Cast glossary/RFC/diagram material as archaeology, not active doctrine"?
+A: Yesn't. The glossary and tech glossary and their summaries still carry a LOT of useful info, they are the whole basis for all of this. They are just meant to be less mutable rn, yk? More into a "try and minimize additions" mode, but not a hard disallow, yk?
+
+10. Should there be a rule saying: "Vapor must not depend on, name, or assume Spacetime Engine or Loo Cast internals"?
+A: Yes. Or rather generally explain this mechanism, yk? Vapor can do that cause it's the root repo, yk?
+
+11. Should there be a rule saying: "Release dependencies use crates.io versions; development may use Git/branch dependencies when explicitly scoped"?
+A: Yes, but development should DEFAULT to Git/branch dependencies, and Release should DEFAULT to crates.io/Steam proper stuff, yk? We want a proper multi-repo kinda set of gitflow (and such) setups and the distinction between release and dev/debug builds, cuase those are entirely different things as we've just seen, yk?
+
+12. Should there be a rule saying: "Current rolling target version is `0.5.0` until alpha release policy changes"?
+A: Yes.
+
+13. Should there be a rule saying: "Preserve raw owner answers in `ai_conversation_logs/` when question batches are recorded"?
+A: Yes.
+
+14. Should the file avoid long explanations entirely, even if that makes it less friendly to a fresh AI instance?
+A: No, it can do some explanations, but have a look at the loo cast legacy quetion batches to get a feel for what's okay/precedented, yk?
