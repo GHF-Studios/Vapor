@@ -1,0 +1,6 @@
+[package]
+name = "vapor_core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
