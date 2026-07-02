@@ -16,27 +16,26 @@ pub const CANONICAL_VAPOR_MANIFEST_TEXT: &str = include_str!("../../../Vapor.tom
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VaporManifest {
-    pub vapor: VaporIdentity,
+    pub workspace: WorkspaceIdentity,
     pub toolchain: ToolchainIntent,
 }
 
 /// Identity for the thing described by a `Vapor.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct VaporIdentity {
-    pub kind: VaporManifestKind,
+pub struct WorkspaceIdentity {
+    pub kind: WorkspaceKind,
     pub id: String,
 }
 
 /// Manifest kind. More kinds can be added as real authoring surfaces appear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VaporManifestKind {
-    VaporRoot,
-    VaporRepo,
-    VaporWorkspace,
-    VaporCrate,
-    VaporProject,
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceKind {
+    Core,
+    Sdk,
+    Launcher,
+    CustomContent,
 }
 
 /// Human-selected Rust toolchain intent.

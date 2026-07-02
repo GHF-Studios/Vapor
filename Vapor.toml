@@ -2,8 +2,8 @@
 # Keep this file as intent: resolved Rust artifact hashes, exact URLs, and
 # install receipts belong in generated lock/state files.
 
-[vapor]
-kind = "vapor_root"
+[workspace]
+kind = "core"
 id = "ghf-studios.vapor"
 
 [toolchain]
