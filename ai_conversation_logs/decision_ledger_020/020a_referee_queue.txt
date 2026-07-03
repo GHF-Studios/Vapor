@@ -60,7 +60,7 @@ Q020a-009. Should cold factual docs about what code currently does be allowed du
 A: Yes.
 
 Q020a-010. Should legacy glossary pages be treated as high-signal quarry, but not as active doctrine and not as a surface we keep mutating during normal work?
-A:
+A: Well, yes, but we *do* want it to be canon, not legacy. But I already said that; I think it's time for a pivot.
 
 Q020a-011. The legacy `Project Authoring Structure` page says `docs/glossary` is a first-class canonical authoring surface. Should that be considered stale for current multi-repo work?
 A:
