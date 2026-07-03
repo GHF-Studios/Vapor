@@ -1,0 +1,541 @@
+Decision Ledger 020a: Vapor / Loo-Cast Referee Queue
+
+Status:
+This is the current answerable form of decision ledger 020.
+The letter `a` is a queue-shape revision, not a new answered iteration.
+The old flat source ledger is preserved at:
+`ai_conversation_logs/decision_ledger_020/history/020_flat_source_before_referee_rewrite.txt`
+
+How this file should be used:
+
+- The owner may answer any coherent prefix or subsection.
+- Answers must be pasted back verbatim under the matching `A:` line.
+- If an early answer changes later context, the assistant acts as referee:
+  - preserve the answer exactly,
+  - mark downstream items answered, superseded, invalidated, or needing rewrite,
+  - rewrite the remaining unanswered queue into `020b`, `020c`, etc.,
+  - keep everything under decision ledger index 020 unless the owner explicitly starts a new batch.
+- The assistant must not treat defaults as doctrine.
+- The assistant must not silently implement policy, naming, docs, or roadmap decisions from this queue.
+
+Referee stop phrase:
+If the owner writes something like "pivot check", "surely this pivots later questions", or equivalent, stop normal Q&A consumption and evaluate dependencies before continuing.
+
+========================================================================
+0. Referee Protocol
+========================================================================
+
+Q020a-001. Is this folder-and-letter model acceptable: `decision_ledger_020/020a_referee_queue.txt`, then `020b`, `020c`, etc. as rewritten working queues under the same ledger index?
+A: Yes.
+
+Q020a-002. Should the flat source file remain in `history/` as archaeology, while the latest lettered queue is the only thing you actively answer?
+A: Yes.
+
+Q020a-003. When you answer a section, should I paste your answer verbatim under `A:` even if it contains profanity, uncertainty, side comments, or later self-corrections?
+A: Yes.
+
+Q020a-004. Should I add short `REFEREE:` notes after your answers only when needed to explain downstream effects?
+A: Yes.
+
+Q020a-005. Should unanswered downstream questions be rewritten aggressively after a pivot, rather than preserved for historical purity?
+A: Yes.
+
+Q020a-006. Should defaults in this file be treated only as assistant working assumptions, never as accepted owner decisions?
+A: Difficult to answer. Yes, but that itself is not to be taken as a set-in-stone rule, yk?
+
+PIVOT CHECK 0:
+If any answer above changes the file/revision protocol, stop here. The rest of the queue depends on this workflow.
+
+========================================================================
+1. Documentation Authority And Work Surface
+========================================================================
+
+Q020a-007. Should active documentation authority remain: root README first, crate rustdoc second, useful module rustdoc third, clear local names always preferred, and no `/docs` by default?
+A: Yes, but the old glossary should indeed be moved/copied over into Vapor and promoted to canon material, yk?
+
+Q020a-008. Should design intent, doctrine, roadmap, naming policy, workflow policy, and public command semantics require discussion before being written anywhere, including rustdoc and comments?
+A: Yes.
+
+Q020a-009. Should cold factual docs about what code currently does be allowed during approved implementation, as long as they do not add intent or doctrine?
+A: Yes.
+
+Q020a-010. Should legacy glossary pages be treated as high-signal quarry, but not as active doctrine and not as a surface we keep mutating during normal work?
+A:
+
+Q020a-011. The legacy `Project Authoring Structure` page says `docs/glossary` is a first-class canonical authoring surface. Should that be considered stale for current multi-repo work?
+A:
+
+Q020a-012. Should the old glossary summaries remain "canonical" only inside the legacy vault, not for active repo decisions?
+A:
+
+Q020a-013. Should AGENT files eventually be updated to include the newer rule that design-intent docs in rustdoc/comments also require discussion first?
+A:
+
+Q020a-014. Should CLI help text, `CommandSpec` summaries, preconditions, and future-effects text be treated as documentation/policy surfaces requiring approval before semantic edits?
+A:
+
+Q020a-015. Should README updates be limited to factual orientation unless you explicitly approve broader product/design wording?
+A:
+
+PIVOT CHECK 1:
+If docs authority changes here, later questions about command specs, rustdoc, README, and cleanup need rewrite.
+
+========================================================================
+2. Active Repo Topology
+========================================================================
+
+Q020a-016. Is the current active repo set exactly `Vapor`, `Vapor-SDK`, `Vapor-Launcher`, `Vapor-Examples`, and `Vapor-Registry`?
+A:
+
+Q020a-017. Should `Spacetime-Engine` and `Loo-Cast-Game` be treated as future/related repos for now, not active repos in the current implementation loop?
+A:
+
+Q020a-018. Should the old `Loo-Cast` repo remain legacy/context/quarry only, never an active development workspace unless you explicitly say otherwise?
+A:
+
+Q020a-019. Should `Vapor` own only foundational ecosystem concepts and crates such as `vapor_core`, `vapor_macros`, and maybe tiny shared protocol pieces?
+A:
+
+Q020a-020. Should `Vapor-SDK` own `vapor_sdk_core`, `vapor_sdk_cli`, and future `vapor_sdk_gui`?
+A:
+
+Q020a-021. Should `Vapor-Launcher` own `vapor_launcher_core`, `vapor_launcher_cli`, and future `vapor_launcher_gui`?
+A:
+
+Q020a-022. Should `Vapor-Examples` remain official example/test content and not depend on SDK or Launcher as ordinary Rust dependencies?
+A:
+
+Q020a-023. Should `Vapor-Registry` be treated as active context now, even if SDK does not enforce it yet?
+A:
+
+Q020a-024. Should `Vapor/AGENT.md`'s stack line `Vapor <- Spacetime-Engine <- Loo-Cast-Game` be interpreted as runtime/product stack only, while SDK/Launcher/Registry are operational sibling repos?
+A:
+
+PIVOT CHECK 2:
+If the repo set or dependency direction changes, dependency policy and root-package questions need rewrite.
+
+========================================================================
+3. Cross-Repo Dependency Policy
+========================================================================
+
+Q020a-025. During development, should SDK/Launcher depend on Vapor through Git/branch dependencies by default, rather than sibling `path` dependencies?
+A:
+
+Q020a-026. Are the current SDK/Launcher `path = "../../../Vapor/crates/vapor_core"` dependencies acceptable as temporary bootstrap only?
+A:
+
+Q020a-027. Should release dependencies default to crates.io versions and proper Steam/distributed artifacts, not path or branch dependencies?
+A:
+
+Q020a-028. Should branch dependencies be allowed only in development/debug builds?
+A:
+
+Q020a-029. Should `vapor_core` be published to crates.io only once it has at least one real public responsibility, not as an empty reservation shell?
+A:
+
+Q020a-030. What is the minimum public responsibility that makes `vapor_core` publishable?
+A:
+
+Q020a-031. Should `vapor_steam` remain folded into `vapor_core` conceptually, with SDK owning only current SteamCMD implementation details?
+A:
+
+Q020a-032. Should `vapor_macros` remain present but unexpanded until a real macro-backed metadata surface exists?
+A:
+
+PIVOT CHECK 3:
+If dependency policy changes here, Cargo.toml cleanup and release workflow questions need rewrite.
+
+========================================================================
+4. Product Identity, Steam Root, And App Boundary
+========================================================================
+
+Q020a-033. Is Steam AppID `2122620` currently best described as the first-party Vapor/Loo-Cast root app, rather than only "the game" or only "the SDK"?
+A:
+
+Q020a-034. Is DepotID `2122621` currently the root depot for first-party app-root files?
+A:
+
+Q020a-035. Should AppID/DepotID defaults stay as SDK constants with CLI overrides for now?
+A:
+
+Q020a-036. Should these IDs eventually come from `Vapor-Registry`, app-root config, or root `Vapor.toml`?
+A:
+
+Q020a-037. Should the Steam app root be the preferred development substrate for root work, even if local source checkouts still exist beside it?
+A:
+
+Q020a-038. Is hot-deploying SDK/Launcher binaries into the Steam-installed app root an accepted developer-only workflow, even though Steam may consider the local install modified?
+A:
+
+Q020a-039. Should normal player installs avoid hot-deploy/self-corruption patterns entirely?
+A:
+
+Q020a-040. Is `sdk_cli` the intended long-term shipped command name, or only the current app-root alias?
+A:
+
+Q020a-041. Is `launcher_cli` the intended long-term shipped command name, or only the current app-root alias?
+A:
+
+PIVOT CHECK 4:
+If the root app identity changes here, root packaging, SteamCMD, registry, and self-bootstrap questions need rewrite.
+
+========================================================================
+5. Steam Root Packaging And Self-Bootstrap
+========================================================================
+
+Q020a-042. Should the current root package continue to include only app-root CLI surfaces and activation scripts, excluding `rustup-home`, `cargo-home`, and `output`?
+A:
+
+Q020a-043. Should the Steam root package eventually include a full app-local Rust toolchain, or should the downloaded SDK acquire/reconcile the toolchain after install?
+A:
+
+Q020a-044. Should root packaging fail if SDK CLI inputs are missing?
+A:
+
+Q020a-045. Should root packaging fail if Launcher CLI inputs are missing while launcher is still mostly stubbed?
+A:
+
+Q020a-046. Should the current Launcher placeholder output be replaced before any user-facing Steam build includes it?
+A:
+
+Q020a-047. What minimum proof makes the self-bootstrap loop real: Steam downloads root, downloaded SDK builds/checks/deploys/packages/publishes the next root?
+A:
+
+Q020a-048. Should generated SteamPipe VDFs under `output/root/scripts` be considered build/release artifacts, not source files?
+A:
+
+Q020a-049. Should default Steam branch activation remain manual, with `--set-live` only for beta branches?
+A:
+
+Q020a-050. Should the Steam account name remain operator-provided CLI input and never be hardcoded/configured in repo files?
+A:
+
+PIVOT CHECK 5:
+If the root package should include toolchains directly, most Rustup acquisition and relocation questions need rewrite.
+
+========================================================================
+6. SteamCMD, Registry, And Release Authority
+========================================================================
+
+Q020a-051. For now, is Steamworks/SteamCMD permission enough to authorize root publish?
+A:
+
+Q020a-052. Should SDK root publish consult `Vapor-Registry` permissions before invoking SteamCMD?
+A:
+
+Q020a-053. If registry checks are added, should they be advisory diagnostics first or hard blockers immediately?
+A:
+
+Q020a-054. Should GitHub identity and Steam identity be bound now, later, or not at all?
+A:
+
+Q020a-055. Should SDK manage/acquire SteamCMD app-locally, or may it rely on `steamcmd` from PATH for the near future?
+A:
+
+Q020a-056. Should SteamCMD state/login tokens be forced under `$VAPOR_HOME/steam/steamcmd`, or is system SteamCMD state acceptable for now?
+A:
+
+Q020a-057. Should SteamCMD-only root publishing remain the first Steam slice before Steamworks API, Workshop UGC, or entitlement checks?
+A:
+
+Q020a-058. Should AppID ownership checks gate all SDK usage, only public/published workflows, or only later Workshop workflows?
+A:
+
+PIVOT CHECK 6:
+If release authority moves to the registry now, root publish implementation and identity questions need rewrite.
+
+========================================================================
+7. Rust Toolchain Portability
+========================================================================
+
+Q020a-059. Should the Rustup-vs-standalone-archives decision be made only after a relocation test of the current app-root layout?
+A:
+
+Q020a-060. What exact relocation test should decide whether current Rustup wrapping is acceptable?
+A:
+
+Q020a-061. Is system PATH Rustup acceptable for development bootstrap only?
+A:
+
+Q020a-062. Should Steam-distributed SDK installs prefer an app-local `$VAPOR_HOME/rustup/bin/rustup` if Rustup remains the backend?
+A:
+
+Q020a-063. Should the next toolchain slice implement app-local Rustup acquisition before considering standalone Rust archives?
+A:
+
+Q020a-064. If relocation fails because Rustup metadata dislikes the move, should repair first try to reconcile/reinstall Rustup around the existing toolchain before redownloading everything?
+A:
+
+Q020a-065. Should `toolchain install` become idempotent success when the expected toolchain is already present and minimally verified?
+A:
+
+Q020a-066. What minimum verification should replace today's `PresentUnverified` file-existence check?
+A:
+
+Q020a-067. Should "SDK toolchain install" and "Vapor Toolchain Envelope for native kernel ABI compatibility" be treated as separate concepts?
+A:
+
+Q020a-068. What failure evidence would justify returning to standalone official Rust archives?
+A:
+
+PIVOT CHECK 7:
+If Rustup is rejected or toolchain packaging changes, target and workspace command questions need rewrite.
+
+========================================================================
+8. Targets And Cross-Compilation
+========================================================================
+
+Q020a-069. Should `x86_64-pc-windows-gnu` become the first Windows cross-build proof target from Arch/Linux?
+A:
+
+Q020a-070. Should `x86_64-pc-windows-msvc` remain a later important target because of Steamworks, GUI/native dependencies, or ecosystem expectations?
+A:
+
+Q020a-071. Should host triples, installable stdlib targets, linkable build targets, and release-supported targets be modeled separately?
+A:
+
+Q020a-072. Should target stdlibs be installed eagerly with the canonical toolchain, or on demand per target command?
+A:
+
+Q020a-073. Should linker/tool requirements be explicit SDK status/check output before claiming target support?
+A:
+
+Q020a-074. Should Windows GNU proof be allowed even if it cannot be final release policy?
+A:
+
+PIVOT CHECK 8:
+If Windows target policy changes, toolchain constants and install-plan questions need rewrite.
+
+========================================================================
+9. Workspace Execution And Hermeticity
+========================================================================
+
+Q020a-075. Should Vapor-managed `cargo check/fmt/build` preserve system PATH after Vapor path prefixes for now?
+A:
+
+Q020a-076. Is preserving system PATH incompatible with saying "no system tool leaks"?
+A:
+
+Q020a-077. Which environment variables must be scrubbed before claiming hermetic Cargo/Rust execution?
+A:
+
+Q020a-078. Should build outputs stay under `$VAPOR_HOME/output/dev/<workspace>` for Vapor-managed commands?
+A:
+
+Q020a-079. Should source repo `target/` directories remain unused by Vapor-managed commands?
+A:
+
+Q020a-080. Should `workspace sync` prompt because it writes files?
+A:
+
+Q020a-081. Should `sdk fmt` prompt because it writes files, or is formatting a normal authoring command?
+A:
+
+Q020a-082. Should `workspace deploy` remain an SDK command, or is it really internal root/app maintenance?
+A:
+
+Q020a-083. Should SDK replace `xtask` for first-party root work, or should xtask-like internal tooling remain separate?
+A:
+
+PIVOT CHECK 9:
+If hermeticity expectations change, relocation tests and workspace cleanup need rewrite.
+
+========================================================================
+10. Manifest, Artifact, Lockfile, Fingerprint
+========================================================================
+
+Q020a-084. Should the current active `Vapor.toml` schema stay minimal for now: workspace identity, content graph, root toolchain pin, and registry metadata?
+A:
+
+Q020a-085. Should every generated content crate in `Vapor-Examples/crates/*` have its own `Vapor.toml`?
+A:
+
+Q020a-086. Are managed-file headers acceptable TOML comments because they prevent overwriting user-owned files?
+A:
+
+Q020a-087. Should SDK fully manage generated Cargo workspace files for custom-content workspaces, or should users own Cargo files and SDK only validate?
+A:
+
+Q020a-088. Should seeded `lib.rs` files remain user-owned after creation?
+A:
+
+Q020a-089. Should seeded files avoid crate-level intent rustdoc until content semantics are discussed?
+A:
+
+Q020a-090. What should be the first `Vapor.lock`-like artifact: packagepack lock, toolchain receipt, root publish receipt, install ledger, or something else?
+A:
+
+Q020a-091. Should the first fingerprint implementation be semantic plaintext/TOML first, hash first, or both?
+A:
+
+Q020a-092. Which artifact terms may active code use now without causing terminology drift?
+A:
+
+Q020a-093. Should active code reserve `root package` for Steam app/depot updates and `Packagepack` for launch composition?
+A:
+
+PIVOT CHECK 10:
+If the manifest/lockfile first slice changes, pack validation and SDK command questions need rewrite.
+
+========================================================================
+11. Packs, Capability, Rhai, Runtime Concepts
+========================================================================
+
+Q020a-094. Should the next pack implementation validate content-kind child rules before capability/Rhai semantics?
+A:
+
+Q020a-095. Should current `engine` content represent a placeholder generic Engine until `core_engine`/`core_mod` artifact layout exists?
+A:
+
+Q020a-096. Should current `game` content represent a placeholder generic Game until `base_mod` artifact layout exists?
+A:
+
+Q020a-097. Should active code avoid enforcing reserved names like `core_engine`, `core_mod`, and `base_mod` until actual Engine/Game artifact layout exists?
+A:
+
+Q020a-098. Should Extension Mods have one attachment parent plus normal dependencies, or can they have multiple attachment parents?
+A:
+
+Q020a-099. Should first Rhai work be parser-free file classification before Rhai execution or linting?
+A:
+
+Q020a-100. Should SDK `validate` remain manifest/graph-only until Rhai semantics are cleaner?
+A:
+
+Q020a-101. What is the smallest capability concept worth implementing in `vapor_core`?
+A:
+
+Q020a-102. Should active code avoid names still flagged as suspect: `Vapor Platform`, `Capability Profile`, `Capability Declaration`, `Rhai Asset`, and `Runtime Lock`?
+A:
+
+Q020a-103. Should toolchain work avoid all kernel ABI / native plugin compatibility claims until native plugin loading is real?
+A:
+
+PIVOT CHECK 11:
+If capability/Rhai enters earlier than expected, manifest, lockfile, and toolchain-envelope questions need rewrite.
+
+========================================================================
+12. Workshop, Trust, Install Ledger
+========================================================================
+
+Q020a-104. Should root app/toolchain bootstrap stay ahead of Workshop content release work?
+A:
+
+Q020a-105. Which repo should own the first Workshop implementation: SDK for upload/publish, Launcher for install/launch, shared core types later?
+A:
+
+Q020a-106. Where should authoritative fingerprints live before registry enforcement exists: uploaded content, local lock/receipt, registry, or all of these?
+A:
+
+Q020a-107. Should wording be "trusted but validated for compatibility/integrity" rather than "untrusted hostile content"?
+A:
+
+Q020a-108. Should signing fields stay out of active schemas for now?
+A:
+
+Q020a-109. Should install ledger belong to Launcher, SDK, shared app-root state, or separate per-workflow receipts?
+A:
+
+Q020a-110. Should local dev artifacts ever override Workshop artifacts automatically?
+A:
+
+Q020a-111. Should local dev artifact selection require explicit developer/modpack-author action?
+A:
+
+Q020a-112. Should Steam Web API/private backend work be avoided until a concrete SteamCMD/Steamworks gap requires it?
+A:
+
+PIVOT CHECK 12:
+If Workshop moves earlier, root bootstrap and registry priorities need rewrite.
+
+========================================================================
+13. Command Surface And Safety
+========================================================================
+
+Q020a-113. Should broad SDK command stubs remain visible for planning, or should commands be hidden until implemented?
+A:
+
+Q020a-114. Which SDK command families must become real before further broad command expansion?
+A:
+
+Q020a-115. Should current command names be treated as disposable pre-Phase-3 scaffolding?
+A:
+
+Q020a-116. Should root SteamPipe publish and future Workshop content publish stay sharply separated in command names?
+A:
+
+Q020a-117. Should SDK and Launcher keep shared global flags `--yes`, `--force`, `--strict`, and `--keep-unused-versions` for now?
+A:
+
+Q020a-118. Should `--force` semantics be delayed until each mutation is real?
+A:
+
+Q020a-119. Should Launcher placeholder output become factual `status: not_implemented` style output?
+A:
+
+Q020a-120. Should CLI output eventually support machine-readable JSON for GUI/tooling, or is that premature?
+A:
+
+PIVOT CHECK 13:
+If command visibility changes, SDK/Launcher cleanup questions need rewrite.
+
+========================================================================
+14. Code Cleanup Permission Boundaries
+========================================================================
+
+Q020a-121. Is splitting `workspace/manage.rs` into smaller behavior-identical modules approved once an exact file list is presented?
+A:
+
+Q020a-122. Is splitting `workspace/deploy.rs` into smaller behavior-identical modules approved once an exact file list is presented?
+A:
+
+Q020a-123. Should `toolchain.rs` be split only after relocation testing, unless the extraction is purely mechanical?
+A:
+
+Q020a-124. Should SDK get a shared app-root layout module to deduplicate alias/executable/activation paths?
+A:
+
+Q020a-125. Is adding or changing module rustdoc allowed only for cold facts unless the exact intent wording has been approved?
+A:
+
+Q020a-126. Should SDK/Launcher duplicate CLI safety/spec scaffolding until semantics stabilize, rather than introducing a shared crate?
+A:
+
+Q020a-127. Should root package symlink behavior remain "copy target contents" for now?
+A:
+
+Q020a-128. Should root package reject directories unless explicit ignore rules exist?
+A:
+
+Q020a-129. Should `vapor_core` keep owning the canonical toolchain model, or should that move to SDK later?
+A:
+
+Q020a-130. What is the first cleanup slice you would approve after this ledger pass?
+A:
+
+PIVOT CHECK 14:
+If cleanup permission is narrow, implementation plans must be rewritten as tiny approval packets.
+
+========================================================================
+15. Immediate Next Action
+========================================================================
+
+Q020a-131. After answering enough of this queue, should the next actual work be a relocation-test plan?
+A:
+
+Q020a-132. Should the relocation-test plan be presented as exact commands, expected filesystem mutations, and pass/fail criteria before running anything?
+A:
+
+Q020a-133. Should the next actual work instead be a dependency-policy patch plan for SDK/Launcher `vapor_core` dependencies?
+A:
+
+Q020a-134. Should the next actual work instead be a root-package/self-bootstrap plan?
+A:
+
+Q020a-135. Should the next actual work instead be a tiny code-cleanup packet with no policy changes?
+A:
+
+Q020a-136. When you stop answering and ask for a pivot check, should I rewrite the unanswered remainder into the next lettered queue before doing any implementation?
+A:
+
+END OF 020a
