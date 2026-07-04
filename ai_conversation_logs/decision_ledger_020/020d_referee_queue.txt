@@ -1,0 +1,255 @@
+Decision Ledger 020d: Vapor / Loo-Cast Referee Queue
+
+Status:
+This is the current compact trunk state of decision ledger 020 after the third pivot and the Q020d-046 roadmap correction.
+The letter `d` is a queue-shape revision, not a new answered batch.
+
+The old flat source ledger is preserved at:
+`ai_conversation_logs/decision_ledger_020/history/020_flat_source_before_referee_rewrite.txt`
+
+The pre-collapse 020d queue, including the long flat unanswered tail, is preserved at:
+`ai_conversation_logs/decision_ledger_020/history/020d_before_roadmap_collapse.txt`
+
+The active roadmap hierarchy is:
+`ai_conversation_logs/decision_ledger_020/branches/roadmap_hierarchy/020d-rm-a_root_roadmap.md`
+
+The active child workload is:
+`ai_conversation_logs/decision_ledger_020/branches/glossary_migration/020d-gm-a_queue.txt`
+
+How this file should be used:
+
+- The owner may answer any coherent prefix or subsection.
+- Answers must be pasted back verbatim under the matching `A:` line.
+- If an early answer changes later context, the assistant acts as referee:
+  - preserve the answer exactly,
+  - mark downstream items answered, superseded, invalidated, or needing rewrite,
+  - rewrite the remaining unanswered queue into the right branch or next trunk revision,
+  - keep everything under decision ledger index 020 unless the owner explicitly starts a new batch.
+- The assistant must not treat defaults as doctrine.
+- The assistant must not silently implement policy, naming, docs, or roadmap decisions from this queue.
+- Broad unresolved areas should now collapse into roadmap checkpoints or nested branches instead of expanding this trunk into another long flat question list.
+
+Referee stop phrase:
+If the owner writes something like "pivot check", "surely this pivots later questions", or equivalent, stop normal Q&A consumption and evaluate dependencies before continuing.
+
+========================================================================
+0. Referee Protocol
+========================================================================
+
+Q020a-001. Is this folder-and-letter model acceptable: `decision_ledger_020/020a_referee_queue.txt`, then `020b`, `020c`, etc. as rewritten working queues under the same ledger index?
+A: Yes.
+
+Q020a-002. Should the flat source file remain in `history/` as archaeology, while the latest lettered queue is the only thing you actively answer?
+A: Yes.
+
+Q020a-003. When you answer a section, should I paste your answer verbatim under `A:` even if it contains profanity, uncertainty, side comments, or later self-corrections?
+A: Yes.
+
+Q020a-004. Should I add short `REFEREE:` notes after your answers only when needed to explain downstream effects?
+A: Yes.
+
+Q020a-005. Should unanswered downstream questions be rewritten aggressively after a pivot, rather than preserved for historical purity?
+A: Yes.
+
+Q020a-006. Should defaults in this file be treated only as assistant working assumptions, never as accepted owner decisions?
+A: Difficult to answer. Yes, but that itself is not to be taken as a set-in-stone rule, yk?
+
+PIVOT CHECK 0:
+If any answer above changes the file/revision protocol, stop here. The rest of the queue depends on this workflow.
+
+========================================================================
+1. Documentation Authority And Canon Glossary
+========================================================================
+
+Q020a-007. Should active documentation authority remain: root README first, crate rustdoc second, useful module rustdoc third, clear local names always preferred, and no `/docs` by default?
+A: Yes, but the old glossary should indeed be moved/copied over into Vapor and promoted to canon material, yk?
+
+Q020a-008. Should design intent, doctrine, roadmap, naming policy, workflow policy, and public command semantics require discussion before being written anywhere, including rustdoc and comments?
+A: Yes.
+
+Q020a-009. Should cold factual docs about what code currently does be allowed during approved implementation, as long as they do not add intent or doctrine?
+A: Yes.
+
+Q020a-010. Should legacy glossary pages be treated as high-signal quarry, but not as active doctrine and not as a surface we keep mutating during normal work?
+A: Well, yes, but we *do* want it to be canon, not legacy. But I already said that; I think it's time for a pivot.
+
+REFEREE:
+The old glossary is no longer merely non-canonical quarry. Its current physical location is legacy, but its substance should be migrated/promoted into Vapor as canon material, subject to owner-reviewed status and rewrite rules.
+
+Q020b-011. Should `Loo-Cast/loo_cast_alpha/docs/glossary` be treated as the source corpus for a canonical Vapor concept corpus?
+A: Yes.
+
+Q020b-012. Should the old `Loo-Cast` repo still be treated as a legacy/context workspace even if its glossary content becomes canonical source material for Vapor?
+A: Yes.
+
+Q020b-013. Should "legacy glossary" now mean "legacy physical location/history", not "non-canonical concept content"?
+A: Yes.
+
+Q020b-014. Should Vapor make an explicit exception to the "no `/docs` by default" rule for a migrated canonical glossary/concept corpus?
+A: Yes.
+
+Q020b-015. Should the migrated corpus live at `Vapor/docs/glossary/`, or should it use a different path such as `Vapor/glossary/`, `Vapor/concepts/`, or `Vapor/canon/`?
+A: Yes, `Vapor/docs/glossary/` is good.
+
+Q020b-016. Should the folder name keep the word `glossary`, or should the content be renamed to avoid old process baggage?
+A: Well, I mean, tbf we already saw the advantage of the glossary vs. tech glossary approach, so maybe we wanna capitalize on that and embrace it even more? Maybe a pivot soon? Lemme try answer some more before we pivot.
+
+Q020b-017. Should the first migration be a mechanical copy of the whole glossary corpus, with no conceptual rewriting in the same change?
+A: I suppose so, that also cleanly solves Q020b-016: Just split it into docs/glossary and docs/tech_glossary I suppose, and try and prevent cross-links between them.
+
+Q020b-018. Should the first migration be selective instead, copying only Vapor-relevant pages and leaving USF/Spacetime/Loo-Cast-specific pages for future repos?
+A: Actually, yes! This is a good fucking idea, yeeeeeeeeeeeeeeees!
+
+Q020b-019. Should `glossary-summary.md`, `tech-glossary-summary.md`, and `glossary-alignment-issue-ledger.md` migrate with the glossary corpus?
+A: Yes, but they also need to be subject to integration of new decisions and answers and such, they are not magical tokens of god-given absolute truth.
+
+Q020b-020. Should old AI conversation logs from `Loo-Cast/loo_cast_alpha/docs/ai_conversation_logs` stay referenced history, or be copied into Vapor too?
+A: Stay history.
+
+Q020b-021. Should old diagrams, RFCs, and root docs stay out of Vapor unless separately approved?
+A: Yes.
+
+Q020b-022. Should migrated pages preserve Obsidian wikilinks/frontmatter/tags initially?
+A: Yes!
+
+Q020b-023. Should `.obsidian/` editor state remain excluded?
+A: Nah.
+
+Q020b-024. Should migrated pages keep current stale/WIP statuses at first, or should migration introduce a new status vocabulary immediately?
+A: stale/WIP first. We wanna carefully introduce each concept one at a time and be very selective about it.
+
+Q020b-025. Should canonical glossary pages be allowed to describe future/desired concepts not implemented yet?
+A: Yeeeees, use them dangling obsidian/markdown links, yes!
+
+Q020b-026. If yes, should every future/desired page carry explicit status such as `implemented`, `WIP`, `open pressure`, `deferred`, `legacy signal`, or `obsolete`?
+A: Well, no. Only a much more minimal set of statuses possible, yk? Maybe just `implemented`, `WIP`, and just non-existent aka dangling link? Also `legacy signal` as a temporary transitionary state that cannot be re-entered by existing documents, only stuff newly transitioned over from the old glossary work but as-of-yet unapproved in it's entirety, yk?
+
+Q020b-027. Should root README and rustdoc remain highest authority for implemented code behavior, while the migrated glossary becomes highest authority for conceptual/product vocabulary?
+A: Yes.
+
+Q020b-028. Should crate/module rustdoc link to canonical glossary pages only when the concept is implemented locally?
+A: Yes.
+
+Q020b-029. Should README avoid restating glossary doctrine and instead point to canonical glossary pages where needed?
+A: Yes.
+
+Q020b-030. Should AGENT files eventually be updated to include both the glossary-canon exception and the newer "design-intent docs require discussion" rule?
+A: Yes.
+
+Q020b-031. Should CLI help text, `CommandSpec` summaries, preconditions, and future-effects text be treated as documentation/policy surfaces requiring approval before semantic edits?
+A: Yes, absolutely!
+
+Q020b-032. Should the first post-migration review focus only on pages that affect current code work: Vapor Ecosystem, SDK, Vapor Launcher, Vapor Toolchain Envelope, Vapor.toml, Vapor.lock, Steam, Packagepack, Enginepack, Gamepack, Modpack, Fingerprint?
+A: Well, yes, but I expect this list to grow significantly the more we specify pin down structure/architecture/infrastructure, yk?
+
+REFEREE:
+The old glossary should become a canonical Vapor concept corpus, but the first migration is selective.
+
+Q020c-033. Should the immediate glossary migration be selective rather than whole-corpus, despite preserving the source corpus in history?
+A: Yes. Spacetime and Loo-Cast are not our focus rn.
+
+Q020c-034. Should selected migrated pages be split into two destination folders: `Vapor/docs/glossary/` and `Vapor/docs/tech_glossary/`?
+A: Yes, in fact the original material is already split this way, but ofc even that split must be scrutinized.
+
+Q020c-035. Should we actively prevent cross-links between `docs/glossary` and `docs/tech_glossary`, or merely avoid unnecessary cross-links?
+A: I mean, just keep em to a set of specific entrypoints, yk? No huge bridges, we want this to truly be like a technical reflection of the same concept but like from the other side of the coin, yk?
+
+Q020c-036. Should `.obsidian/` be copied into Vapor as actual vault/editor configuration, or should only specific non-editor metadata be preserved?
+A: Fuck that, nuke .obsidian, there is nothing significant in there I would care about.
+
+Q020c-037. If `.obsidian/` is copied, should it live under `Vapor/docs/.obsidian/`, repo root `.obsidian/`, or another path?
+A: N/A. Still no explicit pivot, cause this is (still) straightforward.
+
+Q020c-038. Should the first migration include only the current-code-impact starter list plus any pages required by direct links from those pages?
+A: Yes, but don't delude yourself into thinking that this will not be quite the enormous batch, cause it will be.
+
+Q020c-039. Should linked but not-yet-migrated pages remain dangling links until intentionally introduced?
+A: Yes.
+
+Q020c-040. Should migrated pages from the old corpus default to `legacy signal` until individually approved as `WIP` or `implemented`?
+A: Yes.
+
+Q020c-041. Should `implemented` be reserved only for concepts directly represented in active code or repo-local config?
+A: Yes.
+
+Q020c-042. Should `WIP` mean canonical but not fully implemented/finalized?
+A: Yes. Canonical, but not trustworthy.
+
+Q020c-043. Should `legacy signal` be a one-way transition status only for old imported pages, as you described?
+A: Yes.
+
+Q020c-044. Should the summary docs and alignment ledger be migrated into `Vapor/docs/` root, or into a status/review subfolder under `Vapor/docs/`?
+A: Hm, I think we wanna use the docs root, yes, but we want to be mindful of what and how much we put there.
+
+Q020c-045. Should the first migration include a very small `Vapor/docs/README.md` explaining the glossary/tech_glossary split and status vocabulary, or should even that wait for a drafted approval packet?
+A: Indeed, even that has to be approved first. Time for a pivot.
+
+REFEREE:
+The docs migration is now specific enough to drive an implementation packet, but not specific enough to run one without approval.
+Assumptions for the remaining queue:
+- Migration is selective, focused on Vapor/current-code-impact concepts.
+- `Vapor/docs/glossary/` and `Vapor/docs/tech_glossary/` are accepted destinations, subject to scrutinizing the split.
+- Cross-links between glossary and tech glossary should exist only through specific entrypoints.
+- `.obsidian/` is excluded/nuked.
+- Selected direct-link dependencies may make the first batch large.
+- Non-migrated links may remain dangling intentionally.
+- Imported pages default to `legacy signal`.
+- `implemented` means represented in active code or repo-local config.
+- `WIP` means canonical but not trustworthy/final.
+- Summary docs and alignment ledger may live in `Vapor/docs/` root, but need restraint.
+- Even a tiny `Vapor/docs/README.md` requires a drafted approval packet first.
+
+Q020d-046. Should the immediate next implementation packet be a glossary migration plan, before repo topology/dependency/toolchain implementation work?
+A: I- yes, but I wanted more of a roadmap with descriptions and sub-roadmaps and all, yk? Not jus "what to do next". I was hoping to get a fairly detailed and walled-off topology of roadmaps basically, if that makes any sense man. Just markdown files and folder nesting would do the job. So we do need our glossary, and we need a new docs section "roadmap", containing the root roadmap basically, yk?
+
+REFEREE:
+Q020d-046 does not resolve to "glossary migration only." It establishes a parent roadmap hierarchy. The glossary migration branch is the first active child workload under that hierarchy, not a replacement for it.
+
+SETTLED AFTER FOLLOW-UP:
+The roadmap section itself is now settled as an active repo-local surface at `docs/roadmap/`.
+The canonical roadmap entrypoint is `docs/roadmap/README.md`, which also carries the current root hierarchy for GitHub readability.
+This settles the roadmap container and root topology, not every unresolved design decision listed inside the roadmap.
+
+FOLLOW-UP STRUCTURE:
+The old `root.md` page was merged into `docs/roadmap/README.md`.
+Large checkpoints now live as numbered nested roadmap folders directly under `docs/roadmap/`.
+Each checkpoint can grow deeper folders using the same simple `Exists now / Needed next / Total target` shape.
+
+Q020d-047. Should that packet include a proposed `Vapor/docs/README.md` draft for approval before any file creation?
+A: Yes.
+
+Q020d-048. Should the migration packet list every selected source page and destination path explicitly?
+A: Yes.
+
+Q020d-049. Should the migration packet list every intentionally dangling link created by the selected page set?
+A: Yes.
+
+Q020d-050. Should the first migration batch include the summaries and alignment ledger at `Vapor/docs/`, or should those wait until after the first page copy?
+A: No, don't wait.
+
+Q020d-051. Should the first migration batch include only pages directly related to current active code surfaces, even if that leaves core conceptual context dangling?
+A: Yes.
+
+Q020d-052. Should `legacy signal` be applied mechanically to every imported page in the first migration?
+A: Yes.
+
+Q020d-053. Should any imported page be upgraded to `WIP` or `implemented` in the first migration, or should that require a later review patch?
+A: Only after I/we approve. Nothing more than that, nothing less than that.
+
+Q020d-054. Should the migration packet include no rewrites besides path/status/frontmatter adjustments required by the migration?
+A: Yes.
+
+PIVOT CHECK 1:
+The Q020d-046 answer triggers a structural pivot. The long unanswered 020d tail has been collapsed out of the active trunk and preserved as history at:
+`ai_conversation_logs/decision_ledger_020/history/020d_before_roadmap_collapse.txt`
+
+Active parent roadmap:
+`ai_conversation_logs/decision_ledger_020/branches/roadmap_hierarchy/020d-rm-a_root_roadmap.md`
+
+Active child branch:
+`ai_conversation_logs/decision_ledger_020/branches/glossary_migration/020d-gm-a_queue.txt`
+
+Current rule:
+Do not continue the old flat Active Repo Topology / toolchain / command-surface questions in this trunk. If one of those areas needs work, open or update the matching roadmap checkpoint or nested branch. The main trunk should resume as `020e_referee_queue.txt` only after the active child branch converges or is explicitly paused.
+
+END OF 020d

@@ -46,11 +46,15 @@ Satellite repos:
 
 ## Docs Rules
 
-1. Do not create `/docs` by default.
-2. Prefer root `README.md`, crate rustdoc, module-local docs, and clear local names.
-3. TOML comments should be rare and local.
-4. Do not create diagrams, RFCs, or glossary pages unless explicitly requested.
-5. Old `Loo-Cast` glossary, RFC, and diagram material is quarry/archeology: useful signal, not active Vapor doctrine.
+1. Do not create broad docs surfaces by default.
+2. Prefer root `README.md`, crate rustdoc, module-local docs, and clear local names for implemented behavior.
+3. `docs/roadmap/` is the accepted roadmap hierarchy location.
+4. `docs/books/` is the accepted location for mdBook stubs and future book drafts.
+5. `docs/glossary/` and `docs/tech_glossary/` are accepted destination concepts for the planned selective glossary migration, but glossary files still require an approved migration packet.
+6. TOML comments should be rare and local.
+7. Do not create diagrams, RFCs, or unrelated docs pages unless explicitly requested.
+8. Design intent, doctrine, roadmap, naming policy, workflow policy, and public command semantics require owner discussion before being written as stable documentation, rustdoc, comments, or CLI text.
+9. Old `Loo-Cast` glossary material is source material for canonical Vapor glossary work after migration. Old RFCs, diagrams, and unrelated root docs remain quarry/archeology unless separately approved.
 
 ## Question Batches
 

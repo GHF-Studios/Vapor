@@ -1,0 +1,9 @@
+[book]
+title = "The Vapor SDK Book"
+authors = ["Leslie-John Richardson"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/GHF-Studios/Vapor-SDK"
+

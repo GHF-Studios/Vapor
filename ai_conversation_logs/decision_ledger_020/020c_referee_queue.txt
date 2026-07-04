@@ -145,43 +145,43 @@ The queue now assumes:
 - Status vocabulary should stay minimal: probably `implemented`, `WIP`, dangling link absence, and temporary `legacy signal`.
 
 Q020c-033. Should the immediate glossary migration be selective rather than whole-corpus, despite preserving the source corpus in history?
-A:
+A: Yes. Spacetime and Loo-Cast are not our focus rn.
 
 Q020c-034. Should selected migrated pages be split into two destination folders: `Vapor/docs/glossary/` and `Vapor/docs/tech_glossary/`?
-A:
+A: Yes, in fact the original material is already split this way, but ofc even that split must be scrutinized.
 
 Q020c-035. Should we actively prevent cross-links between `docs/glossary` and `docs/tech_glossary`, or merely avoid unnecessary cross-links?
-A:
+A: I mean, just keep em to a set of specific entrypoints, yk? No huge bridges, we want this to truly be like a technical reflection of the same concept but like from the other side of the coin, yk?
 
 Q020c-036. Should `.obsidian/` be copied into Vapor as actual vault/editor configuration, or should only specific non-editor metadata be preserved?
-A:
+A: Fuck that, nuke .obsidian, there is nothing significant in there I would care about.
 
 Q020c-037. If `.obsidian/` is copied, should it live under `Vapor/docs/.obsidian/`, repo root `.obsidian/`, or another path?
-A:
+A: N/A. Still no explicit pivot, cause this is (still) straightforward.
 
 Q020c-038. Should the first migration include only the current-code-impact starter list plus any pages required by direct links from those pages?
-A:
+A: Yes, but don't delude yourself into thinking that this will not be quite the enormous batch, cause it will be.
 
 Q020c-039. Should linked but not-yet-migrated pages remain dangling links until intentionally introduced?
-A:
+A: Yes.
 
 Q020c-040. Should migrated pages from the old corpus default to `legacy signal` until individually approved as `WIP` or `implemented`?
-A:
+A: Yes.
 
 Q020c-041. Should `implemented` be reserved only for concepts directly represented in active code or repo-local config?
-A:
+A: Yes.
 
 Q020c-042. Should `WIP` mean canonical but not fully implemented/finalized?
-A:
+A: Yes. Canonical, but not trustworthy.
 
 Q020c-043. Should `legacy signal` be a one-way transition status only for old imported pages, as you described?
-A:
+A: Yes.
 
 Q020c-044. Should the summary docs and alignment ledger be migrated into `Vapor/docs/` root, or into a status/review subfolder under `Vapor/docs/`?
-A:
+A: Hm, I think we wanna use the docs root, yes, but we want to be mindful of what and how much we put there.
 
 Q020c-045. Should the first migration include a very small `Vapor/docs/README.md` explaining the glossary/tech_glossary split and status vocabulary, or should even that wait for a drafted approval packet?
-A:
+A: Indeed, even that has to be approved first. Time for a pivot.
 
 PIVOT CHECK 1:
 If migration scope/path/status rules change here, repo topology and implementation priorities may need another rewrite before continuing.

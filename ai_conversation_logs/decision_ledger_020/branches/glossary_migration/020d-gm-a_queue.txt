@@ -1,0 +1,301 @@
+Decision Ledger 020d-GM-a: Glossary Migration Branch Queue
+
+Status:
+This is a nested branch under decision ledger 020.
+It pauses the main 020 trunk at Pivot Check 1 in `020d_referee_queue.txt`.
+It exists to resolve and execute the canonical glossary migration workload before the main queue resumes as `020e`.
+
+Branch rule:
+Do not continue Active Repo Topology or later 020 trunk sections until this branch converges or the owner explicitly aborts/deprioritizes it.
+
+Branch output target:
+Produce an owner-approved glossary migration packet with exact source paths, destination paths, selected pages, excluded files, status policy, dangling-link policy, and no-rewrite guarantees. Only after that packet is approved should actual glossary files be copied into `Vapor/docs`.
+
+Carried decisions:
+
+- `Loo-Cast/loo_cast_alpha/docs/glossary` is the source corpus for canonical Vapor concept material.
+- The old `Loo-Cast` repo remains legacy/context workspace.
+- "Legacy glossary" means legacy physical location/history, not non-canonical concept content.
+- `Vapor/docs/glossary/` is accepted.
+- A parallel `Vapor/docs/tech_glossary/` is desired, but the old split must be scrutinized.
+- Migration is selective. Spacetime and Loo Cast are not the current focus.
+- Old AI logs stay history.
+- Old diagrams, RFCs, and root docs stay out unless separately approved.
+- Preserve Obsidian-style wikilinks, frontmatter, and tags initially.
+- Exclude/nuke `.obsidian`; nothing significant there matters.
+- Linked but not-yet-migrated pages may remain dangling until intentionally introduced.
+- Imported pages default to `legacy signal` until individually approved as `WIP` or `implemented`.
+- `implemented` is reserved for concepts directly represented in active code or repo-local config.
+- `WIP` means canonical but not trustworthy/final.
+- `legacy signal` is one-way transition status for old imported pages.
+- Summary docs and the alignment ledger may live in `Vapor/docs/` root, but only with restraint.
+- Even a tiny `Vapor/docs/README.md` requires a drafted approval packet first.
+
+========================================================================
+0. Branch Protocol
+========================================================================
+
+Q020d-GM-a-001. Is `decision_ledger_020/branches/glossary_migration/` an acceptable branch location for this nested workload?
+A: Yes.
+
+Q020d-GM-a-002. Should the main 020 trunk remain paused at `020d` until the glossary migration branch produces either an approved migration or an explicit stop decision?
+A: Yes.
+
+Q020d-GM-a-003. Should branch revisions use `020d-GM-a`, `020d-GM-b`, etc., then return to trunk as `020e` after migration convergence?
+A: Yes.
+
+Q020d-GM-a-004. Should answers in this branch be pasted verbatim exactly like the main 020 queue?
+A: Yes.
+
+Q020d-GM-a-005. Should this branch allow actual implementation work only after a migration packet is separately approved?
+A: Yes.
+
+PIVOT CHECK GM-0:
+If this branch protocol changes, rewrite the branch before selecting pages.
+
+========================================================================
+1. Migration Packet Shape
+========================================================================
+
+Q020d-GM-a-006. Should the migration packet include an exact table with columns: source path, destination path, destination bucket, initial status, reason for inclusion, and known dangling links?
+A: Yes? Although many "known" dangling links will not be presented as dangling links, and MANY more will not be known and instead sneakily woven nuanced implications or alck thereof and it's just crazy lmao. Good luck lol.
+
+Q020d-GM-a-007. Should the migration packet include an explicit excluded-path list, including `.obsidian`, diagrams, RFCs, AI logs, and non-selected glossary pages?
+A: Yes.
+
+Q020d-GM-a-008. Should the migration packet include a `Vapor/docs/README.md` draft, but not create that file until approved?
+A: Yes.
+
+Q020d-GM-a-009. Should the migration packet include proposed text for a minimal status vocabulary?
+A: Yes.
+
+Q020d-GM-a-010. Should the migration packet include a no-rewrite guarantee: copied pages preserve old wording except for necessary frontmatter/status/path normalization explicitly listed?
+A: Yes.
+
+Q020d-GM-a-011. Should the packet include a "known stale claims" section rather than editing stale claims during the copy?
+A: Yes.
+
+Q020d-GM-a-012. Should the migration packet be generated in chat first, then optionally saved as a branch file only after you approve its shape?
+A: Yes.
+
+PIVOT CHECK GM-1:
+If the packet itself should be saved before approval, that changes the branch artifact policy.
+
+========================================================================
+2. Destination Structure
+========================================================================
+
+Q020d-GM-a-013. Should destination folders be exactly `Vapor/docs/glossary/` and `Vapor/docs/tech_glossary/`?
+A: For glossary-related docs, yes. Not for everything we want to migrate over ofc, then *exactly* is too porecise of a wording, yk?
+
+Q020d-GM-a-014. Should `Vapor/docs/glossary/` hold product/concept vocabulary and `Vapor/docs/tech_glossary/` hold implementation-facing notes?
+A: Basically, yes.
+
+Q020d-GM-a-015. Should old pages tagged `#tech_glossary` be considered candidates for `docs/tech_glossary/`, but still reviewed page-by-page?
+A: Yes.
+
+Q020d-GM-a-016. Should old pages tagged `#glossary` be considered candidates for `docs/glossary/`, but still reviewed page-by-page?
+A: Yes.
+
+Q020d-GM-a-017. Should `Vapor/docs/glossary/README.md` and `Vapor/docs/tech_glossary/README.md` be avoided in the first copy unless explicitly included in the approved packet?
+A: Yes.
+
+Q020d-GM-a-018. Should `Vapor/docs/README.md` be the only initial explanatory docs-root file, if approved?
+A: Yes.
+
+Q020d-GM-a-019. Should summary/review files such as `glossary-summary.md`, `tech-glossary-summary.md`, and `glossary-alignment-issue-ledger.md` live directly under `Vapor/docs/`?
+A:
+
+PIVOT CHECK GM-2:
+If destination folders change, selected page mapping must be rewritten.
+
+========================================================================
+3. Status Vocabulary
+========================================================================
+
+Q020d-GM-a-020. Should the initial allowed statuses be only `implemented`, `WIP`, and `legacy signal`?
+A:
+
+Q020d-GM-a-021. Should missing/dangling pages be represented by absent files rather than a `deferred` status?
+A:
+
+Q020d-GM-a-022. Should every imported old page initially become `legacy signal` unless the migration packet explicitly upgrades it?
+A:
+
+Q020d-GM-a-023. Should `implemented` require an active code/config reference in the migration packet?
+A:
+
+Q020d-GM-a-024. Should `WIP` require an explicit owner decision that the page is canonical enough to work from, despite being incomplete?
+A:
+
+Q020d-GM-a-025. Should old statuses be preserved in a separate frontmatter field such as `legacy_status`, or discarded/replaced by the new status?
+A:
+
+Q020d-GM-a-026. Should pages imported as `legacy signal` be forbidden from being edited conceptually until promoted by a later owner-reviewed pass?
+A:
+
+PIVOT CHECK GM-3:
+If status handling changes, the migration packet must include exact frontmatter transformations.
+
+========================================================================
+4. Cross-Link Policy
+========================================================================
+
+Q020d-GM-a-027. Should cross-links between `glossary` and `tech_glossary` be allowed only through specific hub/entrypoint pages?
+A:
+
+Q020d-GM-a-028. Should likely entrypoints include `Vapor Ecosystem`, `SDK`, `Vapor Launcher`, `Vapor Toolchain Envelope`, `Vapor.toml`, and `Vapor.lock`?
+A:
+
+Q020d-GM-a-029. Should ordinary pages avoid casual cross-links between concept and tech sides even if the old source pages have them?
+A:
+
+Q020d-GM-a-030. Should the first migration preserve old links literally, then track unwanted cross-links as known cleanup items?
+A:
+
+Q020d-GM-a-031. Or should the first migration rewrite/remove unwanted cross-links immediately as part of path normalization?
+A:
+
+Q020d-GM-a-032. Should non-migrated links remain dangling rather than causing automatic dependency expansion?
+A:
+
+Q020d-GM-a-033. Should the migration packet list direct links from each selected page and mark each link as migrated, dangling, or excluded?
+A:
+
+PIVOT CHECK GM-4:
+If links are rewritten during migration, this is no longer a mechanical/no-rewrite copy and needs a stricter approval packet.
+
+========================================================================
+5. Initial Candidate Set
+========================================================================
+
+Current starter list from 020:
+
+- `Vapor Ecosystem`
+- `SDK`
+- `Vapor Launcher`
+- `Vapor Toolchain Envelope`
+- `Vapor.toml`
+- `Vapor.lock`
+- `Steam`
+- `Packagepack`
+- `Enginepack`
+- `Gamepack`
+- `Modpack`
+- `Fingerprint`
+
+Q020d-GM-a-034. Should all starter-list pages be included in the first migration candidate set?
+A:
+
+Q020d-GM-a-035. Should `Steam Workshop` be added to the starter set because SDK/Launcher publishing/install workflows depend on it?
+A:
+
+Q020d-GM-a-036. Should `Artifact`, `Source Artifact`, `Build Artifact`, and `Distributable Artifact` be added because root package/toolchain/build output discussions need artifact vocabulary?
+A:
+
+Q020d-GM-a-037. Should `Project Authoring Structure`, `Project Artifact Structure`, `Project Runtime Representation`, and `Project Structure` be excluded for now because they are too broad/stale?
+A:
+
+Q020d-GM-a-038. Should `Vapor Crate Topology` be included because repo/crate layout is active, even though it may be stale?
+A:
+
+Q020d-GM-a-039. Should `steam-like-platform-contracts` be excluded because Steam-exclusive direction is current?
+A:
+
+Q020d-GM-a-040. Should `Capability`, `Capability Framework`, and related capability pages be deferred until after the immediate Steam-root/toolchain work?
+A:
+
+Q020d-GM-a-041. Should `Rhai Asset` and Rhai tech notes be deferred until Rhai semantics become active code work?
+A:
+
+Q020d-GM-a-042. Should `USF`, `Spacetime Engine`, `Loo Cast`, and scale/simulation pages be excluded from the first migration unless needed as dangling context?
+A:
+
+Q020d-GM-a-043. Should `Phase 3 Vapor Testing Suite` be included, or deferred because current work is pre-Phase-3 bootstrap?
+A:
+
+Q020d-GM-a-044. Should `Asymmetric Failure Doctrine` be included because diagnostics/failure behavior is already present in SDK/Steam/root commands?
+A:
+
+Q020d-GM-a-045. Should `Script Safety` be included now to prevent accidental hostile-code sandbox claims, or deferred until scripting is active?
+A:
+
+PIVOT CHECK GM-5:
+This candidate set determines whether the migration packet is small enough to do now or needs another inventory pass.
+
+========================================================================
+6. Active-Code Reference Rule
+========================================================================
+
+Q020d-GM-a-046. Should each `implemented` candidate list the active file(s) or config that justify the status?
+A:
+
+Q020d-GM-a-047. Should `Vapor.toml` be `implemented` because active repos already contain and parse simple `Vapor.toml` files?
+A:
+
+Q020d-GM-a-048. Should `Vapor Toolchain Envelope` remain `WIP` or `legacy signal` because current code implements SDK toolchain install, not native kernel ABI compatibility?
+A:
+
+Q020d-GM-a-049. Should `SDK` be `implemented`, `WIP`, or `legacy signal` given `Vapor-SDK` has real skeleton plus some real toolchain/workspace/root/Steam commands?
+A:
+
+Q020d-GM-a-050. Should `Vapor Launcher` be `legacy signal` or `WIP` given Launcher is mostly CLI skeleton/stub?
+A:
+
+Q020d-GM-a-051. Should `Steam` be `WIP` because SDK has SteamCMD status/login/root publish but not Steamworks/Workshop/ownership checks?
+A:
+
+Q020d-GM-a-052. Should `Packagepack`, `Enginepack`, `Gamepack`, `Modpack`, and `Fingerprint` default to `legacy signal` until content validation/fingerprint code exists?
+A:
+
+Q020d-GM-a-053. Should `Vapor.lock` default to `legacy signal` because no lockfile implementation exists yet?
+A:
+
+PIVOT CHECK GM-6:
+If status assignment is too hard now, first migration should mark everything `legacy signal`.
+
+========================================================================
+7. Actual Migration Workload
+========================================================================
+
+Q020d-GM-a-054. Should the first actual workload be an inventory command/report that lists candidate pages, tags, direct links, and likely destination folder?
+A:
+
+Q020d-GM-a-055. Should that inventory be saved under the glossary migration branch folder, or only reported in chat?
+A:
+
+Q020d-GM-a-056. Should the migration packet be based on that inventory rather than hand-selecting from memory?
+A:
+
+Q020d-GM-a-057. Should the inventory include line counts and link counts to estimate migration size?
+A:
+
+Q020d-GM-a-058. Should the inventory detect pages whose direct links pull in too many dependencies and flag them for deferment?
+A:
+
+Q020d-GM-a-059. After inventory and approval, should actual copying be one commit-sized slice, not mixed with code cleanup?
+A:
+
+Q020d-GM-a-060. After copying, should the next branch step be status/frontmatter normalization, or should status be normalized during the copy?
+A:
+
+PIVOT CHECK GM-7:
+If inventory is approved as the next workload, the assistant should produce a concrete command/file packet before running it.
+
+========================================================================
+8. Return To Main 020
+========================================================================
+
+Q020d-GM-a-061. After the glossary migration branch converges, should main 020 resume as `020e_referee_queue.txt`?
+A:
+
+Q020d-GM-a-062. Should `020e` carry a short branch summary before continuing Active Repo Topology?
+A:
+
+Q020d-GM-a-063. Should `020e` rewrite repo topology questions to account for the migrated docs/canon structure?
+A:
+
+Q020d-GM-a-064. Should the main queue stay paused even after migration if post-migration review finds major glossary contradictions?
+A:
+
+END OF 020d-GM-a
