@@ -16,26 +16,27 @@ pub const CANONICAL_VAPOR_MANIFEST_TEXT: &str = include_str!("../../../Vapor.tom
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VaporManifest {
-    pub workspace: WorkspaceIdentity,
+    pub project: ProjectIdentity,
     pub toolchain: ToolchainIntent,
 }
 
 /// Identity for the thing described by a `Vapor.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkspaceIdentity {
-    pub kind: WorkspaceKind,
+pub struct ProjectIdentity {
+    pub kind: ProjectKind,
     pub id: String,
 }
 
 /// Manifest kind. More kinds can be added as real authoring surfaces appear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum WorkspaceKind {
+pub enum ProjectKind {
     Core,
     Sdk,
     Launcher,
     CustomContent,
+    Shell,
 }
 
 /// Human-selected Rust toolchain intent.
@@ -58,7 +59,9 @@ pub fn canonical_manifest() -> Result<VaporManifest, ManifestError> {
 
 /// Return the canonical ecosystem toolchain inferred from the root manifest.
 pub fn canonical_toolchain() -> Result<CanonicalToolchain, ManifestError> {
-    Ok(CanonicalToolchain::from_intent(canonical_manifest()?.toolchain))
+    Ok(CanonicalToolchain::from_intent(
+        canonical_manifest()?.toolchain,
+    ))
 }
 
 /// Error returned when `Vapor.toml` cannot be parsed.
@@ -75,7 +78,11 @@ impl From<toml::de::Error> for ManifestError {
 
 impl fmt::Display for ManifestError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "failed to parse embedded Vapor.toml: {}", self.source)
+        write!(
+            formatter,
+            "failed to parse embedded Vapor.toml: {}",
+            self.source
+        )
     }
 }
 

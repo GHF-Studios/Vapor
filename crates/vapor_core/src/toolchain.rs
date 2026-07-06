@@ -7,16 +7,11 @@
 use crate::ToolchainIntent;
 
 /// Host triples Vapor intends to bootstrap first.
-pub const SUPPORTED_HOST_TRIPLES: &[&str] = &[
-    "x86_64-unknown-linux-gnu",
-    "x86_64-pc-windows-msvc",
-];
+pub const SUPPORTED_HOST_TRIPLES: &[&str] = &["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"];
 
 /// Target standard libraries Vapor expects the toolchain to carry first.
-pub const SUPPORTED_TARGET_TRIPLES: &[&str] = &[
-    "x86_64-unknown-linux-gnu",
-    "x86_64-pc-windows-msvc",
-];
+pub const SUPPORTED_TARGET_TRIPLES: &[&str] =
+    &["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"];
 
 /// Required toolchain components for the first Vapor-managed Rust install.
 pub const REQUIRED_TOOLCHAIN_COMPONENTS: &[ToolchainComponent] = &[
@@ -63,7 +58,10 @@ pub struct CanonicalToolchain {
 impl CanonicalToolchain {
     /// Build the canonical toolchain model from human-authored manifest intent.
     pub fn from_intent(intent: ToolchainIntent) -> Self {
-        Self { channel: intent.channel, date: intent.date }
+        Self {
+            channel: intent.channel,
+            date: intent.date,
+        }
     }
 
     /// Stable toolchain identifier used for install paths and lock metadata.

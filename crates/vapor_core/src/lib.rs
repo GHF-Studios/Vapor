@@ -9,12 +9,12 @@ pub mod manifest;
 pub mod toolchain;
 
 pub use composition::ChildContentRef;
-pub use content::{allowed_pack_children, ContentSource, ContentType};
+pub use content::{ContentSource, ContentType, allowed_pack_children};
 pub use manifest::{
-    canonical_manifest, canonical_toolchain, parse_manifest, ManifestError, ToolchainIntent,
-    VaporManifest, WorkspaceIdentity, WorkspaceKind, CANONICAL_VAPOR_MANIFEST_TEXT,
+    CANONICAL_VAPOR_MANIFEST_TEXT, ManifestError, ProjectIdentity, ProjectKind, ToolchainIntent,
+    VaporManifest, canonical_manifest, canonical_toolchain, parse_manifest,
 };
 pub use toolchain::{
-    current_host_triple, CanonicalToolchain, ToolchainComponent, REQUIRED_TOOLCHAIN_COMPONENTS,
-    SUPPORTED_HOST_TRIPLES, SUPPORTED_TARGET_TRIPLES,
+    CanonicalToolchain, REQUIRED_TOOLCHAIN_COMPONENTS, SUPPORTED_HOST_TRIPLES,
+    SUPPORTED_TARGET_TRIPLES, ToolchainComponent, current_host_triple,
 };

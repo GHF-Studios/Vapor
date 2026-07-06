@@ -84,7 +84,10 @@ impl ContentType {
 
     /// Whether this content type can contain child content.
     pub const fn is_pack(self) -> bool {
-        matches!(self, Self::Packagepack | Self::Enginepack | Self::Gamepack | Self::Modpack)
+        matches!(
+            self,
+            Self::Packagepack | Self::Enginepack | Self::Gamepack | Self::Modpack
+        )
     }
 }
 
@@ -122,7 +125,10 @@ pub struct ParseContentValueError {
 
 impl ParseContentValueError {
     fn new(kind: &'static str, value: &str) -> Self {
-        Self { kind, value: value.to_owned() }
+        Self {
+            kind,
+            value: value.to_owned(),
+        }
     }
 }
 
