@@ -1,10 +1,9 @@
-# Root manifest for the Vapor ecosystem itself.
-# Keep this file as intent: resolved Rust artifact hashes, exact URLs, and
-# install receipts belong in generated lock/state files.
+schema = 1
 
-[project]
-kind = "core"
-id = "ghf-studios.vapor"
+[workspace]
+id = "ghf-studios/vapor"
+version = "0.5.0"
+repository = "https://github.com/GHF-Studios/Vapor"
 
 [toolchain]
 channel = "nightly"
