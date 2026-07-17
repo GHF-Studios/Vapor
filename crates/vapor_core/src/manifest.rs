@@ -16,7 +16,9 @@ pub const CANONICAL_VAPOR_MANIFEST_TEXT: &str = include_str!("../../../Vapor.tom
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VaporManifest {
-    pub project: ProjectIdentity,
+    pub schema: Option<u32>,
+    pub project: Option<ProjectIdentity>,
+    pub workspace: Option<WorkspaceIdentity>,
     pub toolchain: ToolchainIntent,
 }
 
@@ -26,6 +28,16 @@ pub struct VaporManifest {
 pub struct ProjectIdentity {
     pub kind: ProjectKind,
     pub id: String,
+}
+
+/// Identity for the canonical Vapor workspace manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct WorkspaceIdentity {
+    pub name: String,
+    pub organization: String,
+    pub version: Option<String>,
+    pub repository: Option<String>,
 }
 
 /// Manifest kind. More kinds can be added as real authoring surfaces appear.
@@ -44,6 +56,7 @@ pub enum ProjectKind {
 #[serde(deny_unknown_fields)]
 pub struct ToolchainIntent {
     pub channel: String,
+    pub version: Option<String>,
     pub date: String,
 }
 
@@ -89,5 +102,20 @@ impl fmt::Display for ManifestError {
 impl Error for ManifestError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(&self.source)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_manifest;
+
+    #[test]
+    fn canonical_manifest_uses_workspace_identity_and_stable_toolchain() {
+        let manifest = canonical_manifest().unwrap();
+
+        assert_eq!(manifest.workspace.unwrap().name, "vapor");
+        assert_eq!(manifest.toolchain.channel, "stable");
+        assert_eq!(manifest.toolchain.version.as_deref(), Some("1.97.0"));
+        assert_eq!(manifest.toolchain.date, "2026-07-09");
     }
 }

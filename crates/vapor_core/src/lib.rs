@@ -12,7 +12,7 @@ pub use composition::ChildContentRef;
 pub use content::{ContentSource, ContentType, allowed_pack_children};
 pub use manifest::{
     CANONICAL_VAPOR_MANIFEST_TEXT, ManifestError, ProjectIdentity, ProjectKind, ToolchainIntent,
-    VaporManifest, canonical_manifest, canonical_toolchain, parse_manifest,
+    VaporManifest, WorkspaceIdentity, canonical_manifest, canonical_toolchain, parse_manifest,
 };
 pub use toolchain::{
     CanonicalToolchain, REQUIRED_TOOLCHAIN_COMPONENTS, SUPPORTED_HOST_TRIPLES,

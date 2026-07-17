@@ -52,6 +52,7 @@ impl ToolchainComponent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalToolchain {
     pub channel: String,
+    pub version: Option<String>,
     pub date: String,
 }
 
@@ -60,13 +61,16 @@ impl CanonicalToolchain {
     pub fn from_intent(intent: ToolchainIntent) -> Self {
         Self {
             channel: intent.channel,
+            version: intent.version,
             date: intent.date,
         }
     }
 
     /// Stable toolchain identifier used for install paths and lock metadata.
     pub fn identifier(&self) -> String {
-        format!("{}-{}", self.channel, self.date)
+        self.version
+            .clone()
+            .unwrap_or_else(|| format!("{}-{}", self.channel, self.date))
     }
 
     /// Whether this host is currently part of the Vapor bootstrap surface.
@@ -110,3 +114,32 @@ const CURRENT_HOST_TRIPLE: &str = "x86_64-pc-windows-msvc";
     all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
 )))]
 const CURRENT_HOST_TRIPLE: &str = "unknown";
+
+#[cfg(test)]
+mod tests {
+    use crate::ToolchainIntent;
+
+    use super::CanonicalToolchain;
+
+    #[test]
+    fn stable_release_identifier_uses_release_version() {
+        let toolchain = CanonicalToolchain::from_intent(ToolchainIntent {
+            channel: "stable".to_owned(),
+            version: Some("1.97.0".to_owned()),
+            date: "2026-07-09".to_owned(),
+        });
+
+        assert_eq!(toolchain.identifier(), "1.97.0");
+    }
+
+    #[test]
+    fn dated_channel_identifier_stays_available() {
+        let toolchain = CanonicalToolchain::from_intent(ToolchainIntent {
+            channel: "nightly".to_owned(),
+            version: None,
+            date: "2026-01-30".to_owned(),
+        });
+
+        assert_eq!(toolchain.identifier(), "nightly-2026-01-30");
+    }
+}
