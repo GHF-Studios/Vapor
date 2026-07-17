@@ -7,11 +7,12 @@
 use crate::ToolchainIntent;
 
 /// Host triples Vapor intends to bootstrap first.
-pub const SUPPORTED_HOST_TRIPLES: &[&str] = &["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"];
+pub const SUPPORTED_HOST_TRIPLES: &[&str] =
+    &["x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnullvm"];
 
 /// Target standard libraries Vapor expects the toolchain to carry first.
 pub const SUPPORTED_TARGET_TRIPLES: &[&str] =
-    &["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"];
+    &["x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnullvm"];
 
 /// Required toolchain components for the first Vapor-managed Rust install.
 pub const REQUIRED_TOOLCHAIN_COMPONENTS: &[ToolchainComponent] = &[
@@ -106,12 +107,12 @@ pub fn current_host_triple() -> &'static str {
 #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
 const CURRENT_HOST_TRIPLE: &str = "x86_64-unknown-linux-gnu";
 
-#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
-const CURRENT_HOST_TRIPLE: &str = "x86_64-pc-windows-msvc";
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "gnu"))]
+const CURRENT_HOST_TRIPLE: &str = "x86_64-pc-windows-gnullvm";
 
 #[cfg(not(any(
     all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"),
-    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+    all(target_arch = "x86_64", target_os = "windows", target_env = "gnu")
 )))]
 const CURRENT_HOST_TRIPLE: &str = "unknown";
 
