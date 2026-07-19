@@ -1,33 +1,24 @@
 //! Vapor manifest parsing for small, human-authored intent files.
 //!
-//! `Vapor.toml` names what a repository/project is and records decisions a human
-//! must explicitly make. It is not the place for resolved download URLs, hashes,
-//! install receipts, or other generated state.
+//! Role-specific `*.vapor.toml` files name what a repository or artifact is and
+//! record decisions a human must explicitly make. They are not the place for
+//! resolved download URLs, hashes, install receipts, or other generated state.
 
 use crate::toolchain::CanonicalToolchain;
 use serde::Deserialize;
 use std::error::Error;
 use std::fmt;
 
-/// The canonical root manifest embedded into `vapor_core`.
-pub const CANONICAL_VAPOR_MANIFEST_TEXT: &str = include_str!("../../../Vapor.toml");
+/// The canonical workspace manifest embedded into `vapor_core`.
+pub const CANONICAL_WORKSPACE_MANIFEST_TEXT: &str = include_str!("../../../Workspace.vapor.toml");
 
-/// Parsed `Vapor.toml` data.
+/// Parsed workspace manifest data.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VaporManifest {
     pub schema: Option<u32>,
-    pub project: Option<ProjectIdentity>,
     pub workspace: Option<WorkspaceIdentity>,
     pub toolchain: ToolchainIntent,
-}
-
-/// Identity for the thing described by a `Vapor.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectIdentity {
-    pub kind: ProjectKind,
-    pub id: String,
 }
 
 /// Identity for the canonical Vapor workspace manifest.
@@ -40,17 +31,6 @@ pub struct WorkspaceIdentity {
     pub repository: Option<String>,
 }
 
-/// Manifest kind. More kinds can be added as real authoring surfaces appear.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProjectKind {
-    Core,
-    Sdk,
-    Launcher,
-    CustomContent,
-    Shell,
-}
-
 /// Human-selected Rust toolchain intent.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,14 +40,14 @@ pub struct ToolchainIntent {
     pub date: String,
 }
 
-/// Parse a `Vapor.toml` string.
+/// Parse a role-specific Vapor manifest string.
 pub fn parse_manifest(source: &str) -> Result<VaporManifest, ManifestError> {
     Ok(toml::from_str(source)?)
 }
 
-/// Parse the embedded canonical Vapor root manifest.
+/// Parse the embedded canonical Vapor workspace manifest.
 pub fn canonical_manifest() -> Result<VaporManifest, ManifestError> {
-    parse_manifest(CANONICAL_VAPOR_MANIFEST_TEXT)
+    parse_manifest(CANONICAL_WORKSPACE_MANIFEST_TEXT)
 }
 
 /// Return the canonical ecosystem toolchain inferred from the root manifest.
@@ -77,7 +57,7 @@ pub fn canonical_toolchain() -> Result<CanonicalToolchain, ManifestError> {
     ))
 }
 
-/// Error returned when `Vapor.toml` cannot be parsed.
+/// Error returned when a Vapor manifest cannot be parsed.
 #[derive(Debug)]
 pub struct ManifestError {
     source: toml::de::Error,
@@ -93,7 +73,7 @@ impl fmt::Display for ManifestError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "failed to parse embedded Vapor.toml: {}",
+            "failed to parse embedded Workspace.vapor.toml: {}",
             self.source
         )
     }

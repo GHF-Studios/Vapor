@@ -49,7 +49,7 @@ impl ToolchainComponent {
     }
 }
 
-/// Canonical ecosystem toolchain inferred from the root `Vapor.toml`.
+/// Canonical ecosystem toolchain inferred from `Workspace.vapor.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalToolchain {
     pub channel: String,

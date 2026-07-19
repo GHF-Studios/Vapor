@@ -76,9 +76,9 @@ impl ContentType {
             Self::Modpack => "modpack",
             Self::Engine => "engine",
             Self::Game => "game",
-            Self::EngineMod => "engine_mod",
-            Self::GameMod => "game_mod",
-            Self::ExtensionMod => "extension_mod",
+            Self::EngineMod => "engine-mod",
+            Self::GameMod => "game-mod",
+            Self::ExtensionMod => "extension-mod",
         }
     }
 
@@ -108,9 +108,9 @@ impl FromStr for ContentType {
             "modpack" => Ok(Self::Modpack),
             "engine" => Ok(Self::Engine),
             "game" => Ok(Self::Game),
-            "engine_mod" => Ok(Self::EngineMod),
-            "game_mod" => Ok(Self::GameMod),
-            "extension_mod" => Ok(Self::ExtensionMod),
+            "engine-mod" => Ok(Self::EngineMod),
+            "game-mod" => Ok(Self::GameMod),
+            "extension-mod" => Ok(Self::ExtensionMod),
             _ => Err(ParseContentValueError::new("content type", value)),
         }
     }
