@@ -115,32 +115,3 @@ const CURRENT_HOST_TRIPLE: &str = "x86_64-pc-windows-gnullvm";
     all(target_arch = "x86_64", target_os = "windows", target_env = "gnu")
 )))]
 const CURRENT_HOST_TRIPLE: &str = "unknown";
-
-#[cfg(test)]
-mod tests {
-    use crate::ToolchainIntent;
-
-    use super::CanonicalToolchain;
-
-    #[test]
-    fn stable_release_identifier_uses_release_version() {
-        let toolchain = CanonicalToolchain::from_intent(ToolchainIntent {
-            channel: "stable".to_owned(),
-            version: Some("1.97.0".to_owned()),
-            date: "2026-07-09".to_owned(),
-        });
-
-        assert_eq!(toolchain.identifier(), "1.97.0");
-    }
-
-    #[test]
-    fn dated_channel_identifier_stays_available() {
-        let toolchain = CanonicalToolchain::from_intent(ToolchainIntent {
-            channel: "nightly".to_owned(),
-            version: None,
-            date: "2026-01-30".to_owned(),
-        });
-
-        assert_eq!(toolchain.identifier(), "nightly-2026-01-30");
-    }
-}

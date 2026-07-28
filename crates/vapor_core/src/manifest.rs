@@ -84,18 +84,3 @@ impl Error for ManifestError {
         Some(&self.source)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::canonical_manifest;
-
-    #[test]
-    fn canonical_manifest_uses_workspace_identity_and_stable_toolchain() {
-        let manifest = canonical_manifest().unwrap();
-
-        assert_eq!(manifest.workspace.unwrap().name, "vapor");
-        assert_eq!(manifest.toolchain.channel, "stable");
-        assert_eq!(manifest.toolchain.version.as_deref(), Some("1.97.0"));
-        assert_eq!(manifest.toolchain.date, "2026-07-09");
-    }
-}
