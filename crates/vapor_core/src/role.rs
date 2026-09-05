@@ -1,8 +1,9 @@
 //! Vapor installed-role model.
 //!
-//! Vapor roles model progressively installed local capability.
+//! A Vapor Role describes the kinds of work for which the local Vapor
+//! Installation is equipped.
 //!
-//! They are deliberately distinct from external authorization and from USF
+//! Role is deliberately distinct from external authorization and from USF
 //! Capabilities.
 
 use crate::{ManagedToolchain, ToolchainError, VaporInstallation};
@@ -24,7 +25,6 @@ pub enum VaporRole {
     Composer,
     ContentDeveloper,
     EcosystemDeveloper,
-    RootAuthority,
 }
 
 impl VaporRole {
@@ -34,7 +34,6 @@ impl VaporRole {
             Self::Composer => "composer",
             Self::ContentDeveloper => "content-developer",
             Self::EcosystemDeveloper => "ecosystem-developer",
-            Self::RootAuthority => "root-authority",
         }
     }
 
@@ -44,7 +43,6 @@ impl VaporRole {
             Self::Composer => "Composer",
             Self::ContentDeveloper => "Content Developer",
             Self::EcosystemDeveloper => "Ecosystem Developer",
-            Self::RootAuthority => "Root Authority",
         }
     }
 }
@@ -64,7 +62,6 @@ impl FromStr for VaporRole {
             "composer" => Ok(Self::Composer),
             "content-developer" => Ok(Self::ContentDeveloper),
             "ecosystem-developer" => Ok(Self::EcosystemDeveloper),
-            "root-authority" => Ok(Self::RootAuthority),
 
             _ => Err(ParseVaporRoleError {
                 value: value.to_owned(),
@@ -123,14 +120,15 @@ pub fn installed_role(installation: &VaporInstallation) -> Result<VaporRole, Rol
 
 /// Promote the active Vapor Installation.
 ///
-/// The current rewrite bootstrap can locally establish roles through Content
-/// Developer. Ecosystem Developer and Root Authority additionally require
-/// external official authorization and therefore cannot yet be established by
-/// this local operation.
+/// Every ordinary Vapor Role through Ecosystem Developer is locally attainable.
 ///
-/// Content Developer promotion currently obtains its pinned toolchain from the
-/// enclosing Vapor source Workspace. Once the real Steam installation manifest
-/// becomes authoritative, the pin will instead come from that Installation.
+/// External authorization is evaluated separately when a particular operation
+/// targets a protected official resource.
+///
+/// Content Developer-or-higher promotion currently obtains its pinned Rust
+/// toolchain from the enclosing Vapor source Workspace. Once the real Steam
+/// Installation manifest becomes authoritative, the pin will instead come
+/// from that Installation.
 pub fn promote_role(
     installation: &VaporInstallation,
     target: VaporRole,
@@ -142,10 +140,6 @@ pub fn promote_role(
             current,
             requested: target,
         });
-    }
-
-    if target > VaporRole::ContentDeveloper {
-        return Err(RoleError::PrivilegedPromotion { requested: target });
     }
 
     if target >= VaporRole::Composer && !git_available() {
@@ -172,10 +166,10 @@ pub fn promote_role(
     })
 }
 
-/// Lower the locally installed Vapor role.
+/// Lower the locally installed Vapor Role.
 ///
-/// This operation is intentionally non-destructive. It changes installed role
-/// state but does not yet remove toolchains, caches, or authored source.
+/// This operation is intentionally non-destructive. It changes installed Role
+/// state but does not remove toolchains, caches, or authored source.
 ///
 /// Explicit capability cleanup belongs to a later Installer operation.
 pub fn demote_role(
@@ -255,7 +249,7 @@ impl fmt::Display for ParseVaporRoleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "unknown Vapor role `{}`; expected player, composer, content-developer, ecosystem-developer, or root-authority",
+            "unknown Vapor role `{}`; expected player, composer, content-developer, or ecosystem-developer",
             self.value
         )
     }
@@ -292,10 +286,6 @@ pub enum RoleError {
 
     InvalidDemotion {
         current: VaporRole,
-        requested: VaporRole,
-    },
-
-    PrivilegedPromotion {
         requested: VaporRole,
     },
 
@@ -348,13 +338,6 @@ impl fmt::Display for RoleError {
                 write!(
                     formatter,
                     "cannot demote from {current} to {requested}; demotion must move to a lower role"
-                )
-            }
-
-            Self::PrivilegedPromotion { requested } => {
-                write!(
-                    formatter,
-                    "{requested} requires official external authorization and cannot yet be established by local Installer promotion"
                 )
             }
 

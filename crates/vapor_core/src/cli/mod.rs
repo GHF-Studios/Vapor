@@ -1,19 +1,21 @@
 //! Command-line projections over Vapor Core.
 //!
-//! Executables are intentionally thin. The umbrella Vapor CLI and dedicated
-//! application CLIs expose different subsets of the same underlying core
-//! operations.
+//! Executables are intentionally thin. The universal Vapor CLI and dedicated
+//! application CLIs expose subsets of the same underlying core operations.
+
+mod commands;
 
 use crate::{
-    ContentVersionId, DevelopmentOperation, LocalCatalog, ManagedToolchain, ResolvedComposition,
-    VaporId, VaporInstallation, VaporRole, VaporWorkspace, build_cargo_realization, demote_role,
-    development_target_dir, discover_local_content, generate_local_cargo_realization,
-    git_available, promote_role, resolve_local_packagepack, role_status, run_cargo_realization,
-    run_workspace_operation,
+    ContentKind, ContentVersionId, DevelopmentOperation, LocalCatalog, LocalContent,
+    ManagedToolchain, ResolvedComposition, VaporId, VaporInstallation, VaporRole, VaporWorkspace,
+    build_cargo_realization, demote_role, development_target_dir, discover_local_content,
+    generate_local_cargo_realization, git_available, promote_role, resolve_local_packagepack,
+    role_status, run_cargo_realization, run_workspace_operation,
 };
+use clap::Parser;
+use commands::*;
 use std::env;
-use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,138 +25,226 @@ pub enum CliSurface {
 }
 
 pub fn run_cli(surface: CliSurface) -> ExitCode {
-    match run(surface) {
-        Ok(()) => ExitCode::SUCCESS,
+    match surface {
+        CliSurface::Vapor => {
+            finish_parse(VaporCli::try_parse().map(|cli| execute_vapor(cli.command)))
+        }
 
-        Err(error) => {
+        CliSurface::Installer => {
+            finish_parse(InstallerCli::try_parse().map(|cli| execute_installer(cli.command)))
+        }
+    }
+}
+
+fn finish_parse(result: Result<Result<(), String>, clap::Error>) -> ExitCode {
+    match result {
+        Ok(Ok(())) => ExitCode::SUCCESS,
+
+        Ok(Err(error)) => {
             eprintln!("error: {error}");
             ExitCode::FAILURE
         }
+
+        Err(error) => {
+            let exit_code = error.exit_code();
+            let _ = error.print();
+
+            ExitCode::from(exit_code as u8)
+        }
     }
 }
 
-fn run(surface: CliSurface) -> Result<(), String> {
-    let mut arguments = env::args_os();
+fn execute_vapor(command: VaporCommand) -> Result<(), String> {
+    match command {
+        VaporCommand::Installation { command } => execute_installation(command),
 
-    let _executable = arguments.next();
+        VaporCommand::Role { command } => execute_role(command),
 
-    match surface {
-        CliSurface::Vapor => run_vapor(&mut arguments),
-        CliSurface::Installer => run_installer(&mut arguments),
+        VaporCommand::Authority { command } => execute_authority(command),
+
+        VaporCommand::Toolchain { command } => execute_toolchain(command),
+
+        VaporCommand::Source { command } => execute_source(command),
+
+        VaporCommand::Ecosystem { command } => execute_ecosystem(command),
+
+        VaporCommand::Packagepack { command } => execute_packagepack(command),
+
+        VaporCommand::Enginepack { command } => execute_pack(ContentKind::Enginepack, command),
+
+        VaporCommand::Gamepack { command } => execute_pack(ContentKind::Gamepack, command),
+
+        VaporCommand::Modpack { command } => execute_pack(ContentKind::Modpack, command),
+
+        VaporCommand::Engine { command } => execute_behavioral(ContentKind::Engine, command),
+
+        VaporCommand::Game { command } => execute_behavioral(ContentKind::Game, command),
+
+        VaporCommand::EngineMod { command } => execute_behavioral(ContentKind::EngineMod, command),
+
+        VaporCommand::GameMod { command } => execute_behavioral(ContentKind::GameMod, command),
+
+        VaporCommand::ExtensionMod { command } => {
+            execute_behavioral(ContentKind::ExtensionMod, command)
+        }
     }
 }
 
-fn run_vapor(arguments: &mut impl Iterator<Item = OsString>) -> Result<(), String> {
-    let Some(command) = arguments.next() else {
-        return Err(vapor_usage());
-    };
+fn execute_installer(command: InstallerCommand) -> Result<(), String> {
+    match command {
+        InstallerCommand::Installation { command } => execute_installation(command),
 
-    match command.to_str() {
-        Some("installer") => run_installer(arguments),
+        InstallerCommand::Role { command } => execute_role(command),
 
-        Some("toolchain") => run_toolchain(arguments),
+        InstallerCommand::Authority { command } => execute_authority(command),
 
-        Some("workspace") => run_workspace(arguments),
-
-        Some("discover") => {
-            let root = required_argument(arguments, "source root", &vapor_usage)?;
-
-            reject_extra_arguments(arguments, &vapor_usage)?;
-
-            discover(Path::new(&root))
-        }
-
-        Some("resolve") => {
-            let root = required_argument(arguments, "source root", &vapor_usage)?;
-
-            let packagepack_id =
-                required_vapor_id(arguments, "Packagepack Vapor ID", &vapor_usage)?;
-
-            reject_extra_arguments(arguments, &vapor_usage)?;
-
-            resolve(Path::new(&root), &packagepack_id)
-        }
-
-        Some("build") => {
-            let root = required_argument(arguments, "source root", &vapor_usage)?;
-
-            let packagepack_id =
-                required_vapor_id(arguments, "Packagepack Vapor ID", &vapor_usage)?;
-
-            reject_extra_arguments(arguments, &vapor_usage)?;
-
-            build(Path::new(&root), &packagepack_id)
-        }
-
-        Some("run") => {
-            let root = required_argument(arguments, "source root", &vapor_usage)?;
-
-            let packagepack_id =
-                required_vapor_id(arguments, "Packagepack Vapor ID", &vapor_usage)?;
-
-            reject_extra_arguments(arguments, &vapor_usage)?;
-
-            run_packagepack(Path::new(&root), &packagepack_id)
-        }
-
-        Some(command) => Err(format!(
-            "unknown Vapor command `{command}`\n\n{}",
-            vapor_usage()
-        )),
-
-        None => Err("Vapor command is not valid UTF-8".to_owned()),
+        InstallerCommand::Toolchain { command } => execute_toolchain(command),
     }
 }
 
-fn run_installer(arguments: &mut impl Iterator<Item = OsString>) -> Result<(), String> {
-    let Some(command) = arguments.next() else {
-        return Err(installer_usage());
-    };
+fn execute_installation(command: InstallationCommand) -> Result<(), String> {
+    match command {
+        InstallationCommand::Status => installation_status(),
 
-    match command.to_str() {
-        Some("role") => run_installer_role(arguments),
+        InstallationCommand::Diagnose => not_implemented("installation", "diagnose"),
 
-        Some(command) => Err(format!(
-            "unknown Installer command `{command}`\n\n{}",
-            installer_usage()
-        )),
-
-        None => Err("Installer command is not valid UTF-8".to_owned()),
+        InstallationCommand::Repair => not_implemented("installation", "repair"),
     }
 }
 
-fn run_installer_role(arguments: &mut impl Iterator<Item = OsString>) -> Result<(), String> {
-    let action = required_argument(arguments, "role action", &installer_usage)?;
+fn execute_role(command: RoleCommand) -> Result<(), String> {
+    match command {
+        RoleCommand::Status => installer_role_status(),
 
-    match action.to_str() {
-        Some("status") => {
-            reject_extra_arguments(arguments, &installer_usage)?;
-            installer_role_status()
-        }
+        RoleCommand::Promote { role } => installer_role_promote(role),
 
-        Some("promote") => {
-            let role = required_role(arguments, "target role", &installer_usage)?;
-
-            reject_extra_arguments(arguments, &installer_usage)?;
-
-            installer_role_promote(role)
-        }
-
-        Some("demote") => {
-            let role = required_role(arguments, "target role", &installer_usage)?;
-
-            reject_extra_arguments(arguments, &installer_usage)?;
-
-            installer_role_demote(role)
-        }
-
-        Some(action) => Err(format!(
-            "unknown Installer role action `{action}`\n\n{}",
-            installer_usage()
-        )),
-
-        None => Err("Installer role action is not valid UTF-8".to_owned()),
+        RoleCommand::Demote { role } => installer_role_demote(role),
     }
+}
+
+fn execute_authority(command: AuthorityCommand) -> Result<(), String> {
+    match command {
+        AuthorityCommand::Status => authority_status(),
+    }
+}
+
+fn execute_toolchain(command: ToolchainCommand) -> Result<(), String> {
+    match command {
+        ToolchainCommand::Status => toolchain_status(),
+        ToolchainCommand::Install => toolchain_install(),
+
+        ToolchainCommand::Diagnose => not_implemented("toolchain", "diagnose"),
+
+        ToolchainCommand::Repair => not_implemented("toolchain", "repair"),
+    }
+}
+
+fn execute_source(command: SourceCommand) -> Result<(), String> {
+    match command {
+        SourceCommand::Status => not_implemented("source", "status"),
+
+        SourceCommand::List => not_implemented("source", "list"),
+
+        SourceCommand::Acquire { .. } => not_implemented("source", "acquire"),
+
+        SourceCommand::Fork { .. } => not_implemented("source", "fork"),
+    }
+}
+
+fn execute_ecosystem(command: EcosystemCommand) -> Result<(), String> {
+    match command {
+        EcosystemCommand::Status => ecosystem_status(),
+
+        EcosystemCommand::Build => run_ecosystem_operation(DevelopmentOperation::Build),
+
+        EcosystemCommand::Test => run_ecosystem_operation(DevelopmentOperation::Test),
+
+        EcosystemCommand::Acquire { .. } => not_implemented("ecosystem", "acquire"),
+
+        EcosystemCommand::Fork { .. } => not_implemented("ecosystem", "fork"),
+
+        EcosystemCommand::Create { .. } => not_implemented("ecosystem", "create"),
+
+        EcosystemCommand::Publish => not_implemented("ecosystem", "publish"),
+
+        EcosystemCommand::Deploy => not_implemented("ecosystem", "deploy"),
+    }
+}
+
+fn execute_packagepack(command: PackagepackCommand) -> Result<(), String> {
+    match command {
+        PackagepackCommand::Create(_) => not_implemented("packagepack", "create"),
+
+        PackagepackCommand::List(args) => content_list(ContentKind::Packagepack, args),
+
+        PackagepackCommand::Inspect(args) => content_inspect(ContentKind::Packagepack, args),
+
+        PackagepackCommand::Resolve(args) => packagepack_resolve(args),
+
+        PackagepackCommand::Build(args) => packagepack_build(args),
+
+        PackagepackCommand::Run(args) => packagepack_run(args),
+
+        PackagepackCommand::Verify(_) => not_implemented("packagepack", "verify"),
+
+        PackagepackCommand::Test(_) => not_implemented("packagepack", "test"),
+
+        PackagepackCommand::Install(_) => not_implemented("packagepack", "install"),
+
+        PackagepackCommand::Select(_) => not_implemented("packagepack", "select"),
+
+        PackagepackCommand::Remove(_) => not_implemented("packagepack", "remove"),
+
+        PackagepackCommand::Publish(_) => not_implemented("packagepack", "publish"),
+    }
+}
+
+fn execute_pack(kind: ContentKind, command: PackCommand) -> Result<(), String> {
+    match command {
+        PackCommand::Create(_) => not_implemented(kind.as_str(), "create"),
+
+        PackCommand::List(args) => content_list(kind, args),
+
+        PackCommand::Inspect(args) => content_inspect(kind, args),
+
+        PackCommand::Resolve(_) => not_implemented(kind.as_str(), "resolve"),
+
+        PackCommand::Verify(_) => not_implemented(kind.as_str(), "verify"),
+
+        PackCommand::Test(_) => not_implemented(kind.as_str(), "test"),
+
+        PackCommand::Publish(_) => not_implemented(kind.as_str(), "publish"),
+    }
+}
+
+fn execute_behavioral(kind: ContentKind, command: BehavioralContentCommand) -> Result<(), String> {
+    match command {
+        BehavioralContentCommand::Create(_) => not_implemented(kind.as_str(), "create"),
+
+        BehavioralContentCommand::List(args) => content_list(kind, args),
+
+        BehavioralContentCommand::Inspect(args) => content_inspect(kind, args),
+
+        BehavioralContentCommand::Verify(_) => not_implemented(kind.as_str(), "verify"),
+
+        BehavioralContentCommand::Test(_) => not_implemented(kind.as_str(), "test"),
+
+        BehavioralContentCommand::Publish(_) => not_implemented(kind.as_str(), "publish"),
+    }
+}
+
+fn installation_status() -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+
+    let role = role_status(&installation).map_err(|error| error.to_string())?;
+
+    println!("Vapor Installation:");
+    println!("  root: {}", installation.root.display());
+    println!("  source: {}", installation.root_source);
+    println!("  role: {}", role.installed_role);
+    println!("  role state: {}", role.state_path.display());
+
+    Ok(())
 }
 
 fn installer_role_status() -> Result<(), String> {
@@ -162,10 +252,9 @@ fn installer_role_status() -> Result<(), String> {
 
     let status = role_status(&installation).map_err(|error| error.to_string())?;
 
-    println!("Vapor Installer role:");
+    println!("Vapor Role:");
     println!("  installed: {}", status.installed_role);
     println!("  installation: {}", installation.root.display());
-    println!("  installation source: {}", installation.root_source);
     println!("  state: {}", status.state_path.display());
 
     println!();
@@ -198,18 +287,6 @@ fn installer_role_status() -> Result<(), String> {
                 );
 
                 println!("    Rust: {}", toolchain.pin.version);
-
-                println!(
-                    "    toolchain root: {}",
-                    toolchain
-                        .cargo_path
-                        .parent()
-                        .and_then(Path::parent)
-                        .map_or_else(
-                            || toolchain.vapor_home.display().to_string(),
-                            |path| path.display().to_string(),
-                        )
-                );
             }
 
             Err(error) => {
@@ -221,15 +298,9 @@ fn installer_role_status() -> Result<(), String> {
     }
 
     if status.installed_role >= VaporRole::EcosystemDeveloper {
-        println!("  Ecosystem Developer: installed");
+        println!("  Ecosystem Developer: ready");
     } else {
         println!("  Ecosystem Developer: not installed");
-    }
-
-    if status.installed_role >= VaporRole::RootAuthority {
-        println!("  Root Authority: installed");
-    } else {
-        println!("  Root Authority: not installed");
     }
 
     Ok(())
@@ -242,7 +313,7 @@ fn installer_role_promote(target: VaporRole) -> Result<(), String> {
         .map_err(|error| error.to_string())?
         .installed_role;
 
-    println!("Promoting Vapor role:");
+    println!("Promoting Vapor Role:");
     println!("  {current} -> {target}");
 
     let report = promote_role(&installation, target).map_err(|error| error.to_string())?;
@@ -251,7 +322,7 @@ fn installer_role_promote(target: VaporRole) -> Result<(), String> {
         println!("Installed the Vapor-managed Content Developer toolchain.");
     }
 
-    println!("Installed role: {}", report.installed_role);
+    println!("Installed Role: {}", report.installed_role);
 
     Ok(())
 }
@@ -263,53 +334,23 @@ fn installer_role_demote(target: VaporRole) -> Result<(), String> {
         .map_err(|error| error.to_string())?
         .installed_role;
 
-    println!("Demoting Vapor role:");
+    println!("Demoting Vapor Role:");
     println!("  {current} -> {target}");
 
     let report = demote_role(&installation, target).map_err(|error| error.to_string())?;
 
-    println!("Installed role: {}", report.installed_role);
-
+    println!("Installed Role: {}", report.installed_role);
     println!("Existing tooling and authored source were preserved.");
 
     Ok(())
 }
 
-fn run_toolchain(arguments: &mut impl Iterator<Item = OsString>) -> Result<(), String> {
-    let action = required_argument(arguments, "toolchain action", &vapor_usage)?;
+fn authority_status() -> Result<(), String> {
+    println!("Vapor Authority:");
+    println!("  integration: not implemented");
+    println!("  installed Role does not grant protected external authority");
 
-    reject_extra_arguments(arguments, &vapor_usage)?;
-
-    match action.to_str() {
-        Some("status") => toolchain_status(),
-        Some("install") => toolchain_install(),
-
-        Some(action) => Err(format!(
-            "unknown toolchain action `{action}`\n\n{}",
-            vapor_usage()
-        )),
-
-        None => Err("toolchain action is not valid UTF-8".to_owned()),
-    }
-}
-
-fn run_workspace(arguments: &mut impl Iterator<Item = OsString>) -> Result<(), String> {
-    let action = required_argument(arguments, "workspace action", &vapor_usage)?;
-
-    reject_extra_arguments(arguments, &vapor_usage)?;
-
-    match action.to_str() {
-        Some("status") => workspace_status(),
-        Some("build") => workspace_build(),
-        Some("test") => workspace_test(),
-
-        Some(action) => Err(format!(
-            "unknown workspace action `{action}`\n\n{}",
-            vapor_usage()
-        )),
-
-        None => Err("workspace action is not valid UTF-8".to_owned()),
-    }
+    Ok(())
 }
 
 fn toolchain_status() -> Result<(), String> {
@@ -356,13 +397,13 @@ fn toolchain_install() -> Result<(), String> {
     Ok(())
 }
 
-fn workspace_status() -> Result<(), String> {
+fn ecosystem_status() -> Result<(), String> {
     let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
 
     let toolchain =
         ManagedToolchain::for_workspace(&workspace).map_err(|error| error.to_string())?;
 
-    println!("Vapor Workspace:");
+    println!("Vapor ecosystem source:");
     println!(
         "  identity: {}/{} {}",
         workspace.manifest.workspace.organization,
@@ -398,15 +439,7 @@ fn workspace_status() -> Result<(), String> {
     Ok(())
 }
 
-fn workspace_build() -> Result<(), String> {
-    run_development_operation(DevelopmentOperation::Build)
-}
-
-fn workspace_test() -> Result<(), String> {
-    run_development_operation(DevelopmentOperation::Test)
-}
-
-fn run_development_operation(operation: DevelopmentOperation) -> Result<(), String> {
+fn run_ecosystem_operation(operation: DevelopmentOperation) -> Result<(), String> {
     let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
 
     let verb = match operation {
@@ -415,7 +448,7 @@ fn run_development_operation(operation: DevelopmentOperation) -> Result<(), Stri
     };
 
     println!(
-        "{verb} Vapor Workspace {}/{} {}...",
+        "{verb} Vapor ecosystem source {}/{} {}...",
         workspace.manifest.workspace.organization,
         workspace.manifest.workspace.name,
         workspace.manifest.workspace.version
@@ -429,42 +462,69 @@ fn run_development_operation(operation: DevelopmentOperation) -> Result<(), Stri
     };
 
     println!(
-        "{completed} Vapor Workspace {}/{}",
+        "{completed} Vapor ecosystem source {}/{}",
         workspace.manifest.workspace.organization, workspace.manifest.workspace.name
     );
 
     Ok(())
 }
 
-fn discover(root: &Path) -> Result<(), String> {
-    let catalog = discover_local_content(root).map_err(|error| error.to_string())?;
+fn content_list(kind: ContentKind, args: ContentListArgs) -> Result<(), String> {
+    let root = source_root(args.root)?;
 
-    println!("Discovered {} Vapor Content artifact(s):", catalog.len());
+    let catalog = discover_local_content(&root).map_err(|error| error.to_string())?;
 
-    for content in catalog.iter() {
-        println!(
-            "{}  {}  {}",
-            content.version_id(),
-            content.manifest.content.kind,
-            content.root.display()
-        );
+    let matches: Vec<_> = catalog
+        .iter()
+        .filter(|content| content.manifest.content.kind == kind)
+        .collect();
+
+    println!("{} {} artifact(s):", matches.len(), kind);
+
+    for content in matches {
+        println!("{}  {}", content.version_id(), content.root.display());
     }
 
     Ok(())
 }
 
-fn resolve(root: &Path, packagepack_id: &VaporId) -> Result<(), String> {
-    let (_, composition) = prepare_composition(root, packagepack_id)?;
+fn content_inspect(kind: ContentKind, args: LocalContentTargetArgs) -> Result<(), String> {
+    let root = source_root(args.root)?;
+
+    let catalog = discover_local_content(&root).map_err(|error| error.to_string())?;
+
+    let content = select_content(&catalog, kind, args.id.as_ref())?;
+
+    println!("{}:", content.version_id());
+    println!("  kind: {}", content.manifest.content.kind);
+    println!("  root: {}", content.root.display());
+    println!("  manifest: {}", content.manifest_path.display());
+
+    println!("  dependencies:");
+
+    if content.manifest.dependencies.is_empty() {
+        println!("    none");
+    } else {
+        for (binding, dependency) in &content.manifest.dependencies {
+            println!("    {binding}: {} {}", dependency.id, dependency.version);
+        }
+    }
+
+    Ok(())
+}
+
+fn packagepack_resolve(args: LocalContentTargetArgs) -> Result<(), String> {
+    let (_, _, composition) = prepare_packagepack(args)?;
 
     print_composition(&composition);
 
     Ok(())
 }
 
-fn build(root: &Path, packagepack_id: &VaporId) -> Result<(), String> {
-    let (catalog, composition) = prepare_composition(root, packagepack_id)?;
+fn packagepack_build(args: LocalContentTargetArgs) -> Result<(), String> {
+    let (root, catalog, composition) = prepare_packagepack(args)?;
 
-    let realization = generate_local_cargo_realization(root, &catalog, &composition)
+    let realization = generate_local_cargo_realization(&root, &catalog, &composition)
         .map_err(|error| error.to_string())?;
 
     println!(
@@ -479,25 +539,88 @@ fn build(root: &Path, packagepack_id: &VaporId) -> Result<(), String> {
     Ok(())
 }
 
-fn run_packagepack(root: &Path, packagepack_id: &VaporId) -> Result<(), String> {
-    let (catalog, composition) = prepare_composition(root, packagepack_id)?;
+fn packagepack_run(args: LocalContentTargetArgs) -> Result<(), String> {
+    let (root, catalog, composition) = prepare_packagepack(args)?;
 
-    let realization = generate_local_cargo_realization(root, &catalog, &composition)
+    let realization = generate_local_cargo_realization(&root, &catalog, &composition)
         .map_err(|error| error.to_string())?;
 
     run_cargo_realization(&realization).map_err(|error| error.to_string())
 }
 
-fn prepare_composition(
-    root: &Path,
-    packagepack_id: &VaporId,
-) -> Result<(LocalCatalog, ResolvedComposition), String> {
-    let catalog = discover_local_content(root).map_err(|error| error.to_string())?;
+fn prepare_packagepack(
+    args: LocalContentTargetArgs,
+) -> Result<(PathBuf, LocalCatalog, ResolvedComposition), String> {
+    let root = source_root(args.root)?;
+
+    let catalog = discover_local_content(&root).map_err(|error| error.to_string())?;
+
+    let content = select_content(&catalog, ContentKind::Packagepack, args.id.as_ref())?;
+
+    let packagepack_id = content.manifest.content.id.clone();
 
     let composition =
-        resolve_local_packagepack(&catalog, packagepack_id).map_err(|error| error.to_string())?;
+        resolve_local_packagepack(&catalog, &packagepack_id).map_err(|error| error.to_string())?;
 
-    Ok((catalog, composition))
+    Ok((root, catalog, composition))
+}
+
+fn select_content<'a>(
+    catalog: &'a LocalCatalog,
+    kind: ContentKind,
+    id: Option<&'a VaporId>,
+) -> Result<&'a LocalContent, String> {
+    if let Some(id) = id {
+        let content = catalog
+            .latest(id)
+            .ok_or_else(|| format!("no local Vapor Content is available for `{id}`"))?;
+
+        if content.manifest.content.kind != kind {
+            return Err(format!(
+                "`{}` is {}, not {}",
+                content.version_id(),
+                content.manifest.content.kind,
+                kind
+            ));
+        }
+
+        return Ok(content);
+    }
+
+    let matching: Vec<_> = catalog
+        .iter()
+        .filter(|content| content.manifest.content.kind == kind)
+        .collect();
+
+    let Some(first) = matching.first() else {
+        return Err(format!(
+            "no local {kind} is available in this source context"
+        ));
+    };
+
+    let first_id = &first.manifest.content.id;
+
+    if matching
+        .iter()
+        .any(|content| &content.manifest.content.id != first_id)
+    {
+        return Err(format!(
+            "multiple local {kind} identities are available; specify a Vapor ID"
+        ));
+    }
+
+    catalog
+        .latest(first_id)
+        .ok_or_else(|| format!("failed to select local {kind}"))
+}
+
+fn source_root(root: Option<PathBuf>) -> Result<PathBuf, String> {
+    match root {
+        Some(root) => Ok(root),
+
+        None => env::current_dir()
+            .map_err(|error| format!("failed to determine current source context: {error}")),
+    }
 }
 
 fn print_composition(composition: &ResolvedComposition) {
@@ -534,91 +657,8 @@ fn print_dependencies(
     }
 }
 
-fn required_argument(
-    arguments: &mut impl Iterator<Item = OsString>,
-    name: &str,
-    usage: &dyn Fn() -> String,
-) -> Result<OsString, String> {
-    arguments
-        .next()
-        .ok_or_else(|| format!("missing {name}\n\n{}", usage()))
-}
-
-fn required_vapor_id(
-    arguments: &mut impl Iterator<Item = OsString>,
-    name: &str,
-    usage: &dyn Fn() -> String,
-) -> Result<VaporId, String> {
-    let value = required_argument(arguments, name, usage)?;
-
-    let value = value
-        .to_str()
-        .ok_or_else(|| format!("{name} is not valid UTF-8"))?;
-
-    value.parse::<VaporId>().map_err(|error| error.to_string())
-}
-
-fn required_role(
-    arguments: &mut impl Iterator<Item = OsString>,
-    name: &str,
-    usage: &dyn Fn() -> String,
-) -> Result<VaporRole, String> {
-    let value = required_argument(arguments, name, usage)?;
-
-    let value = value
-        .to_str()
-        .ok_or_else(|| format!("{name} is not valid UTF-8"))?;
-
-    value
-        .parse::<VaporRole>()
-        .map_err(|error| error.to_string())
-}
-
-fn reject_extra_arguments(
-    arguments: &mut impl Iterator<Item = OsString>,
-    usage: &dyn Fn() -> String,
-) -> Result<(), String> {
-    if arguments.next().is_some() {
-        return Err("too many arguments\n\n".to_owned() + &usage());
-    }
-
-    Ok(())
-}
-
-fn vapor_usage() -> String {
-    r#"usage:
-    vapor installer role status
-    vapor installer role promote <role>
-    vapor installer role demote <role>
-
-    vapor toolchain status
-    vapor toolchain install
-
-    vapor workspace status
-    vapor workspace build
-    vapor workspace test
-
-    vapor discover <source-root>
-    vapor resolve <source-root> <packagepack-id>
-    vapor build <source-root> <packagepack-id>
-    vapor run <source-root> <packagepack-id>"#
-        .to_owned()
-}
-
-fn installer_usage() -> String {
-    r#"usage:
-    vapor-installer role status
-    vapor-installer role promote <role>
-    vapor-installer role demote <role>
-
-roles:
-    player
-    composer
-    content-developer
-    ecosystem-developer
-    root-authority
-
-The same Installer operations are available through:
-    vapor installer ..."#
-        .to_owned()
+fn not_implemented(domain: &str, operation: &str) -> Result<(), String> {
+    Err(format!(
+        "`vapor {domain} {operation}` is part of the CLI model but is not implemented yet"
+    ))
 }
