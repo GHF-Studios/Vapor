@@ -1,10 +1,16 @@
 //! Vapor-managed Rust toolchain.
 //!
-//! The current bootstrap discovers the canonical toolchain from the enclosing
-//! Vapor workspace. Installation and execution use Vapor-owned Rustup/Cargo
-//! state rather than the user's ambient Rust toolchain.
+//! Installation and execution use Vapor-owned Rustup/Cargo state rather than
+//! the user's ambient Rust toolchain.
+//!
+//! The toolchain belongs operationally to a Vapor Installation. During the
+//! rewrite bootstrap that Installation is the source Workspace's `.vapor`
+//! directory. A shipped Vapor executable instead resolves its real installed
+//! application root.
 
-use serde::Deserialize;
+use crate::{
+    InstallationRootSource, ToolchainPin, VaporInstallation, VaporWorkspace, WorkspaceError,
+};
 use std::env;
 use std::fmt;
 use std::fs;
@@ -12,31 +18,15 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
-pub const WORKSPACE_MANIFEST_FILE_NAME: &str = "Workspace.vapor.toml";
-
-pub const VAPOR_HOME_ENV: &str = "VAPOR_HOME";
-
 const RUSTUP_HOME_DIR: &str = "rustup-home";
 const CARGO_HOME_DIR: &str = "cargo-home";
 const LOCAL_RUSTUP_DIR: &str = "rustup/bin";
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ToolchainPin {
-    pub channel: String,
-    pub version: String,
-    pub date: String,
-}
-
-impl ToolchainPin {
-    pub fn identifier(&self) -> &str {
-        &self.version
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct ManagedToolchain {
     pub workspace_root: PathBuf,
     pub vapor_home: PathBuf,
+    pub installation_source: InstallationRootSource,
     pub rustup_home: PathBuf,
     pub cargo_home: PathBuf,
     pub pin: ToolchainPin,
@@ -46,35 +36,34 @@ pub struct ManagedToolchain {
 }
 
 impl ManagedToolchain {
-    /// Discover the canonical Vapor workspace and its pinned Rust toolchain.
+    /// Discover the enclosing Vapor source Workspace and construct the managed
+    /// toolchain belonging to its active Vapor Installation.
     ///
-    /// This is intentionally a bootstrap rule. A shipped Vapor installation
-    /// will eventually obtain this state from its installation profile rather
-    /// than from the current working directory.
+    /// The source Workspace currently provides the canonical toolchain pin.
+    /// That is a rewrite-bootstrap seam: the real Steam installation will
+    /// eventually carry the pin in its own installation metadata.
     pub fn discover() -> Result<Self, ToolchainError> {
-        let start = env::current_dir().map_err(ToolchainError::CurrentDirectory)?;
+        let workspace = VaporWorkspace::discover().map_err(ToolchainError::Workspace)?;
 
-        let workspace_root =
-            find_workspace_root(&start).ok_or_else(|| ToolchainError::WorkspaceNotFound {
-                start: start.clone(),
-            })?;
+        Self::for_workspace(&workspace)
+    }
 
-        let manifest_path = workspace_root.join(WORKSPACE_MANIFEST_FILE_NAME);
+    pub fn for_workspace(workspace: &VaporWorkspace) -> Result<Self, ToolchainError> {
+        let installation = VaporInstallation::for_workspace(workspace);
 
-        let source = fs::read_to_string(&manifest_path).map_err(|source| ToolchainError::Io {
-            path: manifest_path.clone(),
-            source,
-        })?;
+        Self::for_installation(
+            &installation,
+            workspace.root.clone(),
+            workspace.manifest.toolchain.clone(),
+        )
+    }
 
-        let manifest: WorkspaceManifest =
-            toml::from_str(&source).map_err(|error| ToolchainError::Manifest {
-                path: manifest_path,
-                message: error.to_string(),
-            })?;
-
-        let vapor_home = env::var_os(VAPOR_HOME_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| workspace_root.join(".vapor"));
+    pub fn for_installation(
+        installation: &VaporInstallation,
+        workspace_root: PathBuf,
+        pin: ToolchainPin,
+    ) -> Result<Self, ToolchainError> {
+        let vapor_home = installation.root.clone();
 
         let rustup_home = vapor_home.join(RUSTUP_HOME_DIR);
         let cargo_home = vapor_home.join(CARGO_HOME_DIR);
@@ -83,16 +72,17 @@ impl ManagedToolchain {
 
         let toolchain_root = rustup_home
             .join("toolchains")
-            .join(format!("{}-{host}", manifest.toolchain.identifier()));
+            .join(format!("{}-{host}", pin.identifier()));
 
         let bin = toolchain_root.join("bin");
 
         Ok(Self {
             workspace_root,
             vapor_home,
+            installation_source: installation.root_source,
             rustup_home,
             cargo_home,
-            pin: manifest.toolchain,
+            pin,
             cargo_path: bin.join(executable_name("cargo")),
             rustc_path: bin.join(executable_name("rustc")),
             rust_analyzer_path: bin.join(executable_name("rust-analyzer")),
@@ -105,15 +95,9 @@ impl ManagedToolchain {
 
     /// Install or repair the pinned toolchain using Rustup as bootstrap.
     ///
-    /// Rustup itself may currently come from PATH. The resulting Rust
-    /// installation does not.
+    /// Vapor only accepts a Rustup executable that demonstrably honors the
+    /// Installation's managed RUSTUP_HOME.
     pub fn install(&self) -> Result<(), ToolchainError> {
-        let rustup = self
-            .find_rustup()
-            .ok_or_else(|| ToolchainError::RustupUnavailable {
-                expected: self.local_rustup_path(),
-            })?;
-
         fs::create_dir_all(&self.rustup_home).map_err(|source| ToolchainError::Io {
             path: self.rustup_home.clone(),
             source,
@@ -123,6 +107,12 @@ impl ManagedToolchain {
             path: self.cargo_home.clone(),
             source,
         })?;
+
+        let rustup = self
+            .find_rustup()
+            .ok_or_else(|| ToolchainError::RustupUnavailable {
+                expected: self.local_rustup_path(),
+            })?;
 
         let status = Command::new(&rustup)
             .args([
@@ -213,30 +203,35 @@ impl ManagedToolchain {
     fn find_rustup(&self) -> Option<PathBuf> {
         let local = self.local_rustup_path();
 
-        if local.is_file() {
-            return Some(local);
+        let path_candidates = env::var_os("PATH")
+            .into_iter()
+            .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
+            .map(|root| root.join(executable_name("rustup")));
+
+        std::iter::once(local)
+            .chain(path_candidates)
+            .filter(|candidate| candidate.is_file())
+            .find(|candidate| self.rustup_honors_managed_home(candidate))
+    }
+
+    fn rustup_honors_managed_home(&self, rustup: &Path) -> bool {
+        let Ok(output) = Command::new(rustup)
+            .args(["show", "home"])
+            .env("RUSTUP_HOME", &self.rustup_home)
+            .env("CARGO_HOME", &self.cargo_home)
+            .output()
+        else {
+            return false;
+        };
+
+        if !output.status.success() {
+            return false;
         }
 
-        let path = env::var_os("PATH")?;
+        let reported_home = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
 
-        let executable = executable_name("rustup");
-
-        env::split_paths(&path)
-            .map(|root| root.join(&executable))
-            .find(|candidate| candidate.is_file())
+        reported_home == self.rustup_home
     }
-}
-
-#[derive(Deserialize)]
-struct WorkspaceManifest {
-    toolchain: ToolchainPin,
-}
-
-fn find_workspace_root(start: &Path) -> Option<PathBuf> {
-    start
-        .ancestors()
-        .find(|root| root.join(WORKSPACE_MANIFEST_FILE_NAME).is_file())
-        .map(Path::to_path_buf)
 }
 
 fn executable_name(stem: &str) -> String {
@@ -263,11 +258,7 @@ fn current_host_triple() -> Result<&'static str, ToolchainError> {
 
 #[derive(Debug)]
 pub enum ToolchainError {
-    CurrentDirectory(io::Error),
-
-    WorkspaceNotFound { start: PathBuf },
-
-    Manifest { path: PathBuf, message: String },
+    Workspace(WorkspaceError),
 
     Io { path: PathBuf, source: io::Error },
 
@@ -289,25 +280,7 @@ pub enum ToolchainError {
 impl fmt::Display for ToolchainError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CurrentDirectory(error) => {
-                write!(formatter, "failed to determine current directory: {error}")
-            }
-
-            Self::WorkspaceNotFound { start } => {
-                write!(
-                    formatter,
-                    "could not find `{WORKSPACE_MANIFEST_FILE_NAME}` from `{}`",
-                    start.display()
-                )
-            }
-
-            Self::Manifest { path, message } => {
-                write!(
-                    formatter,
-                    "invalid Vapor workspace manifest `{}`: {message}",
-                    path.display()
-                )
-            }
+            Self::Workspace(error) => error.fmt(formatter),
 
             Self::Io { path, source } => {
                 write!(formatter, "failed to access `{}`: {source}", path.display())
@@ -323,7 +296,7 @@ impl fmt::Display for ToolchainError {
             Self::RustupUnavailable { expected } => {
                 write!(
                     formatter,
-                    "Rustup is unavailable; Vapor looked for `{}` and on PATH",
+                    "no usable Rustup installation was found; Vapor looked for `{}` and on PATH, but requires Rustup to honor its managed RUSTUP_HOME",
                     expected.display()
                 )
             }
@@ -339,7 +312,7 @@ impl fmt::Display for ToolchainError {
             Self::ToolchainNotInstalled { version, expected } => {
                 write!(
                     formatter,
-                    "Vapor-managed Rust {version} is not installed; expected Cargo at `{}`; run `vapor toolchain install`",
+                    "Vapor-managed Rust {version} is not installed; expected Cargo at `{}`; use the Vapor Installer to establish Content Developer capability",
                     expected.display()
                 )
             }
@@ -374,7 +347,7 @@ impl fmt::Display for ToolchainError {
 impl std::error::Error for ToolchainError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::CurrentDirectory(error) => Some(error),
+            Self::Workspace(error) => Some(error),
             Self::Io { source, .. } => Some(source),
             Self::JoinPaths(error) => Some(error),
             _ => None,
