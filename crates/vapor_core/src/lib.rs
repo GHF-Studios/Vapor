@@ -42,7 +42,9 @@ pub use local::{
 pub use manifest::{ContentHeader, ContentManifest, ManifestError, parse_content_manifest};
 
 pub use resolution::{
-    ResolutionError, ResolvedComposition, ResolvedContentNode, resolve_local_packagepack,
+    ResolutionError, ResolvedComposition, ResolvedContentGraph, ResolvedContentNode,
+    resolve_local_content, resolve_local_pack, resolve_local_packagepack,
+    validate_resolved_content_graph,
 };
 
 pub use role::{

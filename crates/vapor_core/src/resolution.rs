@@ -1,31 +1,55 @@
-//! Resolution of authored Vapor dependency declarations into exact content.
+//! Resolution of authored Vapor dependency declarations into exact Content.
+//!
+//! Resolution itself is generic over Vapor Content kinds.
+//! Pack-specific semantic validation is layered on top of the resolved graph.
 //!
 //! Vertical Slice 0 currently resolves only against a `LocalCatalog`.
-//!
-//! The initial algorithm chooses the highest locally available version matching
-//! each dependency requirement. Exact versions already chosen by multiple edges
-//! naturally share one resolved definition node.
-//!
-//! Full Cargo-style global version unification/backtracking is intentionally
-//! deferred. The public resolved graph model already permits multiple versions
-//! of the same Vapor ID.
+//! Full Cargo-style global version unification/backtracking remains deferred.
 
 use crate::{ContentKind, ContentVersionId, LocalCatalog, VaporId};
 use semver::VersionReq;
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// One exact resolved Vapor Content definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedContentNode {
     pub identity: ContentVersionId,
     pub kind: ContentKind,
 
-    /// Local dependency binding -> exact resolved content identity.
+    /// Local dependency binding -> exact resolved Content identity.
     pub dependencies: BTreeMap<String, ContentVersionId>,
 }
 
-/// Exact, structurally validated dependency graph produced from a Packagepack.
+/// Exact recursively resolved Vapor Content graph.
+///
+/// This structure does not imply that the root is a Packagepack or complete
+/// Vapor App Composition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedContentGraph {
+    pub root: ContentVersionId,
+    pub nodes: BTreeMap<ContentVersionId, ResolvedContentNode>,
+}
+
+impl ResolvedContentGraph {
+    pub fn node(&self, identity: &ContentVersionId) -> Option<&ResolvedContentNode> {
+        self.nodes.get(identity)
+    }
+
+    pub fn root_node(&self) -> &ResolvedContentNode {
+        self.nodes
+            .get(&self.root)
+            .expect("resolved Content graph root must exist")
+    }
+
+    pub fn content_of_kind(&self, kind: ContentKind) -> impl Iterator<Item = &ResolvedContentNode> {
+        self.nodes.values().filter(move |node| node.kind == kind)
+    }
+}
+
+/// Packagepack-specific resolved composition.
+///
+/// Kept separate from `ResolvedContentGraph` because a generic Content graph
+/// does not necessarily form a complete runnable composition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedComposition {
     pub root: ContentVersionId,
@@ -46,29 +70,28 @@ impl ResolvedComposition {
     }
 }
 
-/// Resolve the latest locally available version of a Packagepack.
+/// Resolve the latest locally available version of arbitrary Vapor Content.
 ///
-/// The Packagepack's complete reachable dependency graph is resolved
-/// recursively against the supplied local catalog.
-pub fn resolve_local_packagepack(
+/// This performs structural dependency resolution only:
+///
+/// - version selection,
+/// - recursive traversal,
+/// - exact-node convergence,
+/// - missing-dependency detection,
+/// - cycle detection.
+///
+/// Semantic validation is deliberately layered separately.
+pub fn resolve_local_content(
     catalog: &LocalCatalog,
-    packagepack_id: &VaporId,
-) -> Result<ResolvedComposition, ResolutionError> {
-    let root_content =
-        catalog
-            .latest(packagepack_id)
-            .ok_or_else(|| ResolutionError::RootNotFound {
-                id: packagepack_id.clone(),
-            })?;
+    content_id: &VaporId,
+) -> Result<ResolvedContentGraph, ResolutionError> {
+    let root_content = catalog
+        .latest(content_id)
+        .ok_or_else(|| ResolutionError::RootNotFound {
+            id: content_id.clone(),
+        })?;
 
     let root = root_content.version_id();
-
-    if root_content.manifest.content.kind != ContentKind::Packagepack {
-        return Err(ResolutionError::RootNotPackagepack {
-            identity: root,
-            actual_kind: root_content.manifest.content.kind,
-        });
-    }
 
     let mut resolver = LocalResolver {
         catalog,
@@ -78,7 +101,68 @@ pub fn resolve_local_packagepack(
 
     resolver.resolve_identity(root.clone())?;
 
-    validate_composition(root, resolver.nodes)
+    Ok(ResolvedContentGraph {
+        root,
+        nodes: resolver.nodes,
+    })
+}
+
+/// Resolve and validate one pack kind.
+///
+/// Enginepack, Gamepack, Modpack, and Packagepack all use the same underlying
+/// resolver. Their semantic guarantees are validated only after resolution.
+pub fn resolve_local_pack(
+    catalog: &LocalCatalog,
+    content_id: &VaporId,
+    expected_kind: ContentKind,
+) -> Result<ResolvedContentGraph, ResolutionError> {
+    let graph = resolve_local_content(catalog, content_id)?;
+
+    let actual_kind = graph.root_node().kind;
+
+    if actual_kind != expected_kind {
+        return Err(ResolutionError::RootKindMismatch {
+            identity: graph.root.clone(),
+            expected_kind,
+            actual_kind,
+        });
+    }
+
+    validate_resolved_content_graph(&graph)?;
+    validate_pack_graph(&graph)?;
+
+    Ok(graph)
+}
+
+/// Resolve a Packagepack into a complete Vapor App Composition.
+///
+/// This remains as the Packagepack-specific layer consumed by the current
+/// Cargo realization implementation.
+pub fn resolve_local_packagepack(
+    catalog: &LocalCatalog,
+    packagepack_id: &VaporId,
+) -> Result<ResolvedComposition, ResolutionError> {
+    let graph = resolve_local_content(catalog, packagepack_id)?;
+    let actual_kind = graph.root_node().kind;
+
+    if actual_kind != ContentKind::Packagepack {
+        return Err(ResolutionError::RootNotPackagepack {
+            identity: graph.root,
+            actual_kind,
+        });
+    }
+
+    validate_resolved_content_graph(&graph)?;
+    validate_pack_graph(&graph)?;
+    composition_from_graph(graph)
+}
+
+/// Validate semantic relationships that belong to Content kinds themselves,
+/// independently of which pack happens to include them.
+pub fn validate_resolved_content_graph(
+    graph: &ResolvedContentGraph,
+) -> Result<(), ResolutionError> {
+    validate_target_relationships(&graph.nodes)
 }
 
 struct LocalResolver<'a> {
@@ -136,7 +220,6 @@ impl LocalResolver<'_> {
         }
 
         let popped = self.stack.pop();
-
         debug_assert_eq!(popped.as_ref(), Some(&identity));
 
         self.nodes.insert(
@@ -152,49 +235,92 @@ impl LocalResolver<'_> {
     }
 }
 
-fn validate_composition(
-    root: ContentVersionId,
-    nodes: BTreeMap<ContentVersionId, ResolvedContentNode>,
+fn validate_pack_graph(graph: &ResolvedContentGraph) -> Result<(), ResolutionError> {
+    match graph.root_node().kind {
+        ContentKind::Packagepack => {
+            require_exactly_one(graph, ContentKind::Engine)?;
+
+            require_exactly_one(graph, ContentKind::Game)?;
+        }
+
+        ContentKind::Enginepack => {
+            require_exactly_one(graph, ContentKind::Engine)?;
+        }
+
+        ContentKind::Gamepack => {
+            require_exactly_one(graph, ContentKind::Game)?;
+        }
+
+        ContentKind::Modpack => {
+            let count = graph
+                .nodes
+                .values()
+                .filter(|node| is_mod(node.kind))
+                .count();
+
+            if count == 0 {
+                return Err(ResolutionError::ModpackContainsNoMods {
+                    modpack: graph.root.clone(),
+                });
+            }
+        }
+
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn require_exactly_one(
+    graph: &ResolvedContentGraph,
+    kind: ContentKind,
+) -> Result<(), ResolutionError> {
+    let identities: Vec<_> = graph
+        .content_of_kind(kind)
+        .map(|node| node.identity.clone())
+        .collect();
+
+    if identities.len() == 1 {
+        return Ok(());
+    }
+
+    match kind {
+        ContentKind::Engine => Err(ResolutionError::EffectiveEngineCount {
+            count: identities.len(),
+            engines: identities,
+        }),
+
+        ContentKind::Game => Err(ResolutionError::EffectiveGameCount {
+            count: identities.len(),
+            games: identities,
+        }),
+
+        _ => unreachable!("exact-one validation currently applies only to Engine and Game"),
+    }
+}
+
+fn composition_from_graph(
+    graph: ResolvedContentGraph,
 ) -> Result<ResolvedComposition, ResolutionError> {
-    validate_target_relationships(&nodes)?;
+    let effective_engine = graph
+        .content_of_kind(ContentKind::Engine)
+        .next()
+        .expect("Packagepack validation guarantees one Engine")
+        .identity
+        .clone();
 
-    let engines: Vec<_> = nodes
-        .values()
-        .filter(|node| node.kind == ContentKind::Engine)
-        .map(|node| node.identity.clone())
-        .collect();
-
-    let games: Vec<_> = nodes
-        .values()
-        .filter(|node| node.kind == ContentKind::Game)
-        .map(|node| node.identity.clone())
-        .collect();
-
-    if engines.len() != 1 {
-        return Err(ResolutionError::EffectiveEngineCount {
-            count: engines.len(),
-            engines,
-        });
-    }
-
-    if games.len() != 1 {
-        return Err(ResolutionError::EffectiveGameCount {
-            count: games.len(),
-            games,
-        });
-    }
+    let effective_game = graph
+        .content_of_kind(ContentKind::Game)
+        .next()
+        .expect("Packagepack validation guarantees one Game")
+        .identity
+        .clone();
 
     Ok(ResolvedComposition {
-        root,
-        nodes,
-        effective_engine: engines
-            .into_iter()
-            .next()
-            .expect("validated exactly one effective Engine"),
-        effective_game: games
-            .into_iter()
-            .next()
-            .expect("validated exactly one effective Game"),
+        root: graph.root,
+        nodes: graph.nodes,
+        effective_engine,
+        effective_game,
     })
 }
 
@@ -204,24 +330,53 @@ fn validate_target_relationships(
     for node in nodes.values() {
         match node.kind {
             ContentKind::Game => {
-                let engine_targets =
-                    direct_dependency_count_of_kind(nodes, node, ContentKind::Engine);
+                let count = direct_dependency_count_of_kind(nodes, node, ContentKind::Engine);
 
-                if engine_targets != 1 {
+                if count != 1 {
                     return Err(ResolutionError::GameEngineTargetCount {
                         game: node.identity.clone(),
-                        count: engine_targets,
+                        count,
+                    });
+                }
+            }
+
+            ContentKind::EngineMod => {
+                let count = direct_dependency_count_of_kind(nodes, node, ContentKind::Engine);
+
+                if count != 1 {
+                    return Err(ResolutionError::EngineModEngineTargetCount {
+                        engine_mod: node.identity.clone(),
+                        count,
                     });
                 }
             }
 
             ContentKind::GameMod => {
-                let game_targets = direct_dependency_count_of_kind(nodes, node, ContentKind::Game);
+                let count = direct_dependency_count_of_kind(nodes, node, ContentKind::Game);
 
-                if game_targets != 1 {
+                if count != 1 {
                     return Err(ResolutionError::GameModGameTargetCount {
                         game_mod: node.identity.clone(),
-                        count: game_targets,
+                        count,
+                    });
+                }
+            }
+
+            ContentKind::ExtensionMod => {
+                let count = node
+                    .dependencies
+                    .values()
+                    .filter(|dependency| {
+                        nodes
+                            .get(*dependency)
+                            .is_some_and(|target| is_mod(target.kind))
+                    })
+                    .count();
+
+                if count != 1 {
+                    return Err(ResolutionError::ExtensionModTargetCount {
+                        extension_mod: node.identity.clone(),
+                        count,
                     });
                 }
             }
@@ -243,9 +398,16 @@ fn direct_dependency_count_of_kind(
         .filter(|dependency| {
             nodes
                 .get(*dependency)
-                .is_some_and(|dependency_node| dependency_node.kind == kind)
+                .is_some_and(|target| target.kind == kind)
         })
         .count()
+}
+
+fn is_mod(kind: ContentKind) -> bool {
+    matches!(
+        kind,
+        ContentKind::EngineMod | ContentKind::GameMod | ContentKind::ExtensionMod
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,6 +418,12 @@ pub enum ResolutionError {
 
     RootNotPackagepack {
         identity: ContentVersionId,
+        actual_kind: ContentKind,
+    },
+
+    RootKindMismatch {
+        identity: ContentVersionId,
+        expected_kind: ContentKind,
         actual_kind: ContentKind,
     },
 
@@ -280,13 +448,27 @@ pub enum ResolutionError {
         games: Vec<ContentVersionId>,
     },
 
+    ModpackContainsNoMods {
+        modpack: ContentVersionId,
+    },
+
     GameEngineTargetCount {
         game: ContentVersionId,
         count: usize,
     },
 
+    EngineModEngineTargetCount {
+        engine_mod: ContentVersionId,
+        count: usize,
+    },
+
     GameModGameTargetCount {
         game_mod: ContentVersionId,
+        count: usize,
+    },
+
+    ExtensionModTargetCount {
+        extension_mod: ContentVersionId,
         count: usize,
     },
 }
@@ -297,7 +479,7 @@ impl fmt::Display for ResolutionError {
             Self::RootNotFound { id } => {
                 write!(
                     formatter,
-                    "no local Vapor Content version is available for Packagepack `{id}`"
+                    "no local Vapor Content version is available for `{id}`"
                 )
             }
 
@@ -308,6 +490,17 @@ impl fmt::Display for ResolutionError {
                 write!(
                     formatter,
                     "resolution root `{identity}` is `{actual_kind}`, not a Packagepack"
+                )
+            }
+
+            Self::RootKindMismatch {
+                identity,
+                expected_kind,
+                actual_kind,
+            } => {
+                write!(
+                    formatter,
+                    "`{identity}` is `{actual_kind}`, not `{expected_kind}`"
                 )
             }
 
@@ -340,14 +533,21 @@ impl fmt::Display for ResolutionError {
             Self::EffectiveEngineCount { count, .. } => {
                 write!(
                     formatter,
-                    "resolved Packagepack must contain exactly one effective Engine, but found {count}"
+                    "resolved pack must contain exactly one effective Engine, but found {count}"
                 )
             }
 
             Self::EffectiveGameCount { count, .. } => {
                 write!(
                     formatter,
-                    "resolved Packagepack must contain exactly one effective Game, but found {count}"
+                    "resolved pack must contain exactly one effective Game, but found {count}"
+                )
+            }
+
+            Self::ModpackContainsNoMods { modpack } => {
+                write!(
+                    formatter,
+                    "resolved Modpack `{modpack}` does not contain any Mods"
                 )
             }
 
@@ -358,10 +558,27 @@ impl fmt::Display for ResolutionError {
                 )
             }
 
+            Self::EngineModEngineTargetCount { engine_mod, count } => {
+                write!(
+                    formatter,
+                    "Engine Mod `{engine_mod}` must directly target exactly one Engine, but found {count}"
+                )
+            }
+
             Self::GameModGameTargetCount { game_mod, count } => {
                 write!(
                     formatter,
                     "Game Mod `{game_mod}` must directly target exactly one Game, but found {count}"
+                )
+            }
+
+            Self::ExtensionModTargetCount {
+                extension_mod,
+                count,
+            } => {
+                write!(
+                    formatter,
+                    "Extension Mod `{extension_mod}` must directly target exactly one Mod, but found {count}"
                 )
             }
         }

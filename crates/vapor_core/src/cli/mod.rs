@@ -7,10 +7,11 @@ mod commands;
 
 use crate::{
     ContentKind, ContentVersionId, DevelopmentOperation, LocalCatalog, LocalContent,
-    ManagedToolchain, ResolvedComposition, VaporId, VaporInstallation, VaporRole, VaporWorkspace,
-    build_cargo_realization, demote_role, development_target_dir, discover_local_content,
-    generate_local_cargo_realization, git_available, promote_role, resolve_local_packagepack,
-    role_status, run_cargo_realization, run_workspace_operation,
+    ManagedToolchain, ResolvedComposition, ResolvedContentGraph, VaporId, VaporInstallation,
+    VaporRole, VaporWorkspace, build_cargo_realization, demote_role, development_target_dir,
+    discover_local_content, generate_local_cargo_realization, git_available, promote_role,
+    resolve_local_pack, resolve_local_packagepack, role_status, run_cargo_realization,
+    run_workspace_operation,
 };
 use clap::Parser;
 use commands::*;
@@ -207,7 +208,7 @@ fn execute_pack(kind: ContentKind, command: PackCommand) -> Result<(), String> {
 
         PackCommand::Inspect(args) => content_inspect(kind, args),
 
-        PackCommand::Resolve(_) => not_implemented(kind.as_str(), "resolve"),
+        PackCommand::Resolve(args) => pack_resolve(kind, args),
 
         PackCommand::Verify(_) => not_implemented(kind.as_str(), "verify"),
 
@@ -521,6 +522,54 @@ fn packagepack_resolve(args: LocalContentTargetArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn pack_resolve(kind: ContentKind, args: LocalContentTargetArgs) -> Result<(), String> {
+    let (_, _, graph) = prepare_pack(kind, args)?;
+
+    print_resolved_graph(&graph);
+
+    match kind {
+        ContentKind::Enginepack => {
+            let engine = graph
+                .content_of_kind(ContentKind::Engine)
+                .next()
+                .expect("validated Enginepack has one Engine");
+
+            println!();
+            println!("Effective Engine: {}", engine.identity);
+        }
+
+        ContentKind::Gamepack => {
+            let game = graph
+                .content_of_kind(ContentKind::Game)
+                .next()
+                .expect("validated Gamepack has one Game");
+
+            println!();
+            println!("Effective Game: {}", game.identity);
+        }
+
+        ContentKind::Modpack => {
+            let count = graph
+                .nodes
+                .values()
+                .filter(|node| {
+                    matches!(
+                        node.kind,
+                        ContentKind::EngineMod | ContentKind::GameMod | ContentKind::ExtensionMod
+                    )
+                })
+                .count();
+
+            println!();
+            println!("Effective Mods: {count}");
+        }
+
+        _ => {}
+    }
+
+    Ok(())
+}
+
 fn packagepack_build(args: LocalContentTargetArgs) -> Result<(), String> {
     let (root, catalog, composition) = prepare_packagepack(args)?;
 
@@ -546,6 +595,23 @@ fn packagepack_run(args: LocalContentTargetArgs) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     run_cargo_realization(&realization).map_err(|error| error.to_string())
+}
+
+fn prepare_pack(
+    kind: ContentKind,
+    args: LocalContentTargetArgs,
+) -> Result<(PathBuf, LocalCatalog, ResolvedContentGraph), String> {
+    let root = source_root(args.root)?;
+
+    let catalog = discover_local_content(&root).map_err(|error| error.to_string())?;
+
+    let content = select_content(&catalog, kind, args.id.as_ref())?;
+
+    let id = content.manifest.content.id.clone();
+
+    let graph = resolve_local_pack(&catalog, &id, kind).map_err(|error| error.to_string())?;
+
+    Ok((root, catalog, graph))
 }
 
 fn prepare_packagepack(
@@ -620,6 +686,35 @@ fn source_root(root: Option<PathBuf>) -> Result<PathBuf, String> {
 
         None => env::current_dir()
             .map_err(|error| format!("failed to determine current source context: {error}")),
+    }
+}
+
+fn print_resolved_graph(graph: &ResolvedContentGraph) {
+    println!("Resolved {}:", graph.root);
+
+    print_graph_dependencies(graph, &graph.root, "");
+}
+
+fn print_graph_dependencies(
+    graph: &ResolvedContentGraph,
+    identity: &ContentVersionId,
+    prefix: &str,
+) {
+    let Some(node) = graph.node(identity) else {
+        return;
+    };
+
+    let dependency_count = node.dependencies.len();
+
+    for (index, (binding, dependency)) in node.dependencies.iter().enumerate() {
+        let last = index + 1 == dependency_count;
+        let connector = if last { "└── " } else { "├── " };
+
+        println!("{prefix}{connector}{binding} -> {dependency}");
+
+        let child_prefix = format!("{prefix}{}", if last { "    " } else { "│   " });
+
+        print_graph_dependencies(graph, dependency, &child_prefix);
     }
 }
 
