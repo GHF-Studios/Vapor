@@ -3,6 +3,7 @@
 use crate::VaporId;
 use semver::VersionReq;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Semantic kind of one Vapor Content artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -17,6 +18,28 @@ pub enum ContentKind {
     EngineMod,
     GameMod,
     ExtensionMod,
+}
+
+impl ContentKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Packagepack => "packagepack",
+            Self::Enginepack => "enginepack",
+            Self::Gamepack => "gamepack",
+            Self::Modpack => "modpack",
+            Self::Engine => "engine",
+            Self::Game => "game",
+            Self::EngineMod => "engine-mod",
+            Self::GameMod => "game-mod",
+            Self::ExtensionMod => "extension-mod",
+        }
+    }
+}
+
+impl fmt::Display for ContentKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 /// One authored Vapor dependency declaration.

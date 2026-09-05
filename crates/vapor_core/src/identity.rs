@@ -67,14 +67,20 @@ impl fmt::Display for ParseVaporIdError {
 
 impl std::error::Error for ParseVaporIdError {}
 
-/// Exact identity of one resolved version of Vapor Content.
+/// Exact identity of one version of Vapor Content.
 ///
-/// Multiple resolved versions of the same Vapor ID may coexist in a
-/// composition.
+/// This identity exists independently of dependency resolution. Multiple
+/// versions of the same Vapor ID may coexist in one resolved composition.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ResolvedContentId {
+pub struct ContentVersionId {
     pub id: VaporId,
     pub version: Version,
+}
+
+impl fmt::Display for ContentVersionId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}@{}", self.id, self.version)
+    }
 }
 
 #[cfg(test)]
@@ -91,5 +97,15 @@ mod tests {
     #[test]
     fn vapor_id_rejects_whitespace() {
         assert!("ghf studios/example".parse::<VaporId>().is_err());
+    }
+
+    #[test]
+    fn content_version_id_formats_as_id_at_version() {
+        let identity = ContentVersionId {
+            id: "ghf-studios/example/physics".parse().unwrap(),
+            version: Version::parse("2.3.0").unwrap(),
+        };
+
+        assert_eq!(identity.to_string(), "ghf-studios/example/physics@2.3.0");
     }
 }

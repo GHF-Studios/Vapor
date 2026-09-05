@@ -1,16 +1,35 @@
 //! Core semantic model and orchestration primitives for Vapor.
-//!
-//! This crate is being rebuilt from the current Vapor domain model rather than
-//! preserving compatibility with the legacy implementation.
 
 #![forbid(unsafe_code)]
 
+pub mod cargo;
 pub mod content;
 pub mod identity;
+pub mod local;
 pub mod manifest;
 pub mod resolution;
+pub mod toolchain;
+
+pub use cargo::{
+    CargoRealization, CargoRealizationError, build_cargo_realization,
+    generate_local_cargo_realization, run_cargo_realization,
+};
 
 pub use content::{ContentKind, DependencySpec};
-pub use identity::{ParseVaporIdError, ResolvedContentId, VaporId};
+
+pub use identity::{ContentVersionId, ParseVaporIdError, VaporId};
+
+pub use local::{
+    CONTENT_MANIFEST_FILE_NAME, LocalCatalog, LocalContent, LocalDiscoveryError,
+    discover_local_content,
+};
+
 pub use manifest::{ContentHeader, ContentManifest, ManifestError, parse_content_manifest};
-pub use resolution::{ResolvedComposition, ResolvedContentNode};
+
+pub use resolution::{
+    ResolutionError, ResolvedComposition, ResolvedContentNode, resolve_local_packagepack,
+};
+
+pub use toolchain::{
+    ManagedToolchain, ToolchainError, ToolchainPin, VAPOR_HOME_ENV, WORKSPACE_MANIFEST_FILE_NAME,
+};

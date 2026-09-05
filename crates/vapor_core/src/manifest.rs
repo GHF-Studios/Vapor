@@ -3,7 +3,7 @@
 //! This schema exists to exercise Vertical Slice 0. It is not yet a promise
 //! that the final Vapor manifest format will have exactly this shape.
 
-use crate::{ContentKind, DependencySpec, VaporId};
+use crate::{ContentKind, ContentVersionId, DependencySpec, VaporId};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -30,6 +30,16 @@ pub struct ContentHeader {
     pub id: VaporId,
     pub version: Version,
     pub kind: ContentKind,
+}
+
+impl ContentHeader {
+    /// Exact identity represented by this authored manifest header.
+    pub fn version_id(&self) -> ContentVersionId {
+        ContentVersionId {
+            id: self.id.clone(),
+            version: self.version.clone(),
+        }
+    }
 }
 
 /// Parse one human-authored Vapor Content manifest.
@@ -85,5 +95,23 @@ version = "^0.1"
 
         assert_eq!(manifest.content.kind, ContentKind::Game);
         assert!(manifest.dependencies.contains_key("engine"));
+    }
+
+    #[test]
+    fn exposes_exact_content_version_identity() {
+        let manifest = parse_content_manifest(
+            r#"
+[content]
+id = "ghf-studios/example/game"
+version = "1.2.3"
+kind = "game"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            manifest.content.version_id().to_string(),
+            "ghf-studios/example/game@1.2.3"
+        );
     }
 }
