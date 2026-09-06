@@ -397,15 +397,33 @@ fn reconcile_rust_component(
     let mut component = existing.unwrap_or_else(|| {
         String::from(
             "<component name=\"RustProjectSettings\">\n\
-             </component>",
+                 </component>",
         )
     });
 
     component = rename_component(&component, RUST_COMPONENT, workspace_path)?;
 
+    let managed_environment = managed_rust_environment_from_toolchain_home(toolchain_home);
+
+    let preserved_environment_entries = if managed_environment.is_some() {
+        preserved_rust_environment_entries(&component, workspace_path)?
+    } else {
+        Vec::new()
+    };
+
     component = remove_option(&component, "toolchainHomeDirectory", workspace_path)?;
 
     component = remove_option(&component, "explicitPathToStdlib", workspace_path)?;
+
+    // RustRover persists project-wide Rust/Cargo environment variables under
+    // RustProjectSettings -> envs -> map.
+    //
+    // Once Vapor can identify its managed Installation environment, Vapor owns
+    // the RUSTUP_HOME and CARGO_HOME entries while preserving unrelated
+    // developer-defined environment variables.
+    if managed_environment.is_some() {
+        component = remove_option(&component, "envs", workspace_path)?;
+    }
 
     let opening_end = component
         .find('>')
@@ -417,21 +435,151 @@ fn reconcile_rust_component(
 
     let mut settings = String::new();
 
+    if let Some((rustup_home, cargo_home)) = managed_environment {
+        settings.push_str(
+            "\n    <option name=\"envs\">\n\
+             \x20     <map>\n",
+        );
+
+        settings.push_str(&format!(
+            "        <entry key=\"CARGO_HOME\" value=\"{}\" />\n",
+            xml_escape(&cargo_home.to_string_lossy(),),
+        ));
+
+        settings.push_str(&format!(
+            "        <entry key=\"RUSTUP_HOME\" value=\"{}\" />\n",
+            xml_escape(&rustup_home.to_string_lossy(),),
+        ));
+
+        for entry in preserved_environment_entries {
+            settings.push_str("        ");
+
+            settings.push_str(entry.trim());
+
+            settings.push('\n');
+        }
+
+        settings.push_str(
+            "      </map>\n\
+             \x20   </option>",
+        );
+    }
+
     settings.push_str(&format!(
         "\n    <option name=\"toolchainHomeDirectory\" value=\"{}\" />",
-        xml_escape(&toolchain_home.to_string_lossy()),
+        xml_escape(&toolchain_home.to_string_lossy(),),
     ));
 
     if let Some(stdlib_source) = stdlib_source {
         settings.push_str(&format!(
             "\n    <option name=\"explicitPathToStdlib\" value=\"{}\" />",
-            xml_escape(&stdlib_source.to_string_lossy()),
+            xml_escape(&stdlib_source.to_string_lossy(),),
         ));
     }
 
     component.insert_str(opening_end, &settings);
 
     Ok(component)
+}
+
+/// Recover the complete Vapor-managed Rust environment from the toolchain path.
+///
+/// Current managed topology:
+///
+/// <installation>
+/// ├── cargo-home/
+/// └── rustup-home/
+///     └── toolchains/
+///         └── <toolchain>/
+///             └── bin/
+///
+/// This deliberately keys off the named `rustup-home` boundary rather than a
+/// fixed number of parent traversals.
+fn managed_rust_environment_from_toolchain_home(
+    toolchain_home: &Path,
+) -> Option<(PathBuf, PathBuf)> {
+    let rustup_home = toolchain_home
+        .ancestors()
+        .find(|ancestor| {
+            ancestor
+                .file_name()
+                .is_some_and(|name| name == "rustup-home")
+        })?
+        .to_path_buf();
+
+    let installation_root = rustup_home.parent()?;
+
+    let cargo_home = installation_root.join("cargo-home");
+
+    Some((rustup_home, cargo_home))
+}
+
+/// Preserve developer-defined RustRover environment variables while allowing
+/// Vapor to authoritatively replace its own managed RUSTUP_HOME/CARGO_HOME.
+///
+/// This also cleans up malformed historical state such as:
+///
+/// <entry
+///     key="RUSTUP_HOME"
+///     value="/rustup-home CARGO_HOME=/cargo-home"
+/// />
+///
+/// because the complete managed RUSTUP_HOME entry is discarded and rebuilt.
+fn preserved_rust_environment_entries(
+    component: &str,
+    workspace_path: &Path,
+) -> Result<Vec<String>, IdeError> {
+    let Some(option_range) = find_option_range(component, "envs", workspace_path)? else {
+        return Ok(Vec::new());
+    };
+
+    let option = &component[option_range];
+
+    let mut entries = Vec::new();
+
+    let mut search_from = 0;
+
+    while let Some(relative) = option[search_from..].find("<entry") {
+        let start = search_from + relative;
+
+        let Some(tag_end_relative) = option[start..].find('>') else {
+            return Err(IdeError::MalformedWorkspace {
+                path: workspace_path.to_path_buf(),
+                message: "unterminated RustProjectSettings environment entry".to_owned(),
+            });
+        };
+
+        let tag_end = start + tag_end_relative + 1;
+
+        let end = if option[start..tag_end].trim_end().ends_with("/>") {
+            tag_end
+        } else {
+            let Some(close_relative) = option[tag_end..].find("</entry>") else {
+                return Err(IdeError::MalformedWorkspace {
+                    path: workspace_path.to_path_buf(),
+                    message: "unterminated RustProjectSettings environment entry".to_owned(),
+                });
+            };
+
+            tag_end + close_relative + "</entry>".len()
+        };
+
+        let block = &option[start..end];
+
+        let opening = &option[start..tag_end];
+
+        let key = attribute_value(opening, "key").map(xml_unescape);
+
+        let vapor_managed = matches!(key.as_deref(), Some("RUSTUP_HOME" | "CARGO_HOME"));
+
+        if !vapor_managed {
+            entries.push(block.to_owned());
+        }
+
+        search_from = end;
+    }
+
+    Ok(entries)
 }
 
 fn upsert_component(
