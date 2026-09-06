@@ -576,7 +576,10 @@ fn filesystem_name(identity: &ContentVersionId) -> String {
 const GENERATED_LIBRARY: &str = r#"//! Generated static Vapor App Composition.
 
 pub fn run() {
-    engine::run(game::run, game_mod::run);
+    engine::run(|app| {
+        game::install(app);
+        game_mod::install(app);
+    });
 }
 "#;
 
