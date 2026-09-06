@@ -15,6 +15,11 @@
 //! Container Repos are traversed only through the Source Repo paths explicitly
 //! declared by their `.gitmodules`. Vapor does not recursively scan arbitrary
 //! filesystem descendants looking for repositories.
+//!
+//! A Superworkspace-local `.vaporignore` may exclude checked-out repositories
+//! from the active local development view. This is local development-storage
+//! configuration only; it does not define canonical ecosystem membership,
+//! publication state, or Git tracking.
 
 use crate::{VaporProject, VaporWorkspace, WORKSPACE_MANIFEST_FILE_NAME};
 use std::collections::BTreeSet;
@@ -24,6 +29,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const GITMODULES_FILE: &str = ".gitmodules";
+const VAPOR_IGNORE_FILE: &str = ".vaporignore";
 
 #[derive(Debug, Clone)]
 pub struct VaporSuperworkspace {
@@ -75,6 +81,53 @@ pub struct SuperworkspaceProject {
     pub project: VaporProject,
 }
 
+#[derive(Debug, Clone, Default)]
+struct VaporIgnore {
+    entries: Vec<String>,
+}
+
+impl VaporIgnore {
+    fn load(superworkspace_root: &Path) -> Result<Self, SuperworkspaceError> {
+        let path = superworkspace_root.join(VAPOR_IGNORE_FILE);
+
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
+
+            Err(source) => {
+                return Err(SuperworkspaceError::Io { path, source });
+            }
+        };
+
+        let mut entries = source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(normalize_ignore_path)
+            .filter(|entry| !entry.is_empty())
+            .collect::<Vec<_>>();
+
+        entries.sort();
+        entries.dedup();
+
+        Ok(Self { entries })
+    }
+
+    fn ignores(&self, relative_path: &str) -> bool {
+        let relative_path = normalize_ignore_path(relative_path);
+
+        self.entries.iter().any(|entry| {
+            relative_path == *entry
+                || relative_path
+                    .strip_prefix(entry)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        })
+    }
+}
+
 impl VaporSuperworkspace {
     /// Discover the nearest Vapor Superworkspace containing `start`.
     ///
@@ -119,6 +172,8 @@ impl VaporSuperworkspace {
     }
 
     fn load_candidate(root: &Path) -> Result<Option<Self>, SuperworkspaceError> {
+        let ignore = VaporIgnore::load(root)?;
+
         let entries = fs::read_dir(root).map_err(|source| SuperworkspaceError::Io {
             path: root.to_path_buf(),
             source,
@@ -144,11 +199,16 @@ impl VaporSuperworkspace {
 
             let name = relative_display_name(root, &repository_root);
 
+            if ignore.ignores(&name) {
+                continue;
+            }
+
             if is_container_repo(&repository_root) {
                 register_container_repo(
                     root,
                     &repository_root,
                     name,
+                    &ignore,
                     &mut repositories,
                     &mut projects,
                     &mut seen_roots,
@@ -159,7 +219,6 @@ impl VaporSuperworkspace {
 
             if is_vapor_workspace(&repository_root) {
                 register_workspace(
-                    root,
                     &repository_root,
                     name,
                     &mut repositories,
@@ -193,6 +252,7 @@ fn register_container_repo(
     superworkspace_root: &Path,
     container_root: &Path,
     name: String,
+    ignore: &VaporIgnore,
     repositories: &mut Vec<SuperworkspaceRepository>,
     projects: &mut Vec<SuperworkspaceProject>,
     seen_roots: &mut BTreeSet<PathBuf>,
@@ -221,8 +281,14 @@ fn register_container_repo(
 
         let workspace_root = container_root.join(&relative_path);
 
+        let name = relative_display_name(superworkspace_root, &workspace_root);
+
+        if ignore.ignores(&name) {
+            continue;
+        }
+
         // A declared submodule may not currently be initialized/checked out.
-        // That is valid local development storage state; it simply contributes
+        // That is valid local development-storage state; it simply contributes
         // no local Workspace or Project yet.
         if !workspace_root.is_dir() {
             continue;
@@ -239,23 +305,13 @@ fn register_container_repo(
             continue;
         }
 
-        let name = relative_display_name(superworkspace_root, &workspace_root);
-
-        register_workspace(
-            superworkspace_root,
-            &workspace_root,
-            name,
-            repositories,
-            projects,
-            seen_roots,
-        )?;
+        register_workspace(&workspace_root, name, repositories, projects, seen_roots)?;
     }
 
     Ok(())
 }
 
 fn register_workspace(
-    _superworkspace_root: &Path,
     workspace_root: &Path,
     name: String,
     repositories: &mut Vec<SuperworkspaceRepository>,
@@ -335,6 +391,11 @@ fn container_submodule_paths(container_root: &Path) -> Result<Vec<PathBuf>, Supe
 
         let value = value.trim();
 
+        let value = value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .unwrap_or(value);
+
         if value.is_empty() {
             return Err(SuperworkspaceError::InvalidContainerRepo {
                 container: container_root.to_path_buf(),
@@ -357,6 +418,10 @@ fn relative_display_name(superworkspace_root: &Path, repository_root: &Path) -> 
         .unwrap_or(repository_root)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+fn normalize_ignore_path(path: &str) -> String {
+    path.replace('\\', "/").trim_matches('/').to_owned()
 }
 
 fn canonical_or_original(path: &Path) -> PathBuf {
@@ -439,5 +504,29 @@ impl std::error::Error for SuperworkspaceError {
 
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vapor_ignore_matches_repository_and_descendants() {
+        let ignore = VaporIgnore {
+            entries: vec!["Loo-Cast".to_owned(), "Vapor-Root/Vapor-SDK".to_owned()],
+        };
+
+        assert!(ignore.ignores("Loo-Cast",));
+
+        assert!(ignore.ignores("Loo-Cast/something",));
+
+        assert!(ignore.ignores("Vapor-Root/Vapor-SDK",));
+
+        assert!(ignore.ignores("Vapor-Root/Vapor-SDK/crates/foo",));
+
+        assert!(!ignore.ignores("Vapor-Root/Vapor",));
+
+        assert!(!ignore.ignores("Vapor-Root/Vapor-Examples",));
     }
 }

@@ -7,15 +7,16 @@ mod commands;
 
 use crate::{
     CargoDependencyState, CargoPackageInspection, ContentKind, ContentVersionId,
-    DevelopmentOperation, IdeStatus, LibraryCargoReconciliation, LocalCatalog, LocalContent,
-    ManagedToolchain, ResolvedComposition, ResolvedContentGraph, SuperworkspaceRepositoryKind,
-    VaporId, VaporInstallation, VaporRole, VaporSuperworkspace, VaporWorkspace,
-    build_cargo_realization, demote_role, deploy_workspace, development_target_dir,
-    discover_local_content, generate_local_cargo_realization, git_available, inspect_ide,
-    inspect_local_cargo_package, open_source, promote_role, repair_ide,
-    repair_local_library_cargo_dependencies, resolve_local_content_kind, resolve_local_packagepack,
-    resolve_source_context, role_status, run_cargo_realization, run_workspace_operation,
-    source_state, verify_local_library_cargo_dependencies,
+    DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalContent,
+    MaintenanceStatus, ManagedToolchain, ResolvedComposition, ResolvedContentGraph,
+    SteamDeploymentOptions, VaporId, VaporInstallation, VaporRole, VaporWorkspace,
+    build_cargo_realization, demote_role, deploy_ecosystem_to_steam, deploy_workspace,
+    development_target_dir, diagnose_managed_state, discover_local_content,
+    generate_local_cargo_realization, git_available, inspect_local_cargo_package, open_source,
+    promote_role, reconcile_existing_development_environment,
+    repair_local_library_cargo_dependencies, repair_managed_state, resolve_local_content_kind,
+    resolve_local_packagepack, resolve_source_context, role_status, run_cargo_realization,
+    run_workspace_operation, source_state, verify_local_library_cargo_dependencies,
 };
 use clap::Parser;
 use commands::*;
@@ -47,11 +48,13 @@ fn finish_parse(result: Result<Result<(), String>, clap::Error>) -> ExitCode {
 
         Ok(Err(error)) => {
             eprintln!("error: {error}");
+
             ExitCode::FAILURE
         }
 
         Err(error) => {
             let exit_code = error.exit_code();
+
             let _ = error.print();
 
             ExitCode::from(exit_code as u8)
@@ -61,6 +64,10 @@ fn finish_parse(result: Result<Result<(), String>, clap::Error>) -> ExitCode {
 
 fn execute_vapor(command: VaporCommand) -> Result<(), String> {
     match command {
+        VaporCommand::Diagnose => maintenance_diagnose(),
+
+        VaporCommand::Repair => maintenance_repair(),
+
         VaporCommand::Installation { command } => execute_installation(command),
 
         VaporCommand::Role { command } => execute_role(command),
@@ -114,10 +121,6 @@ fn execute_installer(command: InstallerCommand) -> Result<(), String> {
 fn execute_installation(command: InstallationCommand) -> Result<(), String> {
     match command {
         InstallationCommand::Status => installation_status(),
-
-        InstallationCommand::Diagnose => not_implemented("installation", "diagnose"),
-
-        InstallationCommand::Repair => not_implemented("installation", "repair"),
     }
 }
 
@@ -140,11 +143,8 @@ fn execute_authority(command: AuthorityCommand) -> Result<(), String> {
 fn execute_toolchain(command: ToolchainCommand) -> Result<(), String> {
     match command {
         ToolchainCommand::Status => toolchain_status(),
+
         ToolchainCommand::Install => toolchain_install(),
-
-        ToolchainCommand::Diagnose => not_implemented("toolchain", "diagnose"),
-
-        ToolchainCommand::Repair => not_implemented("toolchain", "repair"),
     }
 }
 
@@ -156,129 +156,121 @@ fn execute_source(command: SourceCommand) -> Result<(), String> {
 
         SourceCommand::Open { path } => source_open(path),
 
-        SourceCommand::Ide { command } => execute_source_ide(command),
-
         SourceCommand::Acquire { .. } => not_implemented("source", "acquire"),
 
         SourceCommand::Fork { .. } => not_implemented("source", "fork"),
     }
 }
 
-fn execute_source_ide(command: IdeCommand) -> Result<(), String> {
-    match command {
-        IdeCommand::Status => source_ide_status(),
+fn maintenance_diagnose() -> Result<(), String> {
+    let status = diagnose_managed_state().map_err(|error| error.to_string())?;
 
-        IdeCommand::Repair => source_ide_repair(),
-    }
-}
-
-fn source_superworkspace() -> Result<VaporSuperworkspace, String> {
-    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
-
-    let context = resolve_source_context(&installation, None).map_err(|error| error.to_string())?;
-
-    VaporSuperworkspace::discover_from(&context.root).map_err(|error| error.to_string())
-}
-
-fn source_ide_status() -> Result<(), String> {
-    let superworkspace = source_superworkspace()?;
-
-    let toolchain = ManagedToolchain::discover().map_err(|error| error.to_string())?;
-
-    let status = inspect_ide(&superworkspace, &toolchain).map_err(|error| error.to_string())?;
-
-    print_ide_status(&superworkspace, &status);
+    print_maintenance_status(&status);
 
     Ok(())
 }
 
-fn source_ide_repair() -> Result<(), String> {
-    let superworkspace = source_superworkspace()?;
+fn maintenance_repair() -> Result<(), String> {
+    let report = repair_managed_state().map_err(|error| error.to_string())?;
 
-    let toolchain = ManagedToolchain::discover().map_err(|error| error.to_string())?;
-
-    let report = repair_ide(&superworkspace, &toolchain).map_err(|error| error.to_string())?;
-
-    if report.written.is_empty() {
-        println!("Vapor IDE configuration already current.");
-    } else {
-        println!("Updated Vapor IDE configuration:");
-
-        for path in &report.written {
-            println!("  {}", path.display());
-        }
-
-        println!();
+    if report.toolchain_installed {
+        println!("Installed the missing Vapor-managed Rust toolchain.");
     }
 
-    print_ide_status(&superworkspace, &report.status);
+    if !report.development_changes.is_empty() {
+        println!("Reconciled the existing Vapor development environment.");
+    }
+
+    if !report.toolchain_installed && report.development_changes.is_empty() {
+        println!("Vapor managed state already healthy.");
+    }
+
+    print_maintenance_status(&report.status);
 
     Ok(())
 }
 
-fn print_ide_status(superworkspace: &VaporSuperworkspace, status: &IdeStatus) {
-    println!("Vapor Superworkspace:");
+fn print_maintenance_status(status: &MaintenanceStatus) {
+    println!("Vapor health:");
 
-    println!("  root: {}", superworkspace.root.display());
+    println!("  installation: {}", status.installation_root.display());
 
-    println!("  repositories:");
-
-    for repository in &superworkspace.repositories {
-        match &repository.kind {
-            SuperworkspaceRepositoryKind::ContainerRepo => {
-                println!("    {}: Container Repo", repository.name);
-            }
-
-            SuperworkspaceRepositoryKind::VaporWorkspace => {
-                println!("    {}: Vapor Workspace", repository.name);
-            }
-
-            SuperworkspaceRepositoryKind::IncompatibleVaporWorkspace { message } => {
-                println!("    {}: legacy/incompatible", repository.name);
-
-                println!("      {message}");
-            }
-        }
-    }
-
-    println!();
-    println!("RustRover / JetBrains:");
-
-    println!("  project root: {}", status.project_root.display());
-
-    println!("  .idea: {}", status.idea_root.display());
-
-    println!("  Rust toolchain: {}", status.toolchain_home.display());
+    println!("  installation via: {}", status.installation_source);
 
     println!(
-        "  stdlib: {}",
-        status
-            .stdlib_source
-            .as_ref()
-            .map(|path| { path.display().to_string() })
-            .unwrap_or_else(|| { "automatic".to_owned() })
+        "  Rust: {} ({})",
+        status.toolchain_version,
+        if status.toolchain_installed {
+            "ready"
+        } else {
+            "missing"
+        },
     );
 
-    println!("  Cargo projects:");
+    println!("  source: {}", status.source_root.display());
 
-    for manifest in &status.cargo_projects {
-        println!("    {}", manifest.display());
-    }
+    println!("  source via: {}", status.source_context_source);
 
-    println!("  files:");
+    match &status.superworkspace_root {
+        Some(root) => {
+            println!("  Superworkspace: {}", root.display());
 
-    for file in &status.files {
-        println!("    {}: {}", file.path.display(), file.state);
+            println!("  active Workspaces: {}", status.current_workspaces);
+
+            println!("  active Projects: {}", status.current_projects);
+
+            if !status.incompatible_workspaces.is_empty() {
+                println!(
+                    "  legacy/incompatible checkouts: {} (inactive)",
+                    status.incompatible_workspaces.len()
+                );
+
+                for issue in &status.incompatible_workspaces {
+                    println!("    {}", issue.name);
+                }
+            }
+
+            if status.jetbrains_present {
+                let state = match &status.ide_status {
+                    Some(ide) if ide.is_current() => "current",
+
+                    Some(_) => "repair required",
+
+                    None if !status.toolchain_installed => "blocked by missing toolchain",
+
+                    None => "unavailable",
+                };
+
+                println!("  RustRover / JetBrains: {state}");
+            } else {
+                println!("  RustRover / JetBrains: not configured");
+            }
+        }
+
+        None => {
+            println!("  Superworkspace: none in current source context");
+        }
     }
 
     println!(
         "  state: {}",
-        if status.is_current() {
-            "current"
+        if status.is_healthy() {
+            "healthy"
         } else {
-            "repair required"
-        }
+            "attention required"
+        },
     );
+}
+
+fn synchronize_existing_development_environment(source_root: &Path) -> Result<(), String> {
+    let changed = reconcile_existing_development_environment(source_root)
+        .map_err(|error| error.to_string())?;
+
+    if !changed.is_empty() {
+        println!("Synchronized existing Vapor development environment.");
+    }
+
+    Ok(())
 }
 
 fn execute_ecosystem(command: EcosystemCommand) -> Result<(), String> {
@@ -297,7 +289,15 @@ fn execute_ecosystem(command: EcosystemCommand) -> Result<(), String> {
 
         EcosystemCommand::Publish => not_implemented("ecosystem", "publish"),
 
-        EcosystemCommand::Deploy => ecosystem_deploy(),
+        EcosystemCommand::Deploy { command } => execute_ecosystem_deploy(command),
+    }
+}
+
+fn execute_ecosystem_deploy(command: EcosystemDeployCommand) -> Result<(), String> {
+    match command {
+        EcosystemDeployCommand::Local => ecosystem_deploy_local(),
+
+        EcosystemDeployCommand::Steam(args) => ecosystem_deploy_steam(args),
     }
 }
 
@@ -619,11 +619,11 @@ fn ecosystem_status() -> Result<(), String> {
     Ok(())
 }
 
-fn ecosystem_deploy() -> Result<(), String> {
+fn ecosystem_deploy_local() -> Result<(), String> {
     let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
 
     println!(
-        "Deploying Vapor ecosystem {}/{} {} into its active Installation...",
+        "Deploying Vapor ecosystem {}/{} {} locally...",
         workspace.manifest.workspace.organization,
         workspace.manifest.workspace.name,
         workspace.manifest.workspace.version,
@@ -632,29 +632,85 @@ fn ecosystem_deploy() -> Result<(), String> {
     let report = deploy_workspace(&workspace).map_err(|error| error.to_string())?;
 
     println!();
+
     println!("Vapor Installation: {}", report.installation_root.display());
 
     println!("Deployed binaries:");
 
     for binary in &report.binaries {
-        println!("  {}:", binary.name);
-
-        println!("    build: {}", binary.source.display());
-
-        println!("    installed: {}", binary.destination.display());
+        println!("  {} -> {}", binary.name, binary.destination.display(),);
     }
 
-    println!();
     println!("Shell activation: {}", report.activation_script.display());
 
-    #[cfg(not(windows))]
-    println!("  . \"{}\"", report.activation_script.display());
+    if let Err(error) = synchronize_existing_development_environment(&workspace.root) {
+        eprintln!(
+            "warning: local ecosystem deployment succeeded, but the existing development environment could not be synchronized: {error}"
+        );
+    }
 
-    #[cfg(windows)]
-    println!("  \"{}\"", report.activation_script.display());
+    Ok(())
+}
+
+fn ecosystem_deploy_steam(args: SteamDeployArgs) -> Result<(), String> {
+    let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
+
+    println!(
+        "Deploying Vapor ecosystem {}/{} {} to Steam{}...",
+        workspace.manifest.workspace.organization,
+        workspace.manifest.workspace.name,
+        workspace.manifest.workspace.version,
+        if args.preview { " (preview)" } else { "" },
+    );
+
+    let report = deploy_ecosystem_to_steam(
+        &workspace,
+        SteamDeploymentOptions {
+            preview: args.preview,
+            account: args.account,
+            steamcmd: args.steamcmd,
+        },
+    )
+    .map_err(|error| error.to_string())?;
 
     println!();
-    println!("After activation, normal dogfooding should use the installed `vapor` command.");
+
+    println!("Steam App: {}", report.app_id);
+
+    println!("Steam account: {}", report.account);
+
+    println!("SteamCMD: {}", report.steamcmd.display());
+
+    println!("Staging: {}", report.stage_root.display());
+
+    println!("Depots:");
+
+    for depot in &report.depots {
+        println!(
+            "  {} ({}): {}",
+            depot.name,
+            depot.id,
+            depot.content_root.display(),
+        );
+    }
+
+    println!("App build script: {}", report.app_build_script.display());
+
+    println!("SteamPipe output/cache: {}", report.output_root.display());
+
+    if report.preview {
+        println!();
+
+        println!("SteamPipe preview completed successfully.");
+
+        println!("No depot content was uploaded and no branch was changed.");
+    } else {
+        println!();
+
+        println!("SteamPipe upload completed successfully.");
+
+        println!("Requested SetLive on branch `{}`.", report.branch);
+    }
 
     Ok(())
 }
@@ -753,9 +809,16 @@ fn source_open(path: Option<PathBuf>) -> Result<(), String> {
     let active = state.active.expect("opening a source always selects it");
 
     println!("Opened Vapor source:");
+
     println!("  {}", active.display());
 
     println!("  installation state: {}", state.state_path.display());
+
+    if let Err(error) = synchronize_existing_development_environment(&active) {
+        eprintln!(
+            "warning: source opened, but the existing development environment could not be synchronized: {error}"
+        );
+    }
 
     Ok(())
 }

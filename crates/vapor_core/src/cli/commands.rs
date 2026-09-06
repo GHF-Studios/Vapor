@@ -35,6 +35,12 @@ pub(super) struct InstallerCli {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum VaporCommand {
+    /// Diagnose the currently resolvable Vapor environment.
+    Diagnose,
+
+    /// Repair safe Vapor-managed and regeneratable state.
+    Repair,
+
     Installation {
         #[command(subcommand)]
         command: InstallationCommand,
@@ -142,8 +148,6 @@ pub(super) enum InstallerCommand {
 #[derive(Debug, Subcommand)]
 pub(super) enum InstallationCommand {
     Status,
-    Diagnose,
-    Repair,
 }
 
 #[derive(Debug, Subcommand)]
@@ -170,8 +174,6 @@ pub(super) enum AuthorityCommand {
 pub(super) enum ToolchainCommand {
     Status,
     Install,
-    Diagnose,
-    Repair,
 }
 
 #[derive(Debug, Subcommand)]
@@ -185,12 +187,6 @@ pub(super) enum SourceCommand {
         path: Option<PathBuf>,
     },
 
-    /// Inspect or repair IDE integration for the containing Superworkspace.
-    Ide {
-        #[command(subcommand)]
-        command: IdeCommand,
-    },
-
     Acquire {
         #[arg(value_name = "SOURCE")]
         source: String,
@@ -200,12 +196,6 @@ pub(super) enum SourceCommand {
         #[arg(value_name = "SOURCE")]
         source: String,
     },
-}
-
-#[derive(Debug, Subcommand)]
-pub(super) enum IdeCommand {
-    Status,
-    Repair,
 }
 
 #[derive(Debug, Subcommand)]
@@ -230,7 +220,36 @@ pub(super) enum EcosystemCommand {
     Build,
     Test,
     Publish,
-    Deploy,
+
+    Deploy {
+        #[command(subcommand)]
+        command: EcosystemDeployCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum EcosystemDeployCommand {
+    /// Deploy the current ecosystem build into the active local App Instance.
+    Local,
+
+    /// Stage and deploy the current ecosystem build through SteamPipe.
+    Steam(SteamDeployArgs),
+}
+
+#[derive(Debug, Args)]
+pub(super) struct SteamDeployArgs {
+    /// Run a real SteamPipe preview build. Steam validates the build and
+    /// produces manifests/logs without uploading content.
+    #[arg(long)]
+    pub(super) preview: bool,
+
+    /// Steam build account. The first explicit value is remembered locally.
+    #[arg(long, value_name = "ACCOUNT")]
+    pub(super) account: Option<String>,
+
+    /// Explicit SteamCMD path.
+    #[arg(long, value_name = "PATH")]
+    pub(super) steamcmd: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]

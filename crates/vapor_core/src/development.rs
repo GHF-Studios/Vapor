@@ -43,6 +43,20 @@ impl fmt::Display for DevelopmentOperation {
 }
 
 #[derive(Debug, Clone)]
+pub struct BuiltBinary {
+    pub name: String,
+    pub source: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct EcosystemBuildReport {
+    pub installation_root: PathBuf,
+    pub binaries: Vec<BuiltBinary>,
+    pub activation_script: PathBuf,
+    pub toolchain_metadata: PathBuf,
+}
+
+#[derive(Debug, Clone)]
 pub struct DeployedBinary {
     pub name: String,
     pub source: PathBuf,
@@ -70,16 +84,18 @@ pub fn run_workspace_operation(
     Ok(())
 }
 
-/// Build the current Vapor command surfaces through the active Installation's
-/// managed toolchain and promote them into that Installation.
+/// Build the distributable Vapor command surfaces without choosing a
+/// deployment target.
 ///
-/// A source-local rewrite-bootstrap `.vapor` directory is deliberately not a
-/// valid deployment target. The first real deployment must select the actual
-/// Vapor App Instance through `VAPOR_HOME`; afterward the installed executable
-/// discovers that same Installation automatically.
-pub fn deploy_workspace(
+/// Build output belongs to Installation-managed development state. The
+/// resulting binaries may subsequently be deployed locally, staged for Steam,
+/// or consumed by another future deployment target.
+///
+/// This operation deliberately does not promote the binaries into
+/// `<installation>/bin`.
+pub fn build_workspace_deployment_inputs(
     workspace: &VaporWorkspace,
-) -> Result<EcosystemDeploymentReport, DevelopmentError> {
+) -> Result<EcosystemBuildReport, DevelopmentError> {
     let toolchain =
         ManagedToolchain::for_workspace(workspace).map_err(DevelopmentError::Toolchain)?;
 
@@ -89,17 +105,11 @@ pub fn deploy_workspace(
         });
     }
 
-    toolchain
+    let toolchain_metadata = toolchain
         .persist_installation_metadata()
         .map_err(DevelopmentError::Toolchain)?;
 
     let installation_root = toolchain.vapor_home.clone();
-    let bin_root = installation_root.join(BIN_DIR);
-
-    fs::create_dir_all(&bin_root).map_err(|source| DevelopmentError::Io {
-        path: bin_root.clone(),
-        source,
-    })?;
 
     let mut binaries = Vec::new();
 
@@ -108,9 +118,7 @@ pub fn deploy_workspace(
 
         build_binary(&toolchain, &target, binary)?;
 
-        let target_dir = development_target_dir(&toolchain, &target.project);
-
-        let source = target_dir
+        let source = development_target_dir(&toolchain, &target.project)
             .join(DEV_PROFILE_DIR)
             .join(executable_name(binary));
 
@@ -121,23 +129,54 @@ pub fn deploy_workspace(
             });
         }
 
-        let destination = bin_root.join(executable_name(binary));
-
-        promote_file(&source, &destination)?;
-
-        binaries.push(DeployedBinary {
+        binaries.push(BuiltBinary {
             name: binary.to_owned(),
             source,
+        });
+    }
+
+    let activation_script = write_activation_script(&installation_root, &toolchain)?;
+
+    Ok(EcosystemBuildReport {
+        installation_root,
+        binaries,
+        activation_script,
+        toolchain_metadata,
+    })
+}
+
+/// Build the current Vapor command surfaces and promote them into the active
+/// local Vapor App Instance.
+pub fn deploy_workspace(
+    workspace: &VaporWorkspace,
+) -> Result<EcosystemDeploymentReport, DevelopmentError> {
+    let build = build_workspace_deployment_inputs(workspace)?;
+
+    let bin_root = build.installation_root.join(BIN_DIR);
+
+    fs::create_dir_all(&bin_root).map_err(|source| DevelopmentError::Io {
+        path: bin_root.clone(),
+        source,
+    })?;
+
+    let mut binaries = Vec::new();
+
+    for binary in &build.binaries {
+        let destination = bin_root.join(executable_name(&binary.name));
+
+        promote_file(&binary.source, &destination)?;
+
+        binaries.push(DeployedBinary {
+            name: binary.name.clone(),
+            source: binary.source.clone(),
             destination,
         });
     }
 
-    let activation_script = write_activation_script(&installation_root)?;
-
     Ok(EcosystemDeploymentReport {
-        installation_root,
+        installation_root: build.installation_root,
         binaries,
-        activation_script,
+        activation_script: build.activation_script,
     })
 }
 
@@ -224,7 +263,7 @@ fn find_binary_target(
             binary: binary.to_owned(),
             matches: matches
                 .into_iter()
-                .map(|target| format!("{}/{}", target.project.name, target.package))
+                .map(|target| format!("{}/{}", target.project.name, target.package,))
                 .collect(),
         }),
     }
@@ -376,30 +415,68 @@ fn activation_script_name() -> &'static str {
     }
 }
 
+fn managed_toolchain_bin_relative(
+    installation_root: &Path,
+    toolchain: &ManagedToolchain,
+) -> Result<PathBuf, DevelopmentError> {
+    let rust_bin =
+        toolchain
+            .rustc_path
+            .parent()
+            .ok_or_else(|| DevelopmentError::InvalidDeploymentPath {
+                path: toolchain.rustc_path.clone(),
+            })?;
+
+    rust_bin
+        .strip_prefix(installation_root)
+        .map(Path::to_path_buf)
+        .map_err(|_| DevelopmentError::InvalidDeploymentPath {
+            path: rust_bin.to_path_buf(),
+        })
+}
+
 #[cfg(not(windows))]
-fn write_activation_script(installation_root: &Path) -> Result<PathBuf, DevelopmentError> {
+fn write_activation_script(
+    installation_root: &Path,
+    toolchain: &ManagedToolchain,
+) -> Result<PathBuf, DevelopmentError> {
     let path = installation_root.join(activation_script_name());
 
-    let root = shell_quote(installation_root);
+    let rust_bin = managed_toolchain_bin_relative(installation_root, toolchain)?
+        .to_string_lossy()
+        .replace('\\', "/");
 
     let source = format!(
-        r#"# Generated by `vapor ecosystem deploy`.
+        r#"#!/usr/bin/env bash
+# Generated by Vapor.
 #
-# Source this file to expose this Installation's Vapor commands.
+# Source this file to expose this App Instance's installed Vapor commands and
+# managed pinned Rust toolchain.
 #
-# VAPOR_HOME is intentionally cleared: once Vapor is installed beneath bin/,
-# the executable itself is authoritative for discovering its Installation.
+# The script is intentionally relocatable. Steam may move or reacquire the App
+# Instance at a different absolute path.
+
+VAPOR_ROOT="$(
+    CDPATH= cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" &&
+    pwd
+)"
 
 unset VAPOR_HOME
 
-VAPOR_BIN={root}/bin
+VAPOR_BIN="$VAPOR_ROOT/bin"
+VAPOR_RUST_BIN="$VAPOR_ROOT/{rust_bin}"
 
-case ":$PATH:" in
-    *":$VAPOR_BIN:"*) ;;
-    *) export PATH="$VAPOR_BIN${{PATH:+:$PATH}}" ;;
-esac
+for VAPOR_PATH in "$VAPOR_RUST_BIN" "$VAPOR_BIN"; do
+    case ":$PATH:" in
+        *":$VAPOR_PATH:"*) ;;
+        *) export PATH="$VAPOR_PATH${{PATH:+:$PATH}}" ;;
+    esac
+done
 
+unset VAPOR_PATH
 unset VAPOR_BIN
+unset VAPOR_RUST_BIN
+unset VAPOR_ROOT
 "#
     );
 
@@ -428,17 +505,24 @@ unset VAPOR_BIN
 }
 
 #[cfg(windows)]
-fn write_activation_script(installation_root: &Path) -> Result<PathBuf, DevelopmentError> {
+fn write_activation_script(
+    installation_root: &Path,
+    toolchain: &ManagedToolchain,
+) -> Result<PathBuf, DevelopmentError> {
     let path = installation_root.join(activation_script_name());
 
-    let root = installation_root.display();
+    let rust_bin = managed_toolchain_bin_relative(installation_root, toolchain)?
+        .to_string_lossy()
+        .replace('/', "\\");
 
     let source = format!(
         "@echo off\r\n\
-         rem Generated by `vapor ecosystem deploy`.\r\n\
-         rem Installed Vapor discovers its Installation from its executable.\r\n\
-         set \"VAPOR_HOME=\"\r\n\
-         set \"PATH={root}\\bin;%PATH%\"\r\n"
+             rem Generated by Vapor.\r\n\
+             rem This script is intentionally relocatable with the App Instance.\r\n\
+             set \"VAPOR_HOME=\"\r\n\
+             set \"VAPOR_ROOT=%~dp0\"\r\n\
+             set \"PATH=%VAPOR_ROOT%bin;%VAPOR_ROOT%{rust_bin};%PATH%\"\r\n\
+             set \"VAPOR_ROOT=\"\r\n"
     );
 
     fs::write(&path, source).map_err(|source| DevelopmentError::Io {
@@ -449,15 +533,8 @@ fn write_activation_script(installation_root: &Path) -> Result<PathBuf, Developm
     Ok(path)
 }
 
-#[cfg(not(windows))]
-fn shell_quote(path: &Path) -> String {
-    let value = path.to_string_lossy();
-
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
 fn executable_name(stem: &str) -> String {
-    format!("{stem}{}", env::consts::EXE_SUFFIX)
+    format!("{stem}{}", env::consts::EXE_SUFFIX,)
 }
 
 #[derive(Debug)]

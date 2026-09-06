@@ -11,10 +11,12 @@ pub mod ide;
 pub mod identity;
 pub mod installation;
 pub mod local;
+pub mod maintenance;
 pub mod manifest;
 pub mod resolution;
 pub mod role;
 pub mod source;
+pub mod steam;
 pub mod superworkspace;
 pub mod toolchain;
 pub mod workspace;
@@ -36,8 +38,9 @@ pub use cli::{CliSurface, run_cli};
 pub use content::{ContentKind, DependencySpec};
 
 pub use development::{
-    DeployedBinary, DevelopmentError, DevelopmentOperation, EcosystemDeploymentReport,
-    deploy_workspace, development_target_dir, run_workspace_operation,
+    BuiltBinary, DeployedBinary, DevelopmentError, DevelopmentOperation, EcosystemBuildReport,
+    EcosystemDeploymentReport, build_workspace_deployment_inputs, deploy_workspace,
+    development_target_dir, run_workspace_operation,
 };
 
 pub use ide::{
@@ -53,6 +56,11 @@ pub use installation::{
 pub use local::{
     CONTENT_MANIFEST_FILE_NAME, LocalCatalog, LocalContent, LocalDiscoveryError,
     discover_local_content,
+};
+
+pub use maintenance::{
+    MaintenanceError, MaintenanceIssue, MaintenanceRepairReport, MaintenanceStatus,
+    diagnose_managed_state, reconcile_existing_development_environment, repair_managed_state,
 };
 
 pub use manifest::{ContentHeader, ContentManifest, ManifestError, parse_content_manifest};
@@ -71,6 +79,11 @@ pub use role::{
 pub use source::{
     ResolvedSourceContext, SourceContextSource, SourceError, SourceState, active_source,
     open_source, resolve_source_context, source_state,
+};
+
+pub use steam::{
+    EcosystemDistributionManifest, SteamDeploymentError, SteamDeploymentOptions,
+    SteamDeploymentReport, SteamDepotStage, deploy_ecosystem_to_steam,
 };
 
 pub use superworkspace::{
