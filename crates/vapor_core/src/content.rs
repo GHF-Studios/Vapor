@@ -18,6 +18,7 @@ pub enum ContentKind {
     EngineMod,
     GameMod,
     ExtensionMod,
+    Library,
 }
 
 impl ContentKind {
@@ -32,6 +33,7 @@ impl ContentKind {
             Self::EngineMod => "engine-mod",
             Self::GameMod => "game-mod",
             Self::ExtensionMod => "extension-mod",
+            Self::Library => "library",
         }
     }
 }

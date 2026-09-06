@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cargo;
+pub mod cargo_reconciliation;
 pub mod cli;
 pub mod content;
 pub mod development;
@@ -16,8 +17,15 @@ pub mod toolchain;
 pub mod workspace;
 
 pub use cargo::{
-    CargoRealization, CargoRealizationError, build_cargo_realization,
-    generate_local_cargo_realization, run_cargo_realization,
+    CargoInspectionError, CargoPackageInspection, CargoRealization, CargoRealizationError,
+    CargoTargetInspection, build_cargo_realization, generate_local_cargo_realization,
+    inspect_local_cargo_package, run_cargo_realization,
+};
+
+pub use cargo_reconciliation::{
+    CargoDependencyReconciliation, CargoDependencyState, CargoReconciliationError,
+    CargoRepairReport, LibraryCargoReconciliation, repair_local_library_cargo_dependencies,
+    verify_local_library_cargo_dependencies,
 };
 
 pub use cli::{CliSurface, run_cli};
@@ -43,8 +51,8 @@ pub use manifest::{ContentHeader, ContentManifest, ManifestError, parse_content_
 
 pub use resolution::{
     ResolutionError, ResolvedComposition, ResolvedContentGraph, ResolvedContentNode,
-    resolve_local_content, resolve_local_pack, resolve_local_packagepack,
-    validate_resolved_content_graph,
+    resolve_local_content, resolve_local_content_kind, resolve_local_pack,
+    resolve_local_packagepack, validate_resolved_content_graph,
 };
 
 pub use role::{

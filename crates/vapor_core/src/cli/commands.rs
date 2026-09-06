@@ -72,17 +72,17 @@ pub(super) enum VaporCommand {
 
     Enginepack {
         #[command(subcommand)]
-        command: PackCommand,
+        command: GraphContentCommand,
     },
 
     Gamepack {
         #[command(subcommand)]
-        command: PackCommand,
+        command: GraphContentCommand,
     },
 
     Modpack {
         #[command(subcommand)]
-        command: PackCommand,
+        command: GraphContentCommand,
     },
 
     Engine {
@@ -108,6 +108,11 @@ pub(super) enum VaporCommand {
     ExtensionMod {
         #[command(subcommand)]
         command: BehavioralContentCommand,
+    },
+
+    Library {
+        #[command(subcommand)]
+        command: LibraryCommand,
     },
 }
 
@@ -227,7 +232,7 @@ pub(super) enum PackagepackCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub(super) enum PackCommand {
+pub(super) enum GraphContentCommand {
     Create(CreateContentArgs),
     List(ContentListArgs),
     Inspect(LocalContentTargetArgs),
@@ -243,6 +248,18 @@ pub(super) enum BehavioralContentCommand {
     List(ContentListArgs),
     Inspect(LocalContentTargetArgs),
     Verify(LocalContentTargetArgs),
+    Test(LocalContentTargetArgs),
+    Publish(ContentIdentityArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum LibraryCommand {
+    Create(CreateContentArgs),
+    List(ContentListArgs),
+    Inspect(LocalContentTargetArgs),
+    Resolve(LocalContentTargetArgs),
+    Verify(LocalContentTargetArgs),
+    Repair(LocalContentTargetArgs),
     Test(LocalContentTargetArgs),
     Publish(ContentIdentityArgs),
 }

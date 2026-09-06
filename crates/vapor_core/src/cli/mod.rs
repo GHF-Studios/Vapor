@@ -6,12 +6,14 @@
 mod commands;
 
 use crate::{
-    ContentKind, ContentVersionId, DevelopmentOperation, LocalCatalog, LocalContent,
-    ManagedToolchain, ResolvedComposition, ResolvedContentGraph, VaporId, VaporInstallation,
-    VaporRole, VaporWorkspace, build_cargo_realization, demote_role, development_target_dir,
-    discover_local_content, generate_local_cargo_realization, git_available, promote_role,
-    resolve_local_pack, resolve_local_packagepack, role_status, run_cargo_realization,
-    run_workspace_operation,
+    CargoDependencyState, CargoPackageInspection, ContentKind, ContentVersionId,
+    DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalContent, ManagedToolchain,
+    ResolvedComposition, ResolvedContentGraph, VaporId, VaporInstallation, VaporRole,
+    VaporWorkspace, build_cargo_realization, demote_role, development_target_dir,
+    discover_local_content, generate_local_cargo_realization, git_available,
+    inspect_local_cargo_package, promote_role, repair_local_library_cargo_dependencies,
+    resolve_local_content_kind, resolve_local_packagepack, role_status, run_cargo_realization,
+    run_workspace_operation, verify_local_library_cargo_dependencies,
 };
 use clap::Parser;
 use commands::*;
@@ -71,11 +73,13 @@ fn execute_vapor(command: VaporCommand) -> Result<(), String> {
 
         VaporCommand::Packagepack { command } => execute_packagepack(command),
 
-        VaporCommand::Enginepack { command } => execute_pack(ContentKind::Enginepack, command),
+        VaporCommand::Enginepack { command } => {
+            execute_graph_content(ContentKind::Enginepack, command)
+        }
 
-        VaporCommand::Gamepack { command } => execute_pack(ContentKind::Gamepack, command),
+        VaporCommand::Gamepack { command } => execute_graph_content(ContentKind::Gamepack, command),
 
-        VaporCommand::Modpack { command } => execute_pack(ContentKind::Modpack, command),
+        VaporCommand::Modpack { command } => execute_graph_content(ContentKind::Modpack, command),
 
         VaporCommand::Engine { command } => execute_behavioral(ContentKind::Engine, command),
 
@@ -88,6 +92,8 @@ fn execute_vapor(command: VaporCommand) -> Result<(), String> {
         VaporCommand::ExtensionMod { command } => {
             execute_behavioral(ContentKind::ExtensionMod, command)
         }
+
+        VaporCommand::Library { command } => execute_library(command),
     }
 }
 
@@ -200,21 +206,21 @@ fn execute_packagepack(command: PackagepackCommand) -> Result<(), String> {
     }
 }
 
-fn execute_pack(kind: ContentKind, command: PackCommand) -> Result<(), String> {
+fn execute_graph_content(kind: ContentKind, command: GraphContentCommand) -> Result<(), String> {
     match command {
-        PackCommand::Create(_) => not_implemented(kind.as_str(), "create"),
+        GraphContentCommand::Create(_) => not_implemented(kind.as_str(), "create"),
 
-        PackCommand::List(args) => content_list(kind, args),
+        GraphContentCommand::List(args) => content_list(kind, args),
 
-        PackCommand::Inspect(args) => content_inspect(kind, args),
+        GraphContentCommand::Inspect(args) => content_inspect(kind, args),
 
-        PackCommand::Resolve(args) => pack_resolve(kind, args),
+        GraphContentCommand::Resolve(args) => content_resolve(kind, args),
 
-        PackCommand::Verify(_) => not_implemented(kind.as_str(), "verify"),
+        GraphContentCommand::Verify(_) => not_implemented(kind.as_str(), "verify"),
 
-        PackCommand::Test(_) => not_implemented(kind.as_str(), "test"),
+        GraphContentCommand::Test(_) => not_implemented(kind.as_str(), "test"),
 
-        PackCommand::Publish(_) => not_implemented(kind.as_str(), "publish"),
+        GraphContentCommand::Publish(_) => not_implemented(kind.as_str(), "publish"),
     }
 }
 
@@ -231,6 +237,26 @@ fn execute_behavioral(kind: ContentKind, command: BehavioralContentCommand) -> R
         BehavioralContentCommand::Test(_) => not_implemented(kind.as_str(), "test"),
 
         BehavioralContentCommand::Publish(_) => not_implemented(kind.as_str(), "publish"),
+    }
+}
+
+fn execute_library(command: LibraryCommand) -> Result<(), String> {
+    match command {
+        LibraryCommand::Create(_) => not_implemented("library", "create"),
+
+        LibraryCommand::List(args) => content_list(ContentKind::Library, args),
+
+        LibraryCommand::Inspect(args) => content_inspect(ContentKind::Library, args),
+
+        LibraryCommand::Resolve(args) => content_resolve(ContentKind::Library, args),
+
+        LibraryCommand::Verify(args) => library_verify(args),
+
+        LibraryCommand::Repair(args) => library_repair(args),
+
+        LibraryCommand::Test(_) => not_implemented("library", "test"),
+
+        LibraryCommand::Publish(_) => not_implemented("library", "publish"),
     }
 }
 
@@ -522,8 +548,8 @@ fn packagepack_resolve(args: LocalContentTargetArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn pack_resolve(kind: ContentKind, args: LocalContentTargetArgs) -> Result<(), String> {
-    let (_, _, graph) = prepare_pack(kind, args)?;
+fn content_resolve(kind: ContentKind, args: LocalContentTargetArgs) -> Result<(), String> {
+    let (_, catalog, graph) = prepare_content_graph(kind, args)?;
 
     print_resolved_graph(&graph);
 
@@ -564,10 +590,126 @@ fn pack_resolve(kind: ContentKind, args: LocalContentTargetArgs) -> Result<(), S
             println!("Effective Mods: {count}");
         }
 
+        ContentKind::Library => {
+            let content = catalog
+                .get(&graph.root)
+                .expect("resolved local Library must remain in the local catalog");
+
+            let package =
+                inspect_local_cargo_package(content).map_err(|error| error.to_string())?;
+
+            if !package.has_library_target() {
+                return Err(format!(
+                    "Vapor Library `{}` maps to Cargo package `{} {}`, \
+                     but that package exposes no Rust library target",
+                    graph.root, package.name, package.version
+                ));
+            }
+
+            print_cargo_package(&package);
+        }
+
         _ => {}
     }
 
     Ok(())
+}
+
+fn library_verify(args: LocalContentTargetArgs) -> Result<(), String> {
+    let (_, catalog, graph) = prepare_content_graph(ContentKind::Library, args)?;
+
+    let reconciliation = verify_local_library_cargo_dependencies(&catalog, &graph)
+        .map_err(|error| error.to_string())?;
+
+    print_library_cargo_reconciliation(&reconciliation);
+
+    if reconciliation.is_valid() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Cargo realization for `{}` does not match its resolved Vapor dependencies",
+            reconciliation.library
+        ))
+    }
+}
+
+fn library_repair(args: LocalContentTargetArgs) -> Result<(), String> {
+    let (_, catalog, graph) = prepare_content_graph(ContentKind::Library, args)?;
+
+    let report = repair_local_library_cargo_dependencies(&catalog, &graph)
+        .map_err(|error| error.to_string())?;
+
+    if report.added_bindings.is_empty() {
+        println!("Cargo realization already required no repair.");
+    } else {
+        println!(
+            "Added Cargo dependency binding(s): {}",
+            report.added_bindings.join(", ")
+        );
+    }
+
+    println!();
+    print_library_cargo_reconciliation(&report.reconciliation);
+
+    Ok(())
+}
+
+fn print_library_cargo_reconciliation(reconciliation: &LibraryCargoReconciliation) {
+    println!("Cargo realization for {}:", reconciliation.library);
+    println!(
+        "  package: {} {}",
+        reconciliation.package.name, reconciliation.package.version
+    );
+    println!(
+        "  manifest: {}",
+        reconciliation.package.manifest_path.display()
+    );
+    println!("  dependencies:");
+
+    if reconciliation.dependencies.is_empty() {
+        println!("    none");
+        return;
+    }
+
+    for dependency in &reconciliation.dependencies {
+        println!(
+            "    {} -> {}: {}",
+            dependency.binding, dependency.dependency, dependency.state
+        );
+
+        match &dependency.state {
+            CargoDependencyState::Conflict { declarations } => {
+                for declaration in declarations {
+                    println!("      Cargo: {declaration}");
+                }
+            }
+
+            CargoDependencyState::Unresolved { message } => {
+                println!("      {message}");
+            }
+
+            _ => {}
+        }
+    }
+}
+
+fn print_cargo_package(package: &CargoPackageInspection) {
+    println!();
+    println!("Physical Cargo package:");
+    println!("  name: {}", package.name);
+    println!("  version: {}", package.version);
+    println!("  manifest: {}", package.manifest_path.display());
+    println!("  workspace: {}", package.workspace_root.display());
+    println!("  library targets:");
+
+    for target in package.library_targets() {
+        println!(
+            "    {} [{}] {}",
+            target.name,
+            target.crate_types.join(", "),
+            target.src_path.display()
+        );
+    }
 }
 
 fn packagepack_build(args: LocalContentTargetArgs) -> Result<(), String> {
@@ -597,7 +739,7 @@ fn packagepack_run(args: LocalContentTargetArgs) -> Result<(), String> {
     run_cargo_realization(&realization).map_err(|error| error.to_string())
 }
 
-fn prepare_pack(
+fn prepare_content_graph(
     kind: ContentKind,
     args: LocalContentTargetArgs,
 ) -> Result<(PathBuf, LocalCatalog, ResolvedContentGraph), String> {
@@ -609,7 +751,8 @@ fn prepare_pack(
 
     let id = content.manifest.content.id.clone();
 
-    let graph = resolve_local_pack(&catalog, &id, kind).map_err(|error| error.to_string())?;
+    let graph =
+        resolve_local_content_kind(&catalog, &id, kind).map_err(|error| error.to_string())?;
 
     Ok((root, catalog, graph))
 }

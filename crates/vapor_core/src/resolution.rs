@@ -107,11 +107,16 @@ pub fn resolve_local_content(
     })
 }
 
-/// Resolve and validate one pack kind.
+/// Resolve arbitrary Vapor Content while requiring one expected root kind.
 ///
-/// Enginepack, Gamepack, Modpack, and Packagepack all use the same underlying
-/// resolver. Their semantic guarantees are validated only after resolution.
-pub fn resolve_local_pack(
+/// Resolution remains generic. This layer only adds:
+///
+/// - root-kind validation,
+/// - Content-kind relationship validation,
+/// - applicable pack validation.
+///
+/// Pack validation is a no-op for non-pack roots such as Libraries.
+pub fn resolve_local_content_kind(
     catalog: &LocalCatalog,
     content_id: &VaporId,
     expected_kind: ContentKind,
@@ -132,6 +137,18 @@ pub fn resolve_local_pack(
     validate_pack_graph(&graph)?;
 
     Ok(graph)
+}
+
+/// Resolve and validate one pack kind.
+///
+/// Retained as the pack-oriented semantic entry point while all kinds share
+/// the same underlying resolver.
+pub fn resolve_local_pack(
+    catalog: &LocalCatalog,
+    content_id: &VaporId,
+    expected_kind: ContentKind,
+) -> Result<ResolvedContentGraph, ResolutionError> {
+    resolve_local_content_kind(catalog, content_id, expected_kind)
 }
 
 /// Resolve a Packagepack into a complete Vapor App Composition.
