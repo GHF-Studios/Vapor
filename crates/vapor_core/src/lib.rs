@@ -7,12 +7,15 @@ pub mod cargo_reconciliation;
 pub mod cli;
 pub mod content;
 pub mod development;
+pub mod ide;
 pub mod identity;
 pub mod installation;
 pub mod local;
 pub mod manifest;
 pub mod resolution;
 pub mod role;
+pub mod source;
+pub mod superworkspace;
 pub mod toolchain;
 pub mod workspace;
 
@@ -33,7 +36,12 @@ pub use cli::{CliSurface, run_cli};
 pub use content::{ContentKind, DependencySpec};
 
 pub use development::{
-    DevelopmentError, DevelopmentOperation, development_target_dir, run_workspace_operation,
+    DeployedBinary, DevelopmentError, DevelopmentOperation, EcosystemDeploymentReport,
+    deploy_workspace, development_target_dir, run_workspace_operation,
+};
+
+pub use ide::{
+    IdeError, IdeFileState, IdeFileStatus, IdeRepairReport, IdeStatus, inspect_ide, repair_ide,
 };
 
 pub use identity::{ContentVersionId, ParseVaporIdError, VaporId};
@@ -58,6 +66,16 @@ pub use resolution::{
 pub use role::{
     ParseVaporRoleError, RoleError, RoleStatus, RoleTransitionReport, VaporRole, demote_role,
     git_available, installed_role, promote_role, role_status,
+};
+
+pub use source::{
+    ResolvedSourceContext, SourceContextSource, SourceError, SourceState, active_source,
+    open_source, resolve_source_context, source_state,
+};
+
+pub use superworkspace::{
+    SuperworkspaceError, SuperworkspaceProject, SuperworkspaceRepository,
+    SuperworkspaceRepositoryKind, VaporSuperworkspace,
 };
 
 pub use toolchain::{ManagedToolchain, ToolchainError};

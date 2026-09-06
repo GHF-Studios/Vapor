@@ -7,13 +7,15 @@ mod commands;
 
 use crate::{
     CargoDependencyState, CargoPackageInspection, ContentKind, ContentVersionId,
-    DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalContent, ManagedToolchain,
-    ResolvedComposition, ResolvedContentGraph, VaporId, VaporInstallation, VaporRole,
-    VaporWorkspace, build_cargo_realization, demote_role, development_target_dir,
-    discover_local_content, generate_local_cargo_realization, git_available,
-    inspect_local_cargo_package, promote_role, repair_local_library_cargo_dependencies,
-    resolve_local_content_kind, resolve_local_packagepack, role_status, run_cargo_realization,
-    run_workspace_operation, verify_local_library_cargo_dependencies,
+    DevelopmentOperation, IdeStatus, LibraryCargoReconciliation, LocalCatalog, LocalContent,
+    ManagedToolchain, ResolvedComposition, ResolvedContentGraph, SuperworkspaceRepositoryKind,
+    VaporId, VaporInstallation, VaporRole, VaporSuperworkspace, VaporWorkspace,
+    build_cargo_realization, demote_role, deploy_workspace, development_target_dir,
+    discover_local_content, generate_local_cargo_realization, git_available, inspect_ide,
+    inspect_local_cargo_package, open_source, promote_role, repair_ide,
+    repair_local_library_cargo_dependencies, resolve_local_content_kind, resolve_local_packagepack,
+    resolve_source_context, role_status, run_cargo_realization, run_workspace_operation,
+    source_state, verify_local_library_cargo_dependencies,
 };
 use clap::Parser;
 use commands::*;
@@ -148,14 +150,135 @@ fn execute_toolchain(command: ToolchainCommand) -> Result<(), String> {
 
 fn execute_source(command: SourceCommand) -> Result<(), String> {
     match command {
-        SourceCommand::Status => not_implemented("source", "status"),
+        SourceCommand::Status => source_status(),
 
-        SourceCommand::List => not_implemented("source", "list"),
+        SourceCommand::List => source_list(),
+
+        SourceCommand::Open { path } => source_open(path),
+
+        SourceCommand::Ide { command } => execute_source_ide(command),
 
         SourceCommand::Acquire { .. } => not_implemented("source", "acquire"),
 
         SourceCommand::Fork { .. } => not_implemented("source", "fork"),
     }
+}
+
+fn execute_source_ide(command: IdeCommand) -> Result<(), String> {
+    match command {
+        IdeCommand::Status => source_ide_status(),
+
+        IdeCommand::Repair => source_ide_repair(),
+    }
+}
+
+fn source_superworkspace() -> Result<VaporSuperworkspace, String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+
+    let context = resolve_source_context(&installation, None).map_err(|error| error.to_string())?;
+
+    VaporSuperworkspace::discover_from(&context.root).map_err(|error| error.to_string())
+}
+
+fn source_ide_status() -> Result<(), String> {
+    let superworkspace = source_superworkspace()?;
+
+    let toolchain = ManagedToolchain::discover().map_err(|error| error.to_string())?;
+
+    let status = inspect_ide(&superworkspace, &toolchain).map_err(|error| error.to_string())?;
+
+    print_ide_status(&superworkspace, &status);
+
+    Ok(())
+}
+
+fn source_ide_repair() -> Result<(), String> {
+    let superworkspace = source_superworkspace()?;
+
+    let toolchain = ManagedToolchain::discover().map_err(|error| error.to_string())?;
+
+    let report = repair_ide(&superworkspace, &toolchain).map_err(|error| error.to_string())?;
+
+    if report.written.is_empty() {
+        println!("Vapor IDE configuration already current.");
+    } else {
+        println!("Updated Vapor IDE configuration:");
+
+        for path in &report.written {
+            println!("  {}", path.display());
+        }
+
+        println!();
+    }
+
+    print_ide_status(&superworkspace, &report.status);
+
+    Ok(())
+}
+
+fn print_ide_status(superworkspace: &VaporSuperworkspace, status: &IdeStatus) {
+    println!("Vapor Superworkspace:");
+
+    println!("  root: {}", superworkspace.root.display());
+
+    println!("  repositories:");
+
+    for repository in &superworkspace.repositories {
+        match &repository.kind {
+            SuperworkspaceRepositoryKind::ContainerRepo => {
+                println!("    {}: Container Repo", repository.name);
+            }
+
+            SuperworkspaceRepositoryKind::VaporWorkspace => {
+                println!("    {}: Vapor Workspace", repository.name);
+            }
+
+            SuperworkspaceRepositoryKind::IncompatibleVaporWorkspace { message } => {
+                println!("    {}: legacy/incompatible", repository.name);
+
+                println!("      {message}");
+            }
+        }
+    }
+
+    println!();
+    println!("RustRover / JetBrains:");
+
+    println!("  project root: {}", status.project_root.display());
+
+    println!("  .idea: {}", status.idea_root.display());
+
+    println!("  Rust toolchain: {}", status.toolchain_home.display());
+
+    println!(
+        "  stdlib: {}",
+        status
+            .stdlib_source
+            .as_ref()
+            .map(|path| { path.display().to_string() })
+            .unwrap_or_else(|| { "automatic".to_owned() })
+    );
+
+    println!("  Cargo projects:");
+
+    for manifest in &status.cargo_projects {
+        println!("    {}", manifest.display());
+    }
+
+    println!("  files:");
+
+    for file in &status.files {
+        println!("    {}: {}", file.path.display(), file.state);
+    }
+
+    println!(
+        "  state: {}",
+        if status.is_current() {
+            "current"
+        } else {
+            "repair required"
+        }
+    );
 }
 
 fn execute_ecosystem(command: EcosystemCommand) -> Result<(), String> {
@@ -174,7 +297,7 @@ fn execute_ecosystem(command: EcosystemCommand) -> Result<(), String> {
 
         EcosystemCommand::Publish => not_implemented("ecosystem", "publish"),
 
-        EcosystemCommand::Deploy => not_implemented("ecosystem", "deploy"),
+        EcosystemCommand::Deploy => ecosystem_deploy(),
     }
 }
 
@@ -267,8 +390,11 @@ fn installation_status() -> Result<(), String> {
 
     println!("Vapor Installation:");
     println!("  root: {}", installation.root.display());
-    println!("  source: {}", installation.root_source);
+
+    println!("  resolved via: {}", installation.root_source);
+
     println!("  role: {}", role.installed_role);
+
     println!("  role state: {}", role.state_path.display());
 
     Ok(())
@@ -427,8 +553,12 @@ fn toolchain_install() -> Result<(), String> {
 fn ecosystem_status() -> Result<(), String> {
     let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
 
+    let installation = VaporInstallation::for_workspace(&workspace);
+
     let toolchain =
         ManagedToolchain::for_workspace(&workspace).map_err(|error| error.to_string())?;
+
+    let sources = source_state(&installation).map_err(|error| error.to_string())?;
 
     println!("Vapor ecosystem source:");
     println!(
@@ -437,13 +567,33 @@ fn ecosystem_status() -> Result<(), String> {
         workspace.manifest.workspace.name,
         workspace.manifest.workspace.version
     );
+
     println!("  root: {}", workspace.root.display());
+
     println!("  repository: {}", workspace.manifest.workspace.repository);
-    println!("  installation: {}", toolchain.vapor_home.display());
+
+    println!("  installation: {}", installation.root.display());
+
+    println!("  installation source: {}", installation.root_source);
+
+    if let Ok(executable) = env::current_exe() {
+        println!("  command: {}", executable.display());
+    }
+
+    println!(
+        "  active source: {}",
+        sources
+            .active
+            .as_ref()
+            .map(|path| { path.display().to_string() })
+            .unwrap_or_else(|| { "none".to_owned() })
+    );
+
     println!(
         "  toolchain: {} {} ({})",
         toolchain.pin.channel, toolchain.pin.version, toolchain.pin.date
     );
+
     println!(
         "  toolchain state: {}",
         if toolchain.is_installed() {
@@ -452,16 +602,59 @@ fn ecosystem_status() -> Result<(), String> {
             "missing"
         }
     );
+
     println!("  projects:");
 
     for project in &workspace.projects {
         println!("    {}:", project.name);
+
         println!("      root: {}", project.root.display());
+
         println!(
             "      target: {}",
-            development_target_dir(&toolchain, project).display()
+            development_target_dir(&toolchain, project,).display()
         );
     }
+
+    Ok(())
+}
+
+fn ecosystem_deploy() -> Result<(), String> {
+    let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
+
+    println!(
+        "Deploying Vapor ecosystem {}/{} {} into its active Installation...",
+        workspace.manifest.workspace.organization,
+        workspace.manifest.workspace.name,
+        workspace.manifest.workspace.version,
+    );
+
+    let report = deploy_workspace(&workspace).map_err(|error| error.to_string())?;
+
+    println!();
+    println!("Vapor Installation: {}", report.installation_root.display());
+
+    println!("Deployed binaries:");
+
+    for binary in &report.binaries {
+        println!("  {}:", binary.name);
+
+        println!("    build: {}", binary.source.display());
+
+        println!("    installed: {}", binary.destination.display());
+    }
+
+    println!();
+    println!("Shell activation: {}", report.activation_script.display());
+
+    #[cfg(not(windows))]
+    println!("  . \"{}\"", report.activation_script.display());
+
+    #[cfg(windows)]
+    println!("  \"{}\"", report.activation_script.display());
+
+    println!();
+    println!("After activation, normal dogfooding should use the installed `vapor` command.");
 
     Ok(())
 }
@@ -471,6 +664,7 @@ fn run_ecosystem_operation(operation: DevelopmentOperation) -> Result<(), String
 
     let verb = match operation {
         DevelopmentOperation::Build => "Building",
+
         DevelopmentOperation::Test => "Testing",
     };
 
@@ -485,6 +679,7 @@ fn run_ecosystem_operation(operation: DevelopmentOperation) -> Result<(), String
 
     let completed = match operation {
         DevelopmentOperation::Build => "Built",
+
         DevelopmentOperation::Test => "Tested",
     };
 
@@ -492,6 +687,75 @@ fn run_ecosystem_operation(operation: DevelopmentOperation) -> Result<(), String
         "{completed} Vapor ecosystem source {}/{}",
         workspace.manifest.workspace.organization, workspace.manifest.workspace.name
     );
+
+    Ok(())
+}
+
+fn source_status() -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+
+    let state = source_state(&installation).map_err(|error| error.to_string())?;
+
+    let context = resolve_source_context(&installation, None).map_err(|error| error.to_string())?;
+
+    println!("Vapor source context:");
+
+    println!("  installation: {}", installation.root.display());
+
+    println!("  state: {}", state.state_path.display());
+
+    println!(
+        "  active: {}",
+        state
+            .active
+            .as_ref()
+            .map(|path| { path.display().to_string() })
+            .unwrap_or_else(|| { "none".to_owned() })
+    );
+
+    println!("  effective: {}", context.root.display());
+
+    println!("  effective via: {}", context.source);
+
+    println!("  known: {}", state.known.len());
+
+    Ok(())
+}
+
+fn source_list() -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+
+    let state = source_state(&installation).map_err(|error| error.to_string())?;
+
+    println!("{} known Vapor source root(s):", state.known.len());
+
+    for source in &state.known {
+        let active = state.active.as_ref() == Some(source);
+
+        println!("{} {}", if active { "*" } else { " " }, source.display());
+    }
+
+    Ok(())
+}
+
+fn source_open(path: Option<PathBuf>) -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+
+    let path = match path {
+        Some(path) => path,
+
+        None => env::current_dir()
+            .map_err(|error| format!("failed to determine current source directory: {error}"))?,
+    };
+
+    let state = open_source(&installation, &path).map_err(|error| error.to_string())?;
+
+    let active = state.active.expect("opening a source always selects it");
+
+    println!("Opened Vapor source:");
+    println!("  {}", active.display());
+
+    println!("  installation state: {}", state.state_path.display());
 
     Ok(())
 }
@@ -824,12 +1088,11 @@ fn select_content<'a>(
 }
 
 fn source_root(root: Option<PathBuf>) -> Result<PathBuf, String> {
-    match root {
-        Some(root) => Ok(root),
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
 
-        None => env::current_dir()
-            .map_err(|error| format!("failed to determine current source context: {error}")),
-    }
+    resolve_source_context(&installation, root)
+        .map(|context| context.root)
+        .map_err(|error| error.to_string())
 }
 
 fn print_resolved_graph(graph: &ResolvedContentGraph) {

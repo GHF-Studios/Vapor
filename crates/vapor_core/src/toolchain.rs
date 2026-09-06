@@ -3,14 +3,20 @@
 //! Installation and execution use Vapor-owned Rustup/Cargo state rather than
 //! the user's ambient Rust toolchain.
 //!
-//! The toolchain belongs operationally to a Vapor Installation. During the
-//! rewrite bootstrap that Installation is the source Workspace's `.vapor`
-//! directory. A shipped Vapor executable instead resolves its real installed
-//! application root.
+//! The toolchain belongs operationally to a Vapor Installation.
+//!
+//! A deployed/installed Vapor carries its toolchain pin in installation-owned
+//! metadata so the installed command can recover its exact managed toolchain
+//! without depending on authored source, a remembered source selection, or the
+//! process working directory.
+//!
+//! During source bootstrap, before installation metadata exists, the enclosing
+//! Vapor Workspace remains the source of the pin.
 
 use crate::{
     InstallationRootSource, ToolchainPin, VaporInstallation, VaporWorkspace, WorkspaceError,
 };
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fmt;
 use std::fs;
@@ -22,32 +28,69 @@ const RUSTUP_HOME_DIR: &str = "rustup-home";
 const CARGO_HOME_DIR: &str = "cargo-home";
 const LOCAL_RUSTUP_DIR: &str = "rustup/bin";
 
+const INSTALLATION_METADATA_DIR: &str = "metadata";
+const TOOLCHAIN_METADATA_FILE: &str = "toolchain.toml";
+const TOOLCHAIN_METADATA_SCHEMA: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InstallationToolchainMetadata {
+    schema: u32,
+    channel: String,
+    version: String,
+    date: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ManagedToolchain {
+    /// Source Workspace associated with this toolchain construction.
+    ///
+    /// For source-driven development this is the actual Vapor Workspace.
+    ///
+    /// When an installed Vapor reconstructs its toolchain solely from packaged
+    /// Installation metadata, no source Workspace is required; the Installation
+    /// root is used as the neutral operational anchor for this legacy field.
     pub workspace_root: PathBuf,
+
     pub vapor_home: PathBuf,
     pub installation_source: InstallationRootSource,
+
     pub rustup_home: PathBuf,
     pub cargo_home: PathBuf,
+
     pub pin: ToolchainPin,
+
     pub cargo_path: PathBuf,
     pub rustc_path: PathBuf,
     pub rust_analyzer_path: PathBuf,
 }
 
 impl ManagedToolchain {
-    /// Discover the enclosing Vapor source Workspace and construct the managed
-    /// toolchain belonging to its active Vapor Installation.
+    /// Discover the managed toolchain for the current Vapor environment.
     ///
-    /// The source Workspace currently provides the canonical toolchain pin.
-    /// That is a rewrite-bootstrap seam: the real Steam installation will
-    /// eventually carry the pin in its own installation metadata.
+    /// Resolution:
+    ///
+    /// 1. Discover the active Vapor Installation.
+    /// 2. If that Installation carries packaged toolchain metadata, use it.
+    /// 3. Otherwise fall back to the enclosing authored Vapor Workspace.
+    ///
+    /// Step 3 exists for source/bootstrap execution only. A properly deployed
+    /// Vapor Installation should be independently self-describing.
     pub fn discover() -> Result<Self, ToolchainError> {
+        let installation = VaporInstallation::discover().map_err(ToolchainError::Installation)?;
+
+        if let Some(pin) = read_installation_toolchain_metadata(&installation)? {
+            return Self::for_installation(&installation, installation.root.clone(), pin);
+        }
+
         let workspace = VaporWorkspace::discover().map_err(ToolchainError::Workspace)?;
 
         Self::for_workspace(&workspace)
     }
 
+    /// Construct the managed toolchain belonging to a known authored Workspace.
+    ///
+    /// The Workspace supplies the toolchain pin while the active Installation
+    /// supplies the actual Rustup/Cargo storage boundary.
     pub fn for_workspace(workspace: &VaporWorkspace) -> Result<Self, ToolchainError> {
         let installation = VaporInstallation::for_workspace(workspace);
 
@@ -66,6 +109,7 @@ impl ManagedToolchain {
         let vapor_home = installation.root.clone();
 
         let rustup_home = vapor_home.join(RUSTUP_HOME_DIR);
+
         let cargo_home = vapor_home.join(CARGO_HOME_DIR);
 
         let host = current_host_triple()?;
@@ -96,7 +140,11 @@ impl ManagedToolchain {
     /// Install or repair the pinned toolchain using Rustup as bootstrap.
     ///
     /// Vapor only accepts a Rustup executable that demonstrably honors the
-    /// Installation's managed RUSTUP_HOME.
+    /// Installation's managed `RUSTUP_HOME`.
+    ///
+    /// Successful installation also refreshes the Installation's packaged
+    /// toolchain metadata so installed Vapor can subsequently recover this pin
+    /// without source discovery.
     pub fn install(&self) -> Result<(), ToolchainError> {
         fs::create_dir_all(&self.rustup_home).map_err(|source| ToolchainError::Io {
             path: self.rustup_home.clone(),
@@ -153,7 +201,46 @@ impl ManagedToolchain {
             });
         }
 
+        self.persist_installation_metadata()?;
+
         Ok(())
+    }
+
+    /// Persist the exact managed toolchain pin as Installation metadata.
+    ///
+    /// This file belongs to the replaceable installation payload, not mutable
+    /// local state. Steam/root deployment should package this metadata alongside
+    /// the Vapor binaries.
+    pub fn persist_installation_metadata(&self) -> Result<PathBuf, ToolchainError> {
+        let metadata_root = self.vapor_home.join(INSTALLATION_METADATA_DIR);
+
+        fs::create_dir_all(&metadata_root).map_err(|source| ToolchainError::Io {
+            path: metadata_root.clone(),
+            source,
+        })?;
+
+        let path = metadata_root.join(TOOLCHAIN_METADATA_FILE);
+
+        let metadata = InstallationToolchainMetadata {
+            schema: TOOLCHAIN_METADATA_SCHEMA,
+            channel: self.pin.channel.clone(),
+            version: self.pin.version.clone(),
+            date: self.pin.date.clone(),
+        };
+
+        let source = toml::to_string_pretty(&metadata).map_err(|error| {
+            ToolchainError::InstallationMetadata {
+                path: path.clone(),
+                message: error.to_string(),
+            }
+        })?;
+
+        fs::write(&path, source).map_err(|source| ToolchainError::Io {
+            path: path.clone(),
+            source,
+        })?;
+
+        Ok(path)
     }
 
     /// Construct Cargo with the Vapor-managed toolchain environment.
@@ -234,6 +321,46 @@ impl ManagedToolchain {
     }
 }
 
+fn read_installation_toolchain_metadata(
+    installation: &VaporInstallation,
+) -> Result<Option<ToolchainPin>, ToolchainError> {
+    let path = installation
+        .root
+        .join(INSTALLATION_METADATA_DIR)
+        .join(TOOLCHAIN_METADATA_FILE);
+
+    if !path.is_file() {
+        return Ok(None);
+    }
+
+    let source = fs::read_to_string(&path).map_err(|source| ToolchainError::Io {
+        path: path.clone(),
+        source,
+    })?;
+
+    let metadata: InstallationToolchainMetadata =
+        toml::from_str(&source).map_err(|error| ToolchainError::InstallationMetadata {
+            path: path.clone(),
+            message: error.to_string(),
+        })?;
+
+    if metadata.schema != TOOLCHAIN_METADATA_SCHEMA {
+        return Err(ToolchainError::InstallationMetadata {
+            path,
+            message: format!(
+                "unsupported toolchain metadata schema {}; this Vapor supports {}",
+                metadata.schema, TOOLCHAIN_METADATA_SCHEMA,
+            ),
+        });
+    }
+
+    Ok(Some(ToolchainPin {
+        channel: metadata.channel,
+        version: metadata.version,
+        date: metadata.date,
+    }))
+}
+
 fn executable_name(stem: &str) -> String {
     format!("{stem}{}", env::consts::EXE_SUFFIX)
 }
@@ -258,7 +385,11 @@ fn current_host_triple() -> Result<&'static str, ToolchainError> {
 
 #[derive(Debug)]
 pub enum ToolchainError {
+    Installation(crate::InstallationError),
+
     Workspace(WorkspaceError),
+
+    InstallationMetadata { path: PathBuf, message: String },
 
     Io { path: PathBuf, source: io::Error },
 
@@ -280,7 +411,17 @@ pub enum ToolchainError {
 impl fmt::Display for ToolchainError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Installation(error) => error.fmt(formatter),
+
             Self::Workspace(error) => error.fmt(formatter),
+
+            Self::InstallationMetadata { path, message } => {
+                write!(
+                    formatter,
+                    "invalid Vapor Installation toolchain metadata `{}`: {message}",
+                    path.display()
+                )
+            }
 
             Self::Io { path, source } => {
                 write!(formatter, "failed to access `{}`: {source}", path.display())
@@ -296,7 +437,8 @@ impl fmt::Display for ToolchainError {
             Self::RustupUnavailable { expected } => {
                 write!(
                     formatter,
-                    "no usable Rustup installation was found; Vapor looked for `{}` and on PATH, but requires Rustup to honor its managed RUSTUP_HOME",
+                    "no usable Rustup installation was found; Vapor looked for `{}` \
+                     and on PATH, but requires Rustup to honor its managed RUSTUP_HOME",
                     expected.display()
                 )
             }
@@ -312,7 +454,8 @@ impl fmt::Display for ToolchainError {
             Self::ToolchainNotInstalled { version, expected } => {
                 write!(
                     formatter,
-                    "Vapor-managed Rust {version} is not installed; expected Cargo at `{}`; use the Vapor Installer to establish Content Developer capability",
+                    "Vapor-managed Rust {version} is not installed; expected Cargo \
+                     at `{}`; use the Vapor Installer to establish Content Developer capability",
                     expected.display()
                 )
             }
@@ -347,9 +490,14 @@ impl fmt::Display for ToolchainError {
 impl std::error::Error for ToolchainError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Installation(error) => Some(error),
+
             Self::Workspace(error) => Some(error),
+
             Self::Io { source, .. } => Some(source),
+
             Self::JoinPaths(error) => Some(error),
+
             _ => None,
         }
     }

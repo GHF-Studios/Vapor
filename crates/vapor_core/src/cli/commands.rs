@@ -179,6 +179,18 @@ pub(super) enum SourceCommand {
     Status,
     List,
 
+    /// Select and remember an external authored source context.
+    Open {
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
+    },
+
+    /// Inspect or repair IDE integration for the containing Superworkspace.
+    Ide {
+        #[command(subcommand)]
+        command: IdeCommand,
+    },
+
     Acquire {
         #[arg(value_name = "SOURCE")]
         source: String,
@@ -188,6 +200,12 @@ pub(super) enum SourceCommand {
         #[arg(value_name = "SOURCE")]
         source: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum IdeCommand {
+    Status,
+    Repair,
 }
 
 #[derive(Debug, Subcommand)]
