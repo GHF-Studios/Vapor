@@ -2,13 +2,14 @@
 //!
 //! A Vapor Installation is the local executable/tooling/state boundary.
 //!
-//! In a shipped Steam installation, Vapor binaries discover the Steam App
-//! Instance by walking upward from their own executable location.
+//! A normal installed Vapor discovers its App Instance by walking upward from
+//! its own executable location.
 //!
-//! During the rewrite bootstrap, binaries built from source fall back to the
-//! enclosing Vapor Workspace's `.vapor` directory.
+//! Vapor processes launched indirectly from authored source inherit
+//! `VAPOR_HOME` from the installed Vapor process that spawned them.
+//!
+//! Authored Workspaces are never Vapor Installations.
 
-use crate::{VaporWorkspace, WorkspaceError};
 use std::env;
 use std::fmt;
 use std::fs;
@@ -23,7 +24,6 @@ const STATE_DIR: &str = "state";
 pub enum InstallationRootSource {
     Environment,
     Executable,
-    WorkspaceBootstrap,
 }
 
 impl fmt::Display for InstallationRootSource {
@@ -31,7 +31,6 @@ impl fmt::Display for InstallationRootSource {
         formatter.write_str(match self {
             Self::Environment => VAPOR_HOME_ENV,
             Self::Executable => "executable root",
-            Self::WorkspaceBootstrap => "Workspace bootstrap",
         })
     }
 }
@@ -47,9 +46,11 @@ impl VaporInstallation {
     ///
     /// Resolution order:
     ///
-    /// 1. Explicit `VAPOR_HOME`.
-    /// 2. A normal installed executable beneath `bin/`.
-    /// 3. Bootstrap fallback to `<Vapor Workspace>/.vapor`.
+    /// 1. Explicit/inherited `VAPOR_HOME`.
+    /// 2. An installed Vapor executable beneath the App Instance's `bin/`.
+    ///
+    /// There is intentionally no authored-Workspace fallback. A Vapor source
+    /// checkout is not an Installation.
     pub fn discover() -> Result<Self, InstallationError> {
         if let Some(root) = explicit_vapor_home() {
             return Ok(Self {
@@ -67,36 +68,7 @@ impl VaporInstallation {
             });
         }
 
-        let workspace = VaporWorkspace::discover().map_err(InstallationError::Workspace)?;
-
-        Ok(Self::for_workspace(&workspace))
-    }
-
-    /// Resolve the Installation associated with a known source Workspace.
-    ///
-    /// An explicit or executable-relative installation wins. Otherwise the
-    /// rewrite bootstrap uses `<workspace>/.vapor`.
-    pub fn for_workspace(workspace: &VaporWorkspace) -> Self {
-        if let Some(root) = explicit_vapor_home() {
-            return Self {
-                root,
-                root_source: InstallationRootSource::Environment,
-            };
-        }
-
-        if let Ok(executable) = env::current_exe()
-            && let Some(root) = installation_root_from_executable(&executable)
-        {
-            return Self {
-                root,
-                root_source: InstallationRootSource::Executable,
-            };
-        }
-
-        Self {
-            root: workspace.root.join(".vapor"),
-            root_source: InstallationRootSource::WorkspaceBootstrap,
-        }
+        Err(InstallationError::NotFound { executable })
     }
 
     pub fn state_root(&self) -> PathBuf {
@@ -123,6 +95,7 @@ fn explicit_vapor_home() -> Option<PathBuf> {
 
 fn installation_root_from_executable(executable: &Path) -> Option<PathBuf> {
     let executable = fs::canonicalize(executable).ok()?;
+
     let directory = executable.parent()?;
 
     // <installation>/bin/vapor
@@ -149,9 +122,14 @@ fn installation_root_from_executable(executable: &Path) -> Option<PathBuf> {
 pub enum InstallationError {
     CurrentExecutable(io::Error),
 
-    Workspace(WorkspaceError),
+    NotFound {
+        executable: PathBuf,
+    },
 
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
 }
 
 impl fmt::Display for InstallationError {
@@ -164,7 +142,15 @@ impl fmt::Display for InstallationError {
                 )
             }
 
-            Self::Workspace(error) => error.fmt(formatter),
+            Self::NotFound { executable } => {
+                write!(
+                    formatter,
+                    "no active Vapor Installation could be resolved for `{}`; \
+                     run through an installed Vapor App Instance or provide \
+                     inherited {VAPOR_HOME_ENV}",
+                    executable.display(),
+                )
+            }
 
             Self::Io { path, source } => {
                 write!(
@@ -181,8 +167,8 @@ impl std::error::Error for InstallationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::CurrentExecutable(error) => Some(error),
-            Self::Workspace(error) => Some(error),
             Self::Io { source, .. } => Some(source),
+            Self::NotFound { .. } => None,
         }
     }
 }

@@ -4,7 +4,7 @@
 //! and managed tooling belong operationally to the active Vapor Installation.
 
 use crate::{
-    InstallationRootSource, ManagedToolchain, ToolchainError, VaporProject, VaporWorkspace,
+    InstallationRootSource
 };
 use serde::Deserialize;
 use std::env;
@@ -98,12 +98,6 @@ pub fn build_workspace_deployment_inputs(
 ) -> Result<EcosystemBuildReport, DevelopmentError> {
     let toolchain =
         ManagedToolchain::for_workspace(workspace).map_err(DevelopmentError::Toolchain)?;
-
-    if toolchain.installation_source == InstallationRootSource::WorkspaceBootstrap {
-        return Err(DevelopmentError::DeploymentRequiresInstallation {
-            bootstrap_root: toolchain.vapor_home,
-        });
-    }
 
     let toolchain_metadata = toolchain
         .persist_installation_metadata()
@@ -541,10 +535,6 @@ fn executable_name(stem: &str) -> String {
 pub enum DevelopmentError {
     Toolchain(ToolchainError),
 
-    DeploymentRequiresInstallation {
-        bootstrap_root: PathBuf,
-    },
-
     BinaryTargetNotFound {
         binary: String,
     },
@@ -611,16 +601,6 @@ impl fmt::Display for DevelopmentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Toolchain(error) => error.fmt(formatter),
-
-            Self::DeploymentRequiresInstallation { bootstrap_root } => {
-                write!(
-                    formatter,
-                    "`vapor ecosystem deploy` refuses the rewrite-bootstrap \
-                     Installation `{}`; select the real Vapor Steam/App Instance \
-                     through VAPOR_HOME for the first deployment",
-                    bootstrap_root.display()
-                )
-            }
 
             Self::BinaryTargetNotFound { binary } => {
                 write!(

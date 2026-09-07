@@ -172,6 +172,13 @@ pub(super) enum ToolchainCommand {
     Install,
     Diagnose,
     Repair,
+
+    /// Run Cargo from the active Vapor Installation's managed Rust toolchain.
+    Cargo {
+        /// Arguments forwarded verbatim to Cargo after `--`.
+        #[arg(last = true, value_name = "ARG")]
+        args: Vec<std::ffi::OsString>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -248,18 +255,6 @@ pub(super) enum BehavioralContentCommand {
     List(ContentListArgs),
     Inspect(LocalContentTargetArgs),
     Verify(LocalContentTargetArgs),
-    Test(LocalContentTargetArgs),
-    Publish(ContentIdentityArgs),
-}
-
-#[derive(Debug, Subcommand)]
-pub(super) enum LibraryCommand {
-    Create(CreateContentArgs),
-    List(ContentListArgs),
-    Inspect(LocalContentTargetArgs),
-    Resolve(LocalContentTargetArgs),
-    Verify(LocalContentTargetArgs),
-    Repair(LocalContentTargetArgs),
     Test(LocalContentTargetArgs),
     Publish(ContentIdentityArgs),
 }

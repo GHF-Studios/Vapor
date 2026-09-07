@@ -67,32 +67,42 @@ pub struct ManagedToolchain {
 impl ManagedToolchain {
     /// Discover the managed toolchain for the current Vapor environment.
     ///
-    /// Resolution:
+    /// The active Installation always owns physical Rust/Cargo state.
     ///
-    /// 1. Discover the active Vapor Installation.
-    /// 2. If that Installation carries packaged toolchain metadata, use it.
-    /// 3. Otherwise fall back to the enclosing authored Vapor Workspace.
-    ///
-    /// Step 3 exists for source/bootstrap execution only. A properly deployed
-    /// Vapor Installation should be independently self-describing.
+    /// When packaged Installation metadata is available, it supplies the pin.
+    /// During source development, an authored Vapor Workspace may still supply
+    /// the pin, but never the Installation root.
     pub fn discover() -> Result<Self, ToolchainError> {
-        let installation = VaporInstallation::discover().map_err(ToolchainError::Installation)?;
+        let installation =
+            VaporInstallation::discover().map_err(ToolchainError::Installation)?;
 
         if let Some(pin) = read_installation_toolchain_metadata(&installation)? {
-            return Self::for_installation(&installation, installation.root.clone(), pin);
+            return Self::for_installation(
+                &installation,
+                installation.root.clone(),
+                pin,
+            );
         }
 
-        let workspace = VaporWorkspace::discover().map_err(ToolchainError::Workspace)?;
+        let workspace =
+            VaporWorkspace::discover().map_err(ToolchainError::Workspace)?;
 
-        Self::for_workspace(&workspace)
+        Self::for_installation(
+            &installation,
+            workspace.root.clone(),
+            workspace.manifest.toolchain.clone(),
+        )
     }
 
-    /// Construct the managed toolchain belonging to a known authored Workspace.
+    /// Construct the managed toolchain for a known authored Workspace.
     ///
-    /// The Workspace supplies the toolchain pin while the active Installation
-    /// supplies the actual Rustup/Cargo storage boundary.
-    pub fn for_workspace(workspace: &VaporWorkspace) -> Result<Self, ToolchainError> {
-        let installation = VaporInstallation::for_workspace(workspace);
+    /// The Workspace supplies authored toolchain intent. The active Vapor
+    /// Installation supplies all physical managed-tool storage.
+    pub fn for_workspace(
+        workspace: &VaporWorkspace,
+    ) -> Result<Self, ToolchainError> {
+        let installation =
+            VaporInstallation::discover().map_err(ToolchainError::Installation)?;
 
         Self::for_installation(
             &installation,
@@ -244,6 +254,13 @@ impl ManagedToolchain {
     }
 
     /// Construct Cargo with the Vapor-managed toolchain environment.
+    ///
+    /// The environment is scoped to the spawned Cargo process and its descendants.
+    /// The caller's shell environment is never modified.
+    ///
+    /// `VAPOR_HOME` is propagated as well so Vapor processes launched through Cargo
+    /// remain attached to the same Installation even though their executable lives
+    /// in authored-source build output rather than `<installation>/bin`.
     pub fn cargo_command(&self) -> Result<Command, ToolchainError> {
         if !self.is_installed() {
             return Err(ToolchainError::ToolchainNotInstalled {
@@ -270,6 +287,7 @@ impl ManagedToolchain {
         let mut command = Command::new(&self.cargo_path);
 
         command
+            .env(crate::VAPOR_HOME_ENV, &self.vapor_home)
             .env("CARGO_HOME", &self.cargo_home)
             .env("RUSTUP_HOME", &self.rustup_home)
             .env("RUSTUP_TOOLCHAIN", self.pin.identifier())
