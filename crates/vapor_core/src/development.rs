@@ -3,9 +3,7 @@
 //! Development happens against external authored source while build outputs
 //! and managed tooling belong operationally to the active Vapor Installation.
 
-use crate::{
-    InstallationRootSource
-};
+use crate::{ManagedToolchain, ToolchainError, VaporProject, VaporWorkspace};
 use serde::Deserialize;
 use std::env;
 use std::fmt;

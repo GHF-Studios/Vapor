@@ -73,19 +73,13 @@ impl ManagedToolchain {
     /// During source development, an authored Vapor Workspace may still supply
     /// the pin, but never the Installation root.
     pub fn discover() -> Result<Self, ToolchainError> {
-        let installation =
-            VaporInstallation::discover().map_err(ToolchainError::Installation)?;
+        let installation = VaporInstallation::discover().map_err(ToolchainError::Installation)?;
 
         if let Some(pin) = read_installation_toolchain_metadata(&installation)? {
-            return Self::for_installation(
-                &installation,
-                installation.root.clone(),
-                pin,
-            );
+            return Self::for_installation(&installation, installation.root.clone(), pin);
         }
 
-        let workspace =
-            VaporWorkspace::discover().map_err(ToolchainError::Workspace)?;
+        let workspace = VaporWorkspace::discover().map_err(ToolchainError::Workspace)?;
 
         Self::for_installation(
             &installation,
@@ -98,11 +92,8 @@ impl ManagedToolchain {
     ///
     /// The Workspace supplies authored toolchain intent. The active Vapor
     /// Installation supplies all physical managed-tool storage.
-    pub fn for_workspace(
-        workspace: &VaporWorkspace,
-    ) -> Result<Self, ToolchainError> {
-        let installation =
-            VaporInstallation::discover().map_err(ToolchainError::Installation)?;
+    pub fn for_workspace(workspace: &VaporWorkspace) -> Result<Self, ToolchainError> {
+        let installation = VaporInstallation::discover().map_err(ToolchainError::Installation)?;
 
         Self::for_installation(
             &installation,

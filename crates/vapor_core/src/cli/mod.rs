@@ -8,8 +8,9 @@ mod commands;
 use crate::{
     CargoDependencyState, CargoPackageInspection, ContentKind, ContentVersionId,
     DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalContent, ManagedToolchain,
-    ResolvedComposition, ResolvedContentGraph, VaporId, VaporInstallation, VaporRole,
-    VaporWorkspace, build_cargo_realization, demote_role, deploy_workspace, development_target_dir,
+    ResolvedComposition, ResolvedContentGraph, SteamDeploymentOptions, VaporId, VaporInstallation,
+    VaporProject, VaporRole, VaporSuperworkspace, VaporWorkspace, build_cargo_realization,
+    demote_role, deploy_ecosystem_to_steam, deploy_workspace, development_target_dir,
     discover_local_content, generate_local_cargo_realization, git_available,
     inspect_local_cargo_package, promote_role, reconcile_existing_development_environment,
     repair_local_library_cargo_dependencies, resolve_local_content_kind, resolve_local_packagepack,
@@ -19,6 +20,7 @@ use crate::{
 use clap::Parser;
 use commands::*;
 use std::env;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -148,30 +150,272 @@ fn execute_toolchain(command: ToolchainCommand) -> Result<(), String> {
 
         ToolchainCommand::Repair => not_implemented("toolchain", "repair"),
 
-        ToolchainCommand::Cargo { args } => toolchain_cargo(args),
+        ToolchainCommand::Cargo { project, args } => toolchain_cargo(project, args),
     }
 }
 
-fn toolchain_cargo(args: Vec<std::ffi::OsString>) -> Result<(), String> {
+fn toolchain_cargo(explicit_project: Option<String>, args: Vec<OsString>) -> Result<(), String> {
     let toolchain = ManagedToolchain::discover().map_err(|error| error.to_string())?;
 
-    let status = toolchain
+    let project = resolve_toolchain_cargo_project(&toolchain, explicit_project.as_deref(), &args)?;
+
+    let mut command = toolchain
         .cargo_command()
-        .map_err(|error| error.to_string())?
-        .args(args)
-        .status()
-        .map_err(|error| {
-            format!(
-                "failed to start Vapor-managed Cargo `{}`: {error}",
-                toolchain.cargo_path.display()
-            )
-        })?;
+        .map_err(|error| error.to_string())?;
+
+    command.args(&args);
+
+    if let Some(project) = &project {
+        command.current_dir(&project.root);
+    }
+
+    let status = command.status().map_err(|error| {
+        format!(
+            "failed to start Vapor-managed Cargo `{}`: {error}",
+            toolchain.cargo_path.display()
+        )
+    })?;
 
     if status.success() {
         Ok(())
     } else {
         Err(format!("Vapor-managed Cargo exited with {status}"))
     }
+}
+
+fn resolve_toolchain_cargo_project(
+    toolchain: &ManagedToolchain,
+    explicit_project: Option<&str>,
+    args: &[OsString],
+) -> Result<Option<VaporProject>, String> {
+    let package_hints = cargo_package_hints(args);
+
+    let needs_project = explicit_project.is_some()
+        || !package_hints.is_empty()
+        || cargo_needs_project_context(args);
+
+    if !needs_project {
+        return Ok(None);
+    }
+
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+
+    let source = resolve_source_context(&installation, None).map_err(|error| error.to_string())?;
+
+    let superworkspace = VaporSuperworkspace::discover_from(&source.root).map_err(|error| {
+        format!(
+            "failed to resolve Vapor Superworkspace from active source `{}`: {error}",
+            source.root.display()
+        )
+    })?;
+
+    if let Some(selector) = explicit_project {
+        let matches = superworkspace
+            .projects
+            .iter()
+            .filter(|candidate| {
+                candidate.project.name == selector
+                    || format!("{}/{}", candidate.repository, candidate.project.name,) == selector
+            })
+            .collect::<Vec<_>>();
+
+        return match matches.as_slice() {
+            [candidate] => Ok(Some(candidate.project.clone())),
+
+            [] => Err(format!(
+                "no Vapor Project `{selector}` exists in active Superworkspace `{}`; available Projects: {}",
+                superworkspace.root.display(),
+                cargo_project_labels(&superworkspace).join(", "),
+            )),
+
+            _ => Err(format!(
+                "Vapor Project selector `{selector}` is ambiguous in active Superworkspace `{}`; use a repository-qualified selector such as `repository/project`",
+                superworkspace.root.display(),
+            )),
+        };
+    }
+
+    if !package_hints.is_empty() {
+        let mut matches = Vec::new();
+
+        for candidate in &superworkspace.projects {
+            let packages = cargo_project_packages(toolchain, &candidate.project)?;
+
+            if package_hints
+                .iter()
+                .all(|hint| packages.iter().any(|package| package == hint))
+            {
+                matches.push(candidate);
+            }
+        }
+
+        return match matches.as_slice() {
+            [candidate] => Ok(Some(candidate.project.clone())),
+
+            [] => Err(format!(
+                "no Vapor Project in active Superworkspace `{}` contains all requested Cargo package(s): {}",
+                superworkspace.root.display(),
+                package_hints.join(", "),
+            )),
+
+            _ => Err(format!(
+                "Cargo package selection {} matches multiple Vapor Projects in active Superworkspace `{}`; select one explicitly with `--project`",
+                package_hints.join(", "),
+                superworkspace.root.display(),
+            )),
+        };
+    }
+
+    let working_directory = env::current_dir()
+        .map_err(|error| format!("failed to determine Cargo execution context: {error}"))?;
+
+    if let Some(candidate) = superworkspace
+        .projects
+        .iter()
+        .filter(|candidate| working_directory.starts_with(&candidate.project.root))
+        .max_by_key(|candidate| candidate.project.root.components().count())
+    {
+        return Ok(Some(candidate.project.clone()));
+    }
+
+    if let [candidate] = superworkspace.projects.as_slice() {
+        return Ok(Some(candidate.project.clone()));
+    }
+
+    Err(format!(
+        "Cargo requires a Vapor Project context, but active Superworkspace `{}` contains multiple Projects and none was selected; use Cargo `-p/--package` or `vapor toolchain cargo --project <PROJECT> -- ...`; available Projects: {}",
+        superworkspace.root.display(),
+        cargo_project_labels(&superworkspace).join(", "),
+    ))
+}
+
+fn cargo_project_labels(superworkspace: &VaporSuperworkspace) -> Vec<String> {
+    superworkspace
+        .projects
+        .iter()
+        .map(|candidate| format!("{}/{}", candidate.repository, candidate.project.name,))
+        .collect()
+}
+
+fn cargo_package_hints(args: &[OsString]) -> Vec<String> {
+    let mut hints = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        let argument = args[index].to_string_lossy();
+
+        if argument == "--" {
+            break;
+        }
+
+        if argument == "-p" || argument == "--package" {
+            if let Some(value) = args.get(index + 1) {
+                hints.push(cargo_package_name(&value.to_string_lossy()).to_owned());
+
+                index += 2;
+                continue;
+            }
+        }
+
+        if let Some(value) = argument.strip_prefix("--package=") {
+            hints.push(cargo_package_name(value).to_owned());
+
+            index += 1;
+            continue;
+        }
+
+        if let Some(value) = argument
+            .strip_prefix("-p")
+            .filter(|value| !value.is_empty())
+        {
+            hints.push(cargo_package_name(value).to_owned());
+        }
+
+        index += 1;
+    }
+
+    hints.sort();
+    hints.dedup();
+
+    hints
+}
+
+fn cargo_package_name(spec: &str) -> &str {
+    spec.split_once('@').map(|(name, _)| name).unwrap_or(spec)
+}
+
+fn cargo_needs_project_context(args: &[OsString]) -> bool {
+    let Some(first) = args.first() else {
+        return false;
+    };
+
+    matches!(
+        first.to_string_lossy().as_ref(),
+        value
+            if !matches!(
+                value,
+                "--version"
+                    | "-V"
+                    | "-vV"
+                    | "version"
+                    | "--help"
+                    | "-h"
+                    | "help"
+            )
+    )
+}
+
+fn cargo_project_packages(
+    toolchain: &ManagedToolchain,
+    project: &VaporProject,
+) -> Result<Vec<String>, String> {
+    #[derive(serde::Deserialize)]
+    struct Metadata {
+        packages: Vec<Package>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Package {
+        name: String,
+    }
+
+    let output = toolchain
+        .cargo_command()
+        .map_err(|error| error.to_string())?
+        .arg("metadata")
+        .args(["--format-version", "1", "--no-deps"])
+        .arg("--manifest-path")
+        .arg(&project.cargo_manifest_path)
+        .current_dir(&project.root)
+        .output()
+        .map_err(|error| {
+            format!(
+                "failed to inspect Cargo packages for Vapor Project `{}`: {error}",
+                project.name,
+            )
+        })?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Cargo metadata failed while inspecting Vapor Project `{}` with {}: {}",
+            project.name,
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ));
+    }
+
+    let metadata: Metadata = serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!(
+            "Cargo returned invalid metadata for Vapor Project `{}`: {error}",
+            project.name,
+        )
+    })?;
+
+    Ok(metadata
+        .packages
+        .into_iter()
+        .map(|package| package.name)
+        .collect())
 }
 
 fn execute_source(command: SourceCommand) -> Result<(), String> {
@@ -213,7 +457,15 @@ fn execute_ecosystem(command: EcosystemCommand) -> Result<(), String> {
 
         EcosystemCommand::Publish => not_implemented("ecosystem", "publish"),
 
-        EcosystemCommand::Deploy => ecosystem_deploy_local(),
+        EcosystemCommand::Deploy { command } => execute_ecosystem_deploy(command),
+    }
+}
+
+fn execute_ecosystem_deploy(command: EcosystemDeployCommand) -> Result<(), String> {
+    match command {
+        EcosystemDeployCommand::Local => ecosystem_deploy_local(),
+
+        EcosystemDeployCommand::Steam(args) => ecosystem_deploy_steam(args),
     }
 }
 
@@ -606,6 +858,49 @@ fn ecosystem_deploy_local() -> Result<(), String> {
     if let Err(error) = synchronize_existing_development_environment(&workspace.root) {
         eprintln!(
             "warning: local ecosystem deployment succeeded, but the existing development environment could not be synchronized: {error}"
+        );
+    }
+
+    Ok(())
+}
+
+fn ecosystem_deploy_steam(args: SteamDeployArgs) -> Result<(), String> {
+    let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
+
+    println!(
+        "Deploying Vapor ecosystem {}/{} {} to Steam{}...",
+        workspace.manifest.workspace.organization,
+        workspace.manifest.workspace.name,
+        workspace.manifest.workspace.version,
+        if args.preview { " (preview)" } else { "" },
+    );
+
+    let report = deploy_ecosystem_to_steam(
+        &workspace,
+        SteamDeploymentOptions {
+            preview: args.preview,
+            account: args.account,
+            steamcmd: args.steamcmd,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+
+    println!();
+    println!("Steam deployment:");
+    println!("  App ID: {}", report.app_id);
+    println!("  branch: {}", report.branch);
+    println!("  account: {}", report.account);
+    println!("  SteamCMD: {}", report.steamcmd.display());
+    println!("  stage: {}", report.stage_root.display());
+
+    println!("  depots:");
+
+    for depot in &report.depots {
+        println!(
+            "    {} ({}) -> {}",
+            depot.name,
+            depot.id,
+            depot.content_root.display(),
         );
     }
 

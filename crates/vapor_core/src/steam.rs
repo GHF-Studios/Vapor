@@ -142,7 +142,7 @@ pub fn deploy_ecosystem_to_steam(
     let build =
         build_workspace_deployment_inputs(workspace).map_err(SteamDeploymentError::Development)?;
 
-    let installation = VaporInstallation::for_workspace(workspace);
+    let installation = VaporInstallation::discover().map_err(SteamDeploymentError::Installation)?;
 
     let account = resolve_account(&installation, options.account)?;
 

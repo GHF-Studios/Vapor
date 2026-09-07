@@ -3,15 +3,17 @@
 //! Authored source deliberately lives outside the Vapor Installation.
 //! The Installation remembers known source roots and one active source context.
 //!
-//! One-shot CLI context resolution currently follows:
+//! One-shot CLI context resolution follows:
 //!
 //! 1. explicit command source/root;
 //! 2. the most-specific known source containing the process working directory;
-//! 3. the remembered active source;
-//! 4. the raw process working directory as a bootstrap fallback.
+//! 3. the remembered active source.
+//!
+//! The raw process working directory is never promoted into Vapor source
+//! identity merely because a command happened to be launched there.
 //!
 //! A future stateful Vapor Shell may insert its session cursor between explicit
-//! command context and ambient process working-directory context.
+//! command context and ambient process working-directory refinement.
 
 use crate::{InstallationError, VaporInstallation};
 use serde::{Deserialize, Serialize};
@@ -34,7 +36,6 @@ pub enum SourceContextSource {
     Explicit,
     WorkingDirectory,
     Active,
-    WorkingDirectoryFallback,
 }
 
 impl fmt::Display for SourceContextSource {
@@ -43,7 +44,6 @@ impl fmt::Display for SourceContextSource {
             Self::Explicit => "explicit command context",
             Self::WorkingDirectory => "working directory",
             Self::Active => "remembered active source",
-            Self::WorkingDirectoryFallback => "working-directory bootstrap fallback",
         })
     }
 }
@@ -84,11 +84,21 @@ pub fn resolve_source_context(
     installation: &VaporInstallation,
     explicit: Option<PathBuf>,
 ) -> Result<ResolvedSourceContext, SourceError> {
+    if let Some(root) = explicit {
+        return Ok(ResolvedSourceContext {
+            root,
+            source: SourceContextSource::Explicit,
+        });
+    }
+
     let working_directory = std::env::current_dir().map_err(SourceError::CurrentDirectory)?;
 
     let state = source_state(installation)?;
 
-    Ok(select_source_context(&state, &working_directory, explicit))
+    select_source_context(&state, &working_directory).ok_or_else(|| SourceError::NoContext {
+        working_directory,
+        state_path: state.state_path,
+    })
 }
 
 /// Validate, remember, and select one external source root.
@@ -133,38 +143,23 @@ pub fn open_source(
 fn select_source_context(
     state: &SourceState,
     working_directory: &Path,
-    explicit: Option<PathBuf>,
-) -> ResolvedSourceContext {
-    if let Some(root) = explicit {
-        return ResolvedSourceContext {
-            root,
-            source: SourceContextSource::Explicit,
-        };
-    }
-
+) -> Option<ResolvedSourceContext> {
     if let Some(root) = state
         .known
         .iter()
         .filter(|root| working_directory.starts_with(root))
         .max_by_key(|root| root.components().count())
     {
-        return ResolvedSourceContext {
+        return Some(ResolvedSourceContext {
             root: root.clone(),
             source: SourceContextSource::WorkingDirectory,
-        };
+        });
     }
 
-    if let Some(root) = &state.active {
-        return ResolvedSourceContext {
-            root: root.clone(),
-            source: SourceContextSource::Active,
-        };
-    }
-
-    ResolvedSourceContext {
-        root: working_directory.to_path_buf(),
-        source: SourceContextSource::WorkingDirectoryFallback,
-    }
+    state.active.as_ref().map(|root| ResolvedSourceContext {
+        root: root.clone(),
+        source: SourceContextSource::Active,
+    })
 }
 
 fn roots_overlap(left: &Path, right: &Path) -> bool {
@@ -211,6 +206,11 @@ pub enum SourceError {
 
     CurrentDirectory(io::Error),
 
+    NoContext {
+        working_directory: PathBuf,
+        state_path: PathBuf,
+    },
+
     NotDirectory {
         path: PathBuf,
     },
@@ -244,6 +244,19 @@ impl fmt::Display for SourceError {
                 write!(
                     formatter,
                     "failed to determine current source context: {error}"
+                )
+            }
+
+            Self::NoContext {
+                working_directory,
+                state_path,
+            } => {
+                write!(
+                    formatter,
+                    "no Vapor source context is available; `{}` is not inside \
+                     a known source and no active source is recorded in `{}`",
+                    working_directory.display(),
+                    state_path.display(),
                 )
             }
 
@@ -315,25 +328,10 @@ mod tests {
     }
 
     #[test]
-    fn explicit_context_wins() {
-        let state = state(Some("root"), &["root"]);
-
-        let context = select_source_context(
-            &state,
-            Path::new("root/subdir"),
-            Some(PathBuf::from("explicit")),
-        );
-
-        assert_eq!(context.source, SourceContextSource::Explicit);
-
-        assert_eq!(context.root, PathBuf::from("explicit"));
-    }
-
-    #[test]
     fn working_directory_chooses_most_specific_known_source() {
         let state = state(Some("elsewhere"), &["root", "root/nested"]);
 
-        let context = select_source_context(&state, Path::new("root/nested/project"), None);
+        let context = select_source_context(&state, Path::new("root/nested/project")).unwrap();
 
         assert_eq!(context.source, SourceContextSource::WorkingDirectory);
 
@@ -344,7 +342,7 @@ mod tests {
     fn active_source_is_used_outside_known_sources() {
         let state = state(Some("root"), &["root"]);
 
-        let context = select_source_context(&state, Path::new("unrelated"), None);
+        let context = select_source_context(&state, Path::new("unrelated")).unwrap();
 
         assert_eq!(context.source, SourceContextSource::Active);
 
@@ -352,16 +350,9 @@ mod tests {
     }
 
     #[test]
-    fn working_directory_is_final_bootstrap_fallback() {
+    fn unrelated_working_directory_is_not_a_source_context() {
         let state = state(None, &[]);
 
-        let context = select_source_context(&state, Path::new("somewhere"), None);
-
-        assert_eq!(
-            context.source,
-            SourceContextSource::WorkingDirectoryFallback
-        );
-
-        assert_eq!(context.root, PathBuf::from("somewhere"));
+        assert!(select_source_context(&state, Path::new("somewhere"),).is_none());
     }
 }

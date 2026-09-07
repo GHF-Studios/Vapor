@@ -122,14 +122,9 @@ fn installation_root_from_executable(executable: &Path) -> Option<PathBuf> {
 pub enum InstallationError {
     CurrentExecutable(io::Error),
 
-    NotFound {
-        executable: PathBuf,
-    },
+    NotFound { executable: PathBuf },
 
-    Io {
-        path: PathBuf,
-        source: io::Error,
-    },
+    Io { path: PathBuf, source: io::Error },
 }
 
 impl fmt::Display for InstallationError {

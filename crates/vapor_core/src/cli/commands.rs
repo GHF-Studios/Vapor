@@ -175,6 +175,13 @@ pub(super) enum ToolchainCommand {
 
     /// Run Cargo from the active Vapor Installation's managed Rust toolchain.
     Cargo {
+        /// Explicit Vapor Project to use as Cargo's execution context.
+        ///
+        /// Usually unnecessary when Cargo's `-p/--package` identifies a
+        /// unique Project or the current directory lies within one.
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+
         /// Arguments forwarded verbatim to Cargo after `--`.
         #[arg(last = true, value_name = "ARG")]
         args: Vec<std::ffi::OsString>,
@@ -219,7 +226,35 @@ pub(super) enum EcosystemCommand {
     Build,
     Test,
     Publish,
-    Deploy,
+
+    Deploy {
+        #[command(subcommand)]
+        command: EcosystemDeployCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum EcosystemDeployCommand {
+    /// Deploy into the active local Vapor App Instance.
+    Local,
+
+    /// Deploy through SteamPipe.
+    Steam(SteamDeployArgs),
+}
+
+#[derive(Debug, Args)]
+pub(super) struct SteamDeployArgs {
+    /// Perform a SteamPipe preview build.
+    #[arg(long)]
+    pub(super) preview: bool,
+
+    /// Steam build account. An explicit account may be remembered locally.
+    #[arg(long, value_name = "ACCOUNT")]
+    pub(super) account: Option<String>,
+
+    /// Explicit SteamCMD path override.
+    #[arg(long, value_name = "PATH")]
+    pub(super) steamcmd: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
