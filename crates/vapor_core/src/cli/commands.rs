@@ -35,12 +35,6 @@ pub(super) struct InstallerCli {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum VaporCommand {
-    /// Diagnose the currently resolvable Vapor environment.
-    Diagnose,
-
-    /// Repair safe Vapor-managed and regeneratable state.
-    Repair,
-
     Installation {
         #[command(subcommand)]
         command: InstallationCommand,
@@ -148,6 +142,8 @@ pub(super) enum InstallerCommand {
 #[derive(Debug, Subcommand)]
 pub(super) enum InstallationCommand {
     Status,
+    Diagnose,
+    Repair,
 }
 
 #[derive(Debug, Subcommand)]
@@ -174,18 +170,14 @@ pub(super) enum AuthorityCommand {
 pub(super) enum ToolchainCommand {
     Status,
     Install,
+    Diagnose,
+    Repair,
 }
 
 #[derive(Debug, Subcommand)]
 pub(super) enum SourceCommand {
     Status,
     List,
-
-    /// Select and remember an external authored source context.
-    Open {
-        #[arg(value_name = "PATH")]
-        path: Option<PathBuf>,
-    },
 
     Acquire {
         #[arg(value_name = "SOURCE")]
@@ -203,8 +195,8 @@ pub(super) enum EcosystemCommand {
     Status,
 
     Acquire {
-        #[arg(value_name = "SUPERWORKSPACE")]
-        destination: Option<PathBuf>,
+        #[arg(value_name = "SOURCE")]
+        source: Option<String>,
     },
 
     Fork {
@@ -220,36 +212,7 @@ pub(super) enum EcosystemCommand {
     Build,
     Test,
     Publish,
-
-    Deploy {
-        #[command(subcommand)]
-        command: EcosystemDeployCommand,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub(super) enum EcosystemDeployCommand {
-    /// Deploy the current ecosystem build into the active local App Instance.
-    Local,
-
-    /// Stage and deploy the current ecosystem build through SteamPipe.
-    Steam(SteamDeployArgs),
-}
-
-#[derive(Debug, Args)]
-pub(super) struct SteamDeployArgs {
-    /// Run a real SteamPipe preview build. Steam validates the build and
-    /// produces manifests/logs without uploading content.
-    #[arg(long)]
-    pub(super) preview: bool,
-
-    /// Steam build account. The first explicit value is remembered locally.
-    #[arg(long, value_name = "ACCOUNT")]
-    pub(super) account: Option<String>,
-
-    /// Explicit SteamCMD path.
-    #[arg(long, value_name = "PATH")]
-    pub(super) steamcmd: Option<PathBuf>,
+    Deploy,
 }
 
 #[derive(Debug, Subcommand)]
@@ -285,6 +248,18 @@ pub(super) enum BehavioralContentCommand {
     List(ContentListArgs),
     Inspect(LocalContentTargetArgs),
     Verify(LocalContentTargetArgs),
+    Test(LocalContentTargetArgs),
+    Publish(ContentIdentityArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum LibraryCommand {
+    Create(CreateContentArgs),
+    List(ContentListArgs),
+    Inspect(LocalContentTargetArgs),
+    Resolve(LocalContentTargetArgs),
+    Verify(LocalContentTargetArgs),
+    Repair(LocalContentTargetArgs),
     Test(LocalContentTargetArgs),
     Publish(ContentIdentityArgs),
 }

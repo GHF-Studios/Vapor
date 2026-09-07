@@ -7,16 +7,13 @@ mod commands;
 
 use crate::{
     CargoDependencyState, CargoPackageInspection, ContentKind, ContentVersionId,
-    DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalContent,
-    MaintenanceStatus, ManagedToolchain, ResolvedComposition, ResolvedContentGraph,
-    SteamDeploymentOptions, VaporId, VaporInstallation, VaporRole, VaporWorkspace,
-    build_cargo_realization, demote_role, deploy_ecosystem_to_steam, deploy_workspace,
-    development_target_dir, diagnose_managed_state, discover_local_content,
-    generate_local_cargo_realization, git_available, inspect_local_cargo_package, open_source,
-    promote_role, reconcile_existing_development_environment,
-    repair_local_library_cargo_dependencies, repair_managed_state, resolve_local_content_kind,
-    resolve_local_packagepack, resolve_source_context, role_status, run_cargo_realization,
-    run_workspace_operation, source_state, verify_local_library_cargo_dependencies,
+    DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalContent, ManagedToolchain,
+    ResolvedComposition, ResolvedContentGraph, VaporId, VaporInstallation, VaporRole,
+    VaporWorkspace, build_cargo_realization, demote_role, development_target_dir,
+    discover_local_content, generate_local_cargo_realization, git_available,
+    inspect_local_cargo_package, promote_role, repair_local_library_cargo_dependencies,
+    resolve_local_content_kind, resolve_local_packagepack, role_status, run_cargo_realization,
+    run_workspace_operation, verify_local_library_cargo_dependencies,
 };
 use clap::Parser;
 use commands::*;
@@ -64,10 +61,6 @@ fn finish_parse(result: Result<Result<(), String>, clap::Error>) -> ExitCode {
 
 fn execute_vapor(command: VaporCommand) -> Result<(), String> {
     match command {
-        VaporCommand::Diagnose => maintenance_diagnose(),
-
-        VaporCommand::Repair => maintenance_repair(),
-
         VaporCommand::Installation { command } => execute_installation(command),
 
         VaporCommand::Role { command } => execute_role(command),
@@ -395,6 +388,26 @@ fn execute_behavioral(kind: ContentKind, command: BehavioralContentCommand) -> R
         BehavioralContentCommand::Test(_) => not_implemented(kind.as_str(), "test"),
 
         BehavioralContentCommand::Publish(_) => not_implemented(kind.as_str(), "publish"),
+    }
+}
+
+fn execute_library(command: LibraryCommand) -> Result<(), String> {
+    match command {
+        LibraryCommand::Create(_) => not_implemented("library", "create"),
+
+        LibraryCommand::List(args) => content_list(ContentKind::Library, args),
+
+        LibraryCommand::Inspect(args) => content_inspect(ContentKind::Library, args),
+
+        LibraryCommand::Resolve(args) => content_resolve(ContentKind::Library, args),
+
+        LibraryCommand::Verify(args) => library_verify(args),
+
+        LibraryCommand::Repair(args) => library_repair(args),
+
+        LibraryCommand::Test(_) => not_implemented("library", "test"),
+
+        LibraryCommand::Publish(_) => not_implemented("library", "publish"),
     }
 }
 
