@@ -115,6 +115,13 @@ pub fn acquire_ecosystem(
 
         let target = destination.join(checkout_path);
 
+        if target.exists() {
+            return Err(EcosystemError::CheckoutAlreadyExists {
+                repository: repository.id.clone(),
+                path: target,
+            });
+        }
+
         clone_repository(repository, &target)?;
         initialize_submodules(repository, &target)?;
 
@@ -262,15 +269,6 @@ fn prepare_destination(
         });
     }
 
-    let mut entries = fs::read_dir(&destination).map_err(|source| EcosystemError::Io {
-        path: destination.clone(),
-        source,
-    })?;
-
-    if entries.next().is_some() {
-        return Err(EcosystemError::DestinationNotEmpty(destination));
-    }
-
     Ok(destination)
 }
 
@@ -392,7 +390,10 @@ pub enum EcosystemError {
 
     DestinationNotDirectory(PathBuf),
 
-    DestinationNotEmpty(PathBuf),
+    CheckoutAlreadyExists {
+        repository: String,
+        path: PathBuf,
+    },
 
     OverlapsInstallation {
         destination: PathBuf,
@@ -516,10 +517,10 @@ impl fmt::Display for EcosystemError {
                 )
             }
 
-            Self::DestinationNotEmpty(path) => {
+            Self::CheckoutAlreadyExists { repository, path } => {
                 write!(
                     formatter,
-                    "acquisition destination must be empty: `{}`",
+                    "cannot acquire Registry repository `{repository}` because checkout path `{}` already exists",
                     path.display()
                 )
             }
