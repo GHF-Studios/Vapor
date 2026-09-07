@@ -281,7 +281,7 @@ fn execute_ecosystem(command: EcosystemCommand) -> Result<(), String> {
 
         EcosystemCommand::Test => run_ecosystem_operation(DevelopmentOperation::Test),
 
-        EcosystemCommand::Acquire { .. } => not_implemented("ecosystem", "acquire"),
+        EcosystemCommand::Acquire { destination } => ecosystem_acquire(destination),
 
         EcosystemCommand::Fork { .. } => not_implemented("ecosystem", "fork"),
 
@@ -291,6 +291,41 @@ fn execute_ecosystem(command: EcosystemCommand) -> Result<(), String> {
 
         EcosystemCommand::Deploy { command } => execute_ecosystem_deploy(command),
     }
+}
+
+fn ecosystem_acquire(destination: Option<PathBuf>) -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+
+    let destination = match destination {
+        Some(destination) => destination,
+
+        None => env::current_dir()
+            .map_err(|error| format!("failed to determine acquisition destination: {error}"))?,
+    };
+
+    println!("Acquiring Vapor ecosystem from Registry...");
+
+    let report =
+        crate::acquire_ecosystem(&installation, &destination).map_err(|error| error.to_string())?;
+
+    println!();
+    println!("Ecosystem: {}", report.ecosystem_id);
+    println!("Registry: {}", report.registry_endpoint);
+    println!("Superworkspace: {}", report.superworkspace_root.display());
+
+    println!("Repositories:");
+
+    for repository in &report.repositories {
+        println!("  {} -> {}", repository.id, repository.root.display());
+    }
+
+    if let Err(error) = synchronize_existing_development_environment(&report.superworkspace_root) {
+        eprintln!(
+            "warning: acquisition succeeded, but the existing development environment could not be synchronized: {error}"
+        );
+    }
+
+    Ok(())
 }
 
 fn execute_ecosystem_deploy(command: EcosystemDeployCommand) -> Result<(), String> {
@@ -622,6 +657,10 @@ fn ecosystem_status() -> Result<(), String> {
 fn ecosystem_deploy_local() -> Result<(), String> {
     let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
 
+    // Resolve the active Installation before deployment replaces the
+    // currently-running Vapor executable.
+    let installation = VaporInstallation::for_workspace(&workspace);
+
     println!(
         "Deploying Vapor ecosystem {}/{} {} locally...",
         workspace.manifest.workspace.organization,
@@ -631,17 +670,20 @@ fn ecosystem_deploy_local() -> Result<(), String> {
 
     let report = deploy_workspace(&workspace).map_err(|error| error.to_string())?;
 
-    println!();
+    let bootstrap = crate::install_ecosystem_bootstrap(&installation, &workspace.root)
+        .map_err(|error| error.to_string())?;
 
+    println!();
     println!("Vapor Installation: {}", report.installation_root.display());
 
     println!("Deployed binaries:");
 
     for binary in &report.binaries {
-        println!("  {} -> {}", binary.name, binary.destination.display(),);
+        println!("  {} -> {}", binary.name, binary.destination.display());
     }
 
     println!("Shell activation: {}", report.activation_script.display());
+    println!("Ecosystem bootstrap: {}", bootstrap.display());
 
     if let Err(error) = synchronize_existing_development_environment(&workspace.root) {
         eprintln!(

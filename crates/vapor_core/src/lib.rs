@@ -7,12 +7,14 @@ pub mod cargo_reconciliation;
 pub mod cli;
 pub mod content;
 pub mod development;
+pub mod ecosystem;
 pub mod ide;
 pub mod identity;
 pub mod installation;
 pub mod local;
 pub mod maintenance;
 pub mod manifest;
+pub mod registry;
 pub mod resolution;
 pub mod role;
 pub mod source;
@@ -43,6 +45,11 @@ pub use development::{
     development_target_dir, run_workspace_operation,
 };
 
+pub use ecosystem::{
+    AcquiredRepository, EcosystemAcquisitionReport, EcosystemBootstrap, EcosystemError,
+    acquire_ecosystem, install_ecosystem_bootstrap,
+};
+
 pub use ide::{
     IdeError, IdeFileState, IdeFileStatus, IdeRepairReport, IdeStatus, inspect_ide, repair_ide,
 };
@@ -64,6 +71,8 @@ pub use maintenance::{
 };
 
 pub use manifest::{ContentHeader, ContentManifest, ManifestError, parse_content_manifest};
+
+pub use registry::{RegisteredEcosystem, RegisteredRepository, RegistryClient, RegistryError};
 
 pub use resolution::{
     ResolutionError, ResolvedComposition, ResolvedContentGraph, ResolvedContentNode,

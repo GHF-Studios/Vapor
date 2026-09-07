@@ -203,8 +203,8 @@ pub(super) enum EcosystemCommand {
     Status,
 
     Acquire {
-        #[arg(value_name = "SOURCE")]
-        source: Option<String>,
+        #[arg(value_name = "SUPERWORKSPACE")]
+        destination: Option<PathBuf>,
     },
 
     Fork {
