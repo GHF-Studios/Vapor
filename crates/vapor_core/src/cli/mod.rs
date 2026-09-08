@@ -74,7 +74,9 @@ fn execute_vapor(command: VaporCommand) -> Result<(), String> {
 
         VaporCommand::Source { command } => execute_source(command),
 
-        VaporCommand::Ecosystem { command } => execute_ecosystem(command),
+        VaporCommand::Client { command } => execute_client(command),
+
+        VaporCommand::PlatformServer { command } => execute_platform_server(command),
 
         VaporCommand::Packagepack { command } => execute_packagepack(command),
 
@@ -426,7 +428,7 @@ fn execute_source(command: SourceCommand) -> Result<(), String> {
 
         SourceCommand::Acquire { .. } => not_implemented("source", "acquire"),
 
-        SourceCommand::Fork { .. } => not_implemented("source", "fork"),
+        SourceCommand::Restore { destination } => source_restore(destination),
     }
 }
 
@@ -441,53 +443,23 @@ fn synchronize_existing_development_environment(source_root: &Path) -> Result<()
     Ok(())
 }
 
-fn execute_ecosystem(command: EcosystemCommand) -> Result<(), String> {
-    match command {
-        EcosystemCommand::Status => ecosystem_status(),
-
-        EcosystemCommand::Acquire { source } => ecosystem_acquire(source),
-
-        EcosystemCommand::Fork { .. } => not_implemented("ecosystem", "fork"),
-
-        EcosystemCommand::Create { .. } => not_implemented("ecosystem", "create"),
-
-        EcosystemCommand::Build => run_ecosystem_operation(DevelopmentOperation::Build),
-
-        EcosystemCommand::Test => run_ecosystem_operation(DevelopmentOperation::Test),
-
-        EcosystemCommand::Publish => not_implemented("ecosystem", "publish"),
-
-        EcosystemCommand::Deploy { command } => execute_ecosystem_deploy(command),
-    }
-}
-
-fn execute_ecosystem_deploy(command: EcosystemDeployCommand) -> Result<(), String> {
-    match command {
-        EcosystemDeployCommand::Local => ecosystem_deploy_local(),
-
-        EcosystemDeployCommand::Steam(args) => ecosystem_deploy_steam(args),
-    }
-}
-
-fn ecosystem_acquire(source: Option<String>) -> Result<(), String> {
-    if let Some(source) = source {
-        return Err(format!(
-            "explicit ecosystem source `{source}` is modeled but not implemented yet"
-        ));
-    }
-
+fn source_restore(destination: Option<PathBuf>) -> Result<(), String> {
     let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
 
-    let destination = env::current_dir()
-        .map_err(|error| format!("failed to determine acquisition destination: {error}"))?;
+    let destination = match destination {
+        Some(destination) => destination,
 
-    println!("Acquiring Vapor ecosystem from Registry...");
+        None => env::current_dir()
+            .map_err(|error| format!("failed to determine restoration destination: {error}"))?,
+    };
+
+    println!("Restoring registered Vapor source...");
 
     let report =
         crate::acquire_ecosystem(&installation, &destination).map_err(|error| error.to_string())?;
 
     println!();
-    println!("Ecosystem: {}", report.ecosystem_id);
+    println!("Registration: {}", report.ecosystem_id);
     println!("Registry: {}", report.registry_endpoint);
     println!("Superworkspace: {}", report.superworkspace_root.display());
 
@@ -499,11 +471,43 @@ fn ecosystem_acquire(source: Option<String>) -> Result<(), String> {
 
     if let Err(error) = synchronize_existing_development_environment(&report.superworkspace_root) {
         eprintln!(
-            "warning: acquisition succeeded, but the existing development environment could not be synchronized: {error}"
+            "warning: source restoration succeeded, but the existing development environment could not be synchronized: {error}"
         );
     }
 
     Ok(())
+}
+
+fn execute_client(command: ClientCommand) -> Result<(), String> {
+    match command {
+        ClientCommand::Status => client_status(),
+
+        ClientCommand::Build => run_client_operation(DevelopmentOperation::Build),
+
+        ClientCommand::Test => run_client_operation(DevelopmentOperation::Test),
+
+        ClientCommand::Deploy { command } => execute_client_deploy(command),
+    }
+}
+
+fn execute_client_deploy(command: ClientDeployCommand) -> Result<(), String> {
+    match command {
+        ClientDeployCommand::Local => client_deploy_local(),
+
+        ClientDeployCommand::Steam(args) => client_deploy_steam(args),
+    }
+}
+
+fn execute_platform_server(command: PlatformServerCommand) -> Result<(), String> {
+    match command {
+        PlatformServerCommand::Status => platform_server_status(),
+
+        PlatformServerCommand::Build => not_implemented("platform-server", "build"),
+
+        PlatformServerCommand::Test => not_implemented("platform-server", "test"),
+
+        PlatformServerCommand::Deploy => not_implemented("platform-server", "deploy"),
+    }
 }
 
 fn execute_packagepack(command: PackagepackCommand) -> Result<(), String> {
@@ -755,8 +759,69 @@ fn toolchain_install() -> Result<(), String> {
     Ok(())
 }
 
-fn ecosystem_status() -> Result<(), String> {
-    let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
+const CLIENT_WORKSPACE_REPOSITORY: &str = "Vapor-Root/Vapor";
+const CLIENT_WORKSPACE_ORGANIZATION: &str = "ghf-studios";
+const CLIENT_WORKSPACE_NAME: &str = "vapor";
+
+const PLATFORM_SERVER_REPOSITORY: &str = "Vapor-Server-Root";
+
+fn first_party_superworkspace() -> Result<VaporSuperworkspace, String> {
+    if let Ok(current_directory) = env::current_dir()
+        && let Ok(superworkspace) = VaporSuperworkspace::discover_from(&current_directory)
+    {
+        return Ok(superworkspace);
+    }
+
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+
+    let source = resolve_source_context(&installation, None).map_err(|error| error.to_string())?;
+
+    VaporSuperworkspace::discover_from(&source.root).map_err(|error| {
+        format!(
+            "failed to resolve Vapor Superworkspace from source `{}`: {error}",
+            source.root.display()
+        )
+    })
+}
+
+fn first_party_repository_root(repository: &str) -> Result<PathBuf, String> {
+    let superworkspace = first_party_superworkspace()?;
+
+    superworkspace
+        .repositories
+        .iter()
+        .find(|candidate| candidate.name == repository)
+        .map(|candidate| candidate.root.clone())
+        .ok_or_else(|| {
+            format!(
+                "first-party Vapor source `{repository}` is not present in Superworkspace `{}`",
+                superworkspace.root.display()
+            )
+        })
+}
+
+fn client_workspace() -> Result<VaporWorkspace, String> {
+    // When invoked directly from the Client Workspace, use that explicit local
+    // source without requiring previously persisted source context.
+    if let Ok(workspace) = VaporWorkspace::discover()
+        && workspace.manifest.workspace.organization == CLIENT_WORKSPACE_ORGANIZATION
+        && workspace.manifest.workspace.name == CLIENT_WORKSPACE_NAME
+    {
+        return Ok(workspace);
+    }
+
+    let root = first_party_repository_root(CLIENT_WORKSPACE_REPOSITORY)?;
+
+    VaporWorkspace::load(&root).map_err(|error| {
+        format!(
+            "failed to load first-party Vapor Client Workspace `{}`: {error}",
+            root.display()
+        )
+    })
+}
+
+fn client_status() -> Result<(), String> {
+    let workspace = client_workspace()?;
 
     let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
 
@@ -765,7 +830,8 @@ fn ecosystem_status() -> Result<(), String> {
 
     let sources = source_state(&installation).map_err(|error| error.to_string())?;
 
-    println!("Vapor ecosystem source:");
+    println!("Vapor Client source:");
+
     println!(
         "  identity: {}/{} {}",
         workspace.manifest.workspace.organization,
@@ -774,11 +840,9 @@ fn ecosystem_status() -> Result<(), String> {
     );
 
     println!("  root: {}", workspace.root.display());
-
     println!("  repository: {}", workspace.manifest.workspace.repository);
 
     println!("  installation: {}", installation.root.display());
-
     println!("  installation source: {}", installation.root_source);
 
     if let Ok(executable) = env::current_exe() {
@@ -812,7 +876,6 @@ fn ecosystem_status() -> Result<(), String> {
 
     for project in &workspace.projects {
         println!("    {}:", project.name);
-
         println!("      root: {}", project.root.display());
 
         println!(
@@ -824,15 +887,57 @@ fn ecosystem_status() -> Result<(), String> {
     Ok(())
 }
 
-fn ecosystem_deploy_local() -> Result<(), String> {
-    let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
+fn platform_server_status() -> Result<(), String> {
+    let superworkspace = first_party_superworkspace()?;
 
-    // Resolve the active Installation before deployment replaces the
-    // currently-running Vapor executable.
+    let platform_server = superworkspace
+        .repositories
+        .iter()
+        .find(|candidate| candidate.name == PLATFORM_SERVER_REPOSITORY)
+        .ok_or_else(|| {
+            format!(
+                "first-party Vapor Platform Server source `{PLATFORM_SERVER_REPOSITORY}` is not present in Superworkspace `{}`",
+                superworkspace.root.display()
+            )
+        })?;
+
+    println!("Vapor Platform Server source:");
+    println!("  root: {}", platform_server.root.display());
+    println!("  kind: {}", platform_server.kind);
+
+    let prefix = format!("{PLATFORM_SERVER_REPOSITORY}/");
+
+    println!("  Workspaces:");
+
+    let mut found = false;
+
+    for repository in superworkspace
+        .repositories
+        .iter()
+        .filter(|candidate| candidate.name.starts_with(&prefix))
+    {
+        found = true;
+
+        println!("    {}:", repository.name);
+        println!("      root: {}", repository.root.display());
+        println!("      kind: {}", repository.kind);
+    }
+
+    if !found {
+        println!("    none currently active");
+    }
+
+    Ok(())
+}
+
+fn client_deploy_local() -> Result<(), String> {
+    let workspace = client_workspace()?;
+
+    // Resolve before self-deployment replaces the running executable.
     let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
 
     println!(
-        "Deploying Vapor ecosystem {}/{} {} locally...",
+        "Deploying Vapor Client {}/{} {} locally...",
         workspace.manifest.workspace.organization,
         workspace.manifest.workspace.name,
         workspace.manifest.workspace.version,
@@ -853,22 +958,22 @@ fn ecosystem_deploy_local() -> Result<(), String> {
     }
 
     println!("Shell activation: {}", report.activation_script.display());
-    println!("Ecosystem bootstrap: {}", bootstrap.display());
+    println!("Source bootstrap: {}", bootstrap.display());
 
     if let Err(error) = synchronize_existing_development_environment(&workspace.root) {
         eprintln!(
-            "warning: local ecosystem deployment succeeded, but the existing development environment could not be synchronized: {error}"
+            "warning: local Client deployment succeeded, but the existing development environment could not be synchronized: {error}"
         );
     }
 
     Ok(())
 }
 
-fn ecosystem_deploy_steam(args: SteamDeployArgs) -> Result<(), String> {
-    let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
+fn client_deploy_steam(args: SteamDeployArgs) -> Result<(), String> {
+    let workspace = client_workspace()?;
 
     println!(
-        "Deploying Vapor ecosystem {}/{} {} to Steam{}...",
+        "Deploying Vapor Client {}/{} {} to Steam{}...",
         workspace.manifest.workspace.organization,
         workspace.manifest.workspace.name,
         workspace.manifest.workspace.version,
@@ -907,8 +1012,8 @@ fn ecosystem_deploy_steam(args: SteamDeployArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn run_ecosystem_operation(operation: DevelopmentOperation) -> Result<(), String> {
-    let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
+fn run_client_operation(operation: DevelopmentOperation) -> Result<(), String> {
+    let workspace = client_workspace()?;
 
     let verb = match operation {
         DevelopmentOperation::Build => "Building",
@@ -916,7 +1021,7 @@ fn run_ecosystem_operation(operation: DevelopmentOperation) -> Result<(), String
     };
 
     println!(
-        "{verb} Vapor ecosystem source {}/{} {}...",
+        "{verb} Vapor Client {}/{} {}...",
         workspace.manifest.workspace.organization,
         workspace.manifest.workspace.name,
         workspace.manifest.workspace.version
@@ -930,7 +1035,7 @@ fn run_ecosystem_operation(operation: DevelopmentOperation) -> Result<(), String
     };
 
     println!(
-        "{completed} Vapor ecosystem source {}/{}",
+        "{completed} Vapor Client {}/{}",
         workspace.manifest.workspace.organization, workspace.manifest.workspace.name
     );
 

@@ -60,9 +60,14 @@ pub(super) enum VaporCommand {
         command: SourceCommand,
     },
 
-    Ecosystem {
+    Client {
         #[command(subcommand)]
-        command: EcosystemCommand,
+        command: ClientCommand,
+    },
+
+    PlatformServer {
+        #[command(subcommand)]
+        command: PlatformServerCommand,
     },
 
     Packagepack {
@@ -193,53 +198,62 @@ pub(super) enum SourceCommand {
     Status,
     List,
 
+    /// Acquire one existing authored source.
+    ///
+    /// Fine-grained provider-backed acquisition is modeled here and will be
+    /// implemented independently of first-party source restoration.
     Acquire {
         #[arg(value_name = "SOURCE")]
         source: String,
+
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
     },
 
-    Fork {
-        #[arg(value_name = "SOURCE")]
-        source: String,
+    /// Reconstruct the registered source topology belonging to this Vapor
+    /// installation.
+    ///
+    /// For the official Vapor installation this restores the known first-party
+    /// Container Repos into one Superworkspace.
+    Restore {
+        #[arg(value_name = "SUPERWORKSPACE")]
+        destination: Option<PathBuf>,
     },
 }
 
 #[derive(Debug, Subcommand)]
-pub(super) enum EcosystemCommand {
+pub(super) enum ClientCommand {
     Status,
-
-    Acquire {
-        #[arg(value_name = "SOURCE")]
-        source: Option<String>,
-    },
-
-    Fork {
-        #[arg(value_name = "SOURCE")]
-        source: Option<String>,
-    },
-
-    Create {
-        #[arg(value_name = "IDENTITY")]
-        identity: Option<String>,
-    },
-
     Build,
     Test,
-    Publish,
 
     Deploy {
         #[command(subcommand)]
-        command: EcosystemDeployCommand,
+        command: ClientDeployCommand,
     },
 }
 
 #[derive(Debug, Subcommand)]
-pub(super) enum EcosystemDeployCommand {
-    /// Deploy into the active local Vapor App Instance.
+pub(super) enum ClientDeployCommand {
+    /// Deploy the Vapor Client into the active local App Instance.
     Local,
 
-    /// Deploy through SteamPipe.
+    /// Deploy the Vapor Client through SteamPipe.
     Steam(SteamDeployArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum PlatformServerCommand {
+    Status,
+
+    /// Build the first-party Vapor Platform Server.
+    Build,
+
+    /// Test the first-party Vapor Platform Server.
+    Test,
+
+    /// Deploy the first-party Vapor Platform Server.
+    Deploy,
 }
 
 #[derive(Debug, Args)]
