@@ -196,10 +196,11 @@ fn resolve_toolchain_cargo_project(
     args: &[OsString],
 ) -> Result<Option<VaporProject>, String> {
     let package_hints = cargo_package_hints(args);
+    let explicit_manifest = cargo_has_manifest_path(args);
 
     let needs_project = explicit_project.is_some()
-        || !package_hints.is_empty()
-        || cargo_needs_project_context(args);
+        || (!explicit_manifest
+            && (!package_hints.is_empty() || cargo_needs_project_context(args)));
 
     if !needs_project {
         return Ok(None);
@@ -345,6 +346,26 @@ fn cargo_package_hints(args: &[OsString]) -> Vec<String> {
     hints.dedup();
 
     hints
+}
+
+fn cargo_has_manifest_path(args: &[OsString]) -> bool {
+    let mut index = 0;
+
+    while index < args.len() {
+        let argument = args[index].to_string_lossy();
+
+        if argument == "--" {
+            break;
+        }
+
+        if argument == "--manifest-path" || argument.starts_with("--manifest-path=") {
+            return true;
+        }
+
+        index += 1;
+    }
+
+    false
 }
 
 fn cargo_package_name(spec: &str) -> &str {
