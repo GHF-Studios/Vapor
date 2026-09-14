@@ -16,6 +16,8 @@
 //! `rust.xml`, and `.idea/vapor-toolchain`. Those are obsolete and are removed
 //! after the real workspace state has been reconciled.
 
+mod run_configurations;
+
 use crate::{ManagedToolchain, VaporSuperworkspace};
 use std::fmt;
 use std::fs;
@@ -94,6 +96,7 @@ struct IdePlan {
     cargo_projects: Vec<PathBuf>,
     cargo_references: Vec<String>,
     vcs_references: Vec<String>,
+    run_configurations: Vec<(PathBuf, String)>,
     legacy_paths: Vec<PathBuf>,
 }
 
@@ -151,6 +154,28 @@ pub fn repair_ide(
         })?;
 
         changed.push(plan.vcs_path.clone());
+    }
+
+    for (path, desired) in &plan.run_configurations {
+        let current = read_workspace(path)?;
+
+        if current.as_deref() == Some(desired.as_str()) {
+            continue;
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| IdeError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+
+        fs::write(path, desired).map_err(|source| IdeError::Io {
+            path: path.clone(),
+            source,
+        })?;
+
+        changed.push(path.clone());
     }
 
     for path in &plan.legacy_paths {
@@ -246,6 +271,9 @@ fn build_plan(
 
     let idea_root = superworkspace.root.join(IDEA_DIR);
 
+    let run_configurations =
+        run_configurations::build(&superworkspace.root, &toolchain.vapor_home);
+
     let legacy_paths = vec![
         idea_root.join(LEGACY_CARGO_PROJECTS_FILE),
         idea_root.join(LEGACY_RUST_SETTINGS_FILE),
@@ -261,6 +289,7 @@ fn build_plan(
         cargo_projects,
         cargo_references,
         vcs_references,
+        run_configurations,
         legacy_paths,
     })
 }
@@ -320,6 +349,19 @@ impl IdePlan {
                 state: vcs_state,
             },
         ];
+
+        for (path, desired) in &self.run_configurations {
+            let current = read_workspace(path)?;
+
+            files.push(IdeFileStatus {
+                path: path.clone(),
+                state: match current {
+                    None => IdeFileState::Missing,
+                    Some(current) if current == *desired => IdeFileState::Current,
+                    Some(_) => IdeFileState::Outdated,
+                },
+            });
+        }
 
         for path in &self.legacy_paths {
             if path.exists() {
