@@ -11,9 +11,10 @@ use crate::{
     ResolvedComposition, ResolvedContentGraph, SteamDeploymentOptions, VaporId, VaporInstallation,
     VaporProject, VaporRole, VaporSuperworkspace, VaporWorkspace, build_cargo_realization,
     demote_role, deploy_ecosystem_to_steam, deploy_workspace, development_target_dir,
-    discover_local_content, generate_local_cargo_realization, git_available,
-    inspect_local_cargo_package, promote_role, reconcile_existing_development_environment,
-    repair_local_library_cargo_dependencies, resolve_local_content_kind, resolve_local_packagepack,
+    diagnose_managed_state, discover_local_content, generate_local_cargo_realization,
+    git_available, inspect_local_cargo_package, promote_role,
+    reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
+    repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
     resolve_source_context, role_status, run_cargo_realization, run_workspace_operation,
     source_state, verify_local_library_cargo_dependencies,
 };
@@ -120,9 +121,9 @@ fn execute_installation(command: InstallationCommand) -> Result<(), String> {
     match command {
         InstallationCommand::Status => installation_status(),
 
-        InstallationCommand::Diagnose => not_implemented("installation", "diagnose"),
+        InstallationCommand::Diagnose => installation_diagnose(),
 
-        InstallationCommand::Repair => not_implemented("installation", "repair"),
+        InstallationCommand::Repair => installation_repair(),
     }
 }
 
@@ -592,6 +593,87 @@ fn execute_library(command: LibraryCommand) -> Result<(), String> {
     }
 }
 
+fn installation_diagnose() -> Result<(), String> {
+    let status = diagnose_managed_state().map_err(|error| error.to_string())?;
+
+    print_managed_state(&status);
+
+    if status.is_healthy() {
+        Ok(())
+    } else {
+        Err("Vapor managed state requires repair".to_owned())
+    }
+}
+
+fn installation_repair() -> Result<(), String> {
+    let report = repair_managed_state().map_err(|error| error.to_string())?;
+
+    if report.toolchain_installed {
+        println!("Installed the pinned Vapor-managed Rust toolchain.");
+    }
+
+    if report.development_changes.is_empty() {
+        println!("Vapor-managed development state was already current.");
+    } else {
+        println!("Reconciled Vapor-managed development state:");
+
+        for path in &report.development_changes {
+            println!("  {}", path.display());
+        }
+    }
+
+    println!();
+    print_managed_state(&report.status);
+
+    if report.status.is_healthy() {
+        Ok(())
+    } else {
+        Err("Vapor managed state remains unhealthy after safe repair".to_owned())
+    }
+}
+
+fn print_managed_state(status: &crate::MaintenanceStatus) {
+    println!("Vapor managed state:");
+    println!("  installation: {}", status.installation_root.display());
+    println!("  source: {}", status.source_root.display());
+    println!(
+        "  toolchain: {} ({})",
+        status.toolchain_version,
+        if status.toolchain_installed {
+            "installed"
+        } else {
+            "missing"
+        },
+    );
+
+    match &status.superworkspace_root {
+        Some(root) => println!("  Superworkspace: {}", root.display()),
+        None => println!("  Superworkspace: unavailable"),
+    }
+
+    println!("  Workspaces: {}", status.current_workspaces);
+    println!("  Projects: {}", status.current_projects);
+
+    if !status.jetbrains_present {
+        println!("  RustRover: not present");
+    } else if status
+        .ide_status
+        .as_ref()
+        .is_some_and(crate::IdeStatus::is_current)
+    {
+        println!("  RustRover: current");
+    } else {
+        println!("  RustRover: repair required");
+    }
+
+    for issue in &status.incompatible_workspaces {
+        println!(
+            "  incompatible Workspace `{}`: {}",
+            issue.name, issue.message
+        );
+    }
+}
+
 fn installation_status() -> Result<(), String> {
     let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
 
@@ -759,11 +841,11 @@ fn toolchain_install() -> Result<(), String> {
     Ok(())
 }
 
-const CLIENT_WORKSPACE_REPOSITORY: &str = "Vapor-Root/Vapor";
+const CLIENT_WORKSPACE_REPOSITORY: &str = "Vapor-Client/Vapor";
 const CLIENT_WORKSPACE_ORGANIZATION: &str = "ghf-studios";
 const CLIENT_WORKSPACE_NAME: &str = "vapor";
 
-const PLATFORM_SERVER_REPOSITORY: &str = "Vapor-Server-Root";
+const PLATFORM_SERVER_REPOSITORY: &str = "Vapor-Platform-Server";
 
 fn first_party_superworkspace() -> Result<VaporSuperworkspace, String> {
     if let Ok(current_directory) = env::current_dir()

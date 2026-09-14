@@ -44,9 +44,9 @@ pub struct SuperworkspaceRepository {
     ///
     /// Examples:
     ///
-    /// - `Vapor-Root`
-    /// - `Vapor-Root/Vapor`
-    /// - `Vapor-Root/Vapor-Examples`
+    /// - `Vapor-Client`
+    /// - `Vapor-Client/Vapor`
+    /// - `Vapor-Client/Vapor-Examples`
     pub name: String,
 
     pub root: PathBuf,
@@ -514,19 +514,19 @@ mod tests {
     #[test]
     fn vapor_ignore_matches_repository_and_descendants() {
         let ignore = VaporIgnore {
-            entries: vec!["Loo-Cast".to_owned(), "Vapor-Root/Vapor-SDK".to_owned()],
+            entries: vec!["Loo-Cast".to_owned(), "Vapor-Client/Vapor-SDK".to_owned()],
         };
 
         assert!(ignore.ignores("Loo-Cast",));
 
         assert!(ignore.ignores("Loo-Cast/something",));
 
-        assert!(ignore.ignores("Vapor-Root/Vapor-SDK",));
+        assert!(ignore.ignores("Vapor-Client/Vapor-SDK",));
 
-        assert!(ignore.ignores("Vapor-Root/Vapor-SDK/crates/foo",));
+        assert!(ignore.ignores("Vapor-Client/Vapor-SDK/crates/foo",));
 
-        assert!(!ignore.ignores("Vapor-Root/Vapor",));
+        assert!(!ignore.ignores("Vapor-Client/Vapor",));
 
-        assert!(!ignore.ignores("Vapor-Root/Vapor-Examples",));
+        assert!(!ignore.ignores("Vapor-Client/Vapor-Examples",));
     }
 }

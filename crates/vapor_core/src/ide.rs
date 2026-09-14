@@ -4,12 +4,13 @@
 //! Vapor's modeled development environment:
 //!
 //! - attached Cargo projects;
+//! - Git/VCS roots for repositories modeled by the Superworkspace;
 //! - the Vapor-managed Rust toolchain;
 //! - the Vapor-managed Rust standard-library source.
 //!
 //! JetBrains stores Cargo-project attachment and Rust project settings in the
-//! project-local `.idea/workspace.xml`. Vapor therefore reconciles those
-//! components in-place while preserving unrelated IDE state.
+//! project-local `.idea/workspace.xml`, while Git roots live in `.idea/vcs.xml`.
+//! Vapor reconciles those files in-place while preserving unrelated IDE state.
 //!
 //! Older Vapor IDE implementations generated standalone `cargoProjects.xml`,
 //! `rust.xml`, and `.idea/vapor-toolchain`. Those are obsolete and are removed
@@ -24,8 +25,10 @@ use std::path::{Path, PathBuf};
 
 const IDEA_DIR: &str = ".idea";
 const WORKSPACE_FILE: &str = "workspace.xml";
+const VCS_FILE: &str = "vcs.xml";
 
 const CARGO_COMPONENT: &str = "CargoProjects";
+const VCS_COMPONENT: &str = "VcsDirectoryMappings";
 const RUST_COMPONENT: &str = "RustProjectSettings";
 const LEGACY_RUST_COMPONENT: &str = "RsProjectSettings";
 
@@ -85,10 +88,12 @@ struct IdePlan {
     project_root: PathBuf,
     idea_root: PathBuf,
     workspace_path: PathBuf,
+    vcs_path: PathBuf,
     toolchain_home: PathBuf,
     stdlib_source: Option<PathBuf>,
     cargo_projects: Vec<PathBuf>,
     cargo_references: Vec<String>,
+    vcs_references: Vec<String>,
     legacy_paths: Vec<PathBuf>,
 }
 
@@ -129,6 +134,23 @@ pub fn repair_ide(
         })?;
 
         changed.push(plan.workspace_path.clone());
+    }
+
+    let current_vcs = read_workspace(&plan.vcs_path)?;
+    let desired_vcs = reconcile_vcs_file(
+        current_vcs.as_deref(),
+        &plan.vcs_path,
+        &plan.project_root,
+        &plan.vcs_references,
+    )?;
+
+    if current_vcs.as_deref() != Some(desired_vcs.as_str()) {
+        fs::write(&plan.vcs_path, desired_vcs).map_err(|source| IdeError::Io {
+            path: plan.vcs_path.clone(),
+            source,
+        })?;
+
+        changed.push(plan.vcs_path.clone());
     }
 
     for path in &plan.legacy_paths {
@@ -208,6 +230,20 @@ fn build_plan(
         .map(|manifest| project_reference(&superworkspace.root, manifest))
         .collect::<Result<Vec<_>, IdeError>>()?;
 
+    let mut vcs_roots = superworkspace
+        .repositories
+        .iter()
+        .map(|repository| repository.root.clone())
+        .collect::<Vec<_>>();
+
+    vcs_roots.sort();
+    vcs_roots.dedup();
+
+    let vcs_references = vcs_roots
+        .iter()
+        .map(|root| project_reference(&superworkspace.root, root))
+        .collect::<Result<Vec<_>, IdeError>>()?;
+
     let idea_root = superworkspace.root.join(IDEA_DIR);
 
     let legacy_paths = vec![
@@ -218,11 +254,13 @@ fn build_plan(
     Ok(IdePlan {
         project_root: superworkspace.root.clone(),
         workspace_path: idea_root.join(WORKSPACE_FILE),
+        vcs_path: idea_root.join(VCS_FILE),
         idea_root,
         toolchain_home,
         stdlib_source,
         cargo_projects,
         cargo_references,
+        vcs_references,
         legacy_paths,
     })
 }
@@ -251,10 +289,37 @@ impl IdePlan {
             }
         };
 
-        let mut files = vec![IdeFileStatus {
-            path: self.workspace_path.clone(),
-            state: workspace_state,
-        }];
+        let current_vcs = read_workspace(&self.vcs_path)?;
+
+        let vcs_state = match current_vcs {
+            None => IdeFileState::Missing,
+
+            Some(current) => {
+                let desired = reconcile_vcs_file(
+                    Some(&current),
+                    &self.vcs_path,
+                    &self.project_root,
+                    &self.vcs_references,
+                )?;
+
+                if current == desired {
+                    IdeFileState::Current
+                } else {
+                    IdeFileState::Outdated
+                }
+            }
+        };
+
+        let mut files = vec![
+            IdeFileStatus {
+                path: self.workspace_path.clone(),
+                state: workspace_state,
+            },
+            IdeFileStatus {
+                path: self.vcs_path.clone(),
+                state: vcs_state,
+            },
+        ];
 
         for path in &self.legacy_paths {
             if path.exists() {
@@ -287,6 +352,97 @@ fn read_workspace(path: &Path) -> Result<Option<String>, IdeError> {
             source,
         }),
     }
+}
+
+fn reconcile_vcs_file(
+    current: Option<&str>,
+    vcs_path: &Path,
+    project_root: &Path,
+    desired: &[String],
+) -> Result<String, IdeError> {
+    let mut vcs = current
+        .unwrap_or(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <project version=\"4\">\n\
+             </project>\n",
+        )
+        .to_owned();
+
+    if !vcs.contains("<project") || !vcs.contains("</project>") {
+        return Err(IdeError::MalformedWorkspace {
+            path: vcs_path.to_path_buf(),
+            message: "missing JetBrains <project> root element".to_owned(),
+        });
+    }
+
+    let component = reconcile_vcs_component(&vcs, project_root, desired)?;
+
+    vcs = upsert_component(&vcs, VCS_COMPONENT, &component, vcs_path)?;
+
+    Ok(vcs)
+}
+
+fn reconcile_vcs_component(
+    vcs: &str,
+    project_root: &Path,
+    desired: &[String],
+) -> Result<String, IdeError> {
+    let existing_component = find_component_range(vcs, VCS_COMPONENT)?.map(|range| &vcs[range]);
+
+    let mut preserved = Vec::new();
+
+    if let Some(component) = existing_component {
+        for line in component.lines().map(str::trim) {
+            if !line.starts_with("<mapping ") {
+                continue;
+            }
+
+            let Some(directory) = attribute_value(line, "directory").map(xml_unescape) else {
+                continue;
+            };
+
+            if desired.iter().any(|candidate| candidate == &directory) {
+                continue;
+            }
+
+            let is_git = attribute_value(line, "vcs")
+                .map(xml_unescape)
+                .is_some_and(|value| value == "Git");
+
+            if is_git && missing_project_local_mapping(project_root, &directory) {
+                continue;
+            }
+
+            preserved.push(line.to_owned());
+        }
+    }
+
+    let mut component = String::from("<component name=\"VcsDirectoryMappings\">\n");
+
+    for reference in desired {
+        component.push_str(&format!(
+            "    <mapping directory=\"{}\" vcs=\"Git\" />\n",
+            xml_escape(reference),
+        ));
+    }
+
+    for mapping in preserved {
+        component.push_str("    ");
+        component.push_str(mapping.trim());
+        component.push('\n');
+    }
+
+    component.push_str("  </component>");
+
+    Ok(component)
+}
+
+fn missing_project_local_mapping(project_root: &Path, reference: &str) -> bool {
+    let Some(relative) = reference.strip_prefix("$PROJECT_DIR$/") else {
+        return false;
+    };
+
+    !project_root.join(relative).exists()
 }
 
 fn reconcile_workspace(
