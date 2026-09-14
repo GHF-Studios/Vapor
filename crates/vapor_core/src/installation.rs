@@ -1,6 +1,7 @@
 //! Vapor installation identity and root discovery.
 //!
-//! A Vapor Installation is the local executable/tooling/state boundary.
+//! A Vapor Installation is the replaceable App Instance boundary. Mutable
+//! persistent Vapor state belongs to OS user data instead of the Steam depot.
 //!
 //! A normal installed Vapor discovers its App Instance by walking upward from
 //! its own executable location.
@@ -71,19 +72,85 @@ impl VaporInstallation {
         Err(InstallationError::NotFound { executable })
     }
 
-    pub fn state_root(&self) -> PathBuf {
-        self.root.join(STATE_DIR)
+    /// OS-owned mutable Vapor state, intentionally outside the Steam App Instance.
+    pub fn user_data_root(&self) -> PathBuf {
+        platform_user_data_root().unwrap_or_else(|| env::temp_dir().join("vapor-user-data"))
     }
 
+    /// Resolve persisted state while remaining compatible with the pre-userdata
+    /// layout until migration has actually occurred.
+    pub fn state_root(&self) -> PathBuf {
+        let external = self.external_state_root();
+        let legacy = self.legacy_state_root();
+
+        if external.exists() || !legacy.exists() {
+            external
+        } else {
+            legacy
+        }
+    }
+
+    /// Ensure state is external to the Steam App Instance and migrate the
+    /// previous `<installation>/state` tree before any new writes occur.
     pub fn ensure_state_root(&self) -> Result<PathBuf, InstallationError> {
-        let state_root = self.state_root();
+        let state_root = self.external_state_root();
+        let legacy = self.legacy_state_root();
+
+        if !state_root.exists() && legacy.is_dir() {
+            let parent = state_root.parent().ok_or_else(|| InstallationError::Io {
+                path: state_root.clone(),
+                source: io::Error::new(io::ErrorKind::InvalidInput, "state root has no parent"),
+            })?;
+            fs::create_dir_all(parent).map_err(|source| InstallationError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+
+            let temporary = parent.join(format!(".state-migrate-{}", std::process::id()));
+            if temporary.exists() {
+                fs::remove_dir_all(&temporary).map_err(|source| InstallationError::Io {
+                    path: temporary.clone(),
+                    source,
+                })?;
+            }
+
+            copy_missing_tree(&legacy, &temporary)?;
+            fs::rename(&temporary, &state_root).map_err(|source| InstallationError::Io {
+                path: state_root.clone(),
+                source,
+            })?;
+            fs::remove_dir_all(&legacy).map_err(|source| InstallationError::Io {
+                path: legacy,
+                source,
+            })?;
+
+            return Ok(state_root);
+        }
 
         fs::create_dir_all(&state_root).map_err(|source| InstallationError::Io {
             path: state_root.clone(),
             source,
         })?;
 
+        // If an external state tree already exists from a newer build, merge
+        // only legacy files that do not have an external successor.
+        if legacy.is_dir() {
+            copy_missing_tree(&legacy, &state_root)?;
+            fs::remove_dir_all(&legacy).map_err(|source| InstallationError::Io {
+                path: legacy,
+                source,
+            })?;
+        }
+
         Ok(state_root)
+    }
+
+    fn external_state_root(&self) -> PathBuf {
+        self.user_data_root().join(STATE_DIR)
+    }
+
+    fn legacy_state_root(&self) -> PathBuf {
+        self.root.join(STATE_DIR)
     }
 }
 
@@ -91,6 +158,64 @@ fn explicit_vapor_home() -> Option<PathBuf> {
     env::var_os(VAPOR_HOME_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+fn platform_user_data_root() -> Option<PathBuf> {
+    match env::consts::OS {
+        "windows" => env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| {
+                env::var_os("USERPROFILE")
+                    .map(|home| PathBuf::from(home).join("AppData/Local"))
+            })
+            .map(|root| root.join("Vapor")),
+
+        "macos" => env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library/Application Support/Vapor")),
+
+        _ => env::var_os("XDG_DATA_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+            .map(|root| root.join("vapor")),
+    }
+}
+
+fn copy_missing_tree(source: &Path, destination: &Path) -> Result<(), InstallationError> {
+    fs::create_dir_all(destination).map_err(|source_error| InstallationError::Io {
+        path: destination.to_path_buf(),
+        source: source_error,
+    })?;
+
+    for entry in fs::read_dir(source).map_err(|source_error| InstallationError::Io {
+        path: source.to_path_buf(),
+        source: source_error,
+    })? {
+        let entry = entry.map_err(|source_error| InstallationError::Io {
+            path: source.to_path_buf(),
+            source: source_error,
+        })?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|source_error| InstallationError::Io {
+            path: source_path.clone(),
+            source: source_error,
+        })?;
+
+        if file_type.is_dir() {
+            copy_missing_tree(&source_path, &destination_path)?;
+        } else if file_type.is_file() && !destination_path.exists() {
+            fs::copy(&source_path, &destination_path).map_err(|source_error| {
+                InstallationError::Io {
+                    path: destination_path.clone(),
+                    source: source_error,
+                }
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 fn installation_root_from_executable(executable: &Path) -> Option<PathBuf> {
