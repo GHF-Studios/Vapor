@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use crate::{VaporId, VaporRole};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -246,6 +246,9 @@ pub(super) enum ClientDeployCommand {
 pub(super) enum PlatformServerCommand {
     Status,
 
+    /// Show recent CI/deployment activity with paging and filtering.
+    Runs(PlatformServerRunsArgs),
+
     /// Build the first-party Vapor Platform Server.
     Build,
 
@@ -254,6 +257,32 @@ pub(super) enum PlatformServerCommand {
 
     /// Deploy the first-party Vapor Platform Server.
     Deploy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(super) enum PlatformServerRunKind {
+    All,
+    Ci,
+    Deploy,
+}
+
+#[derive(Debug, Args)]
+pub(super) struct PlatformServerRunsArgs {
+    /// Limit activity to one workflow kind.
+    #[arg(long, value_enum, default_value = "all")]
+    pub(super) kind: PlatformServerRunKind,
+
+    /// Filter by GitHub Actions status/conclusion.
+    #[arg(long, value_name = "STATUS")]
+    pub(super) status: Option<String>,
+
+    /// One-based page number.
+    #[arg(long, default_value_t = 1)]
+    pub(super) page: usize,
+
+    /// Number of runs shown per page.
+    #[arg(long, default_value_t = 10)]
+    pub(super) per_page: usize,
 }
 
 #[derive(Debug, Args)]

@@ -4,6 +4,7 @@
 //! application CLIs expose subsets of the same underlying core operations.
 
 mod commands;
+mod platform_activity;
 
 use crate::{
     CargoDependencyState, CargoPackageInspection, ContentKind, ContentVersionId,
@@ -20,6 +21,7 @@ use crate::{
 };
 use clap::Parser;
 use commands::*;
+use platform_activity::*;
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -504,6 +506,8 @@ fn execute_client_deploy(command: ClientDeployCommand) -> Result<(), String> {
 fn execute_platform_server(command: PlatformServerCommand) -> Result<(), String> {
     match command {
         PlatformServerCommand::Status => platform_server_status(),
+
+        PlatformServerCommand::Runs(args) => platform_server_runs(args),
 
         PlatformServerCommand::Build => platform_server_recipe("build"),
 
@@ -1010,6 +1014,9 @@ fn platform_server_status() -> Result<(), String> {
     if !found {
         println!("    none currently active");
     }
+
+    println!();
+    print_platform_server_activity_summary();
 
     Ok(())
 }
