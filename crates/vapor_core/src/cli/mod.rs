@@ -23,7 +23,9 @@ use commands::*;
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
+use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CliSurface {
@@ -503,11 +505,11 @@ fn execute_platform_server(command: PlatformServerCommand) -> Result<(), String>
     match command {
         PlatformServerCommand::Status => platform_server_status(),
 
-        PlatformServerCommand::Build => not_implemented("platform-server", "build"),
+        PlatformServerCommand::Build => platform_server_recipe("build"),
 
-        PlatformServerCommand::Test => not_implemented("platform-server", "test"),
+        PlatformServerCommand::Test => platform_server_recipe("test"),
 
-        PlatformServerCommand::Deploy => not_implemented("platform-server", "deploy"),
+        PlatformServerCommand::Deploy => platform_server_deploy(),
     }
 }
 
@@ -1010,6 +1012,263 @@ fn platform_server_status() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+const PLATFORM_SERVER_GITHUB_REPOSITORY: &str = "GHF-Studios/Vapor-Platform-Server";
+const PLATFORM_SERVER_DEPLOY_WORKFLOW: &str = "deploy.yml";
+
+fn platform_server_recipe(recipe: &str) -> Result<(), String> {
+    let root = first_party_repository_root(PLATFORM_SERVER_REPOSITORY)?;
+    let script = root.join("deploy/scripts").join(format!("{recipe}.sh"));
+
+    if !script.is_file() {
+        return Err(format!(
+            "Vapor Platform Server does not provide the `{recipe}` recipe at `{}`",
+            script.display()
+        ));
+    }
+
+    let toolchain = ManagedToolchain::discover().map_err(|error| error.to_string())?;
+    let mut command = toolchain.command("bash").map_err(|error| error.to_string())?;
+
+    command
+        .arg(&script)
+        .current_dir(&root)
+        .env("CARGO", &toolchain.cargo_path);
+
+    println!(
+        "{} Vapor Platform Server with repo-owned `{}`...",
+        if recipe == "build" { "Building" } else { "Testing" },
+        script.display(),
+    );
+
+    let status = command.status().map_err(|error| {
+        format!(
+            "failed to start Platform Server `{recipe}` recipe `{}`: {error}",
+            script.display()
+        )
+    })?;
+
+    if status.success() {
+        println!(
+            "{} Vapor Platform Server.",
+            if recipe == "build" { "Built" } else { "Tested" }
+        );
+
+        Ok(())
+    } else {
+        Err(format!(
+            "Platform Server `{recipe}` recipe exited with {status}"
+        ))
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GitHubRun {
+    #[serde(rename = "databaseId")]
+    database_id: u64,
+    #[serde(rename = "headSha")]
+    head_sha: String,
+    status: String,
+    conclusion: Option<String>,
+    url: String,
+}
+
+fn command_output(mut command: Command, description: &str) -> Result<String, String> {
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to start {description}: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "{description} failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<String, String> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(root).args(args);
+
+    command_output(command, &format!("Git `{}`", args.join(" ")))
+}
+
+fn latest_platform_deploy_dispatch() -> Result<Option<GitHubRun>, String> {
+    let mut command = Command::new("gh");
+
+    command.args([
+        "run",
+        "list",
+        "--repo",
+        PLATFORM_SERVER_GITHUB_REPOSITORY,
+        "--workflow",
+        PLATFORM_SERVER_DEPLOY_WORKFLOW,
+        "--event",
+        "workflow_dispatch",
+        "--branch",
+        "main",
+        "--limit",
+        "1",
+        "--json",
+        "databaseId,headSha,status,conclusion,url",
+    ]);
+
+    let source = command_output(command, "GitHub CLI deployment-run query")?;
+    let runs: Vec<GitHubRun> = serde_json::from_str(&source)
+        .map_err(|error| format!("GitHub CLI returned invalid deployment-run JSON: {error}"))?;
+
+    Ok(runs.into_iter().next())
+}
+
+fn platform_server_deploy() -> Result<(), String> {
+    let root = first_party_repository_root(PLATFORM_SERVER_REPOSITORY)?;
+
+    let dirty = git_output(&root, &["status", "--porcelain=v1"])?;
+
+    if !dirty.is_empty() {
+        return Err(format!(
+            "Vapor Platform Server source is dirty; deployment requires a committed checkout:\n{dirty}"
+        ));
+    }
+
+    let branch = git_output(&root, &["branch", "--show-current"])?;
+
+    if branch != "main" {
+        return Err(format!(
+            "Vapor Platform Server VPS deployment requires local branch `main`; current branch is `{branch}`"
+        ));
+    }
+
+    let mut fetch = Command::new("git");
+    fetch
+        .arg("-C")
+        .arg(&root)
+        .args(["fetch", "--quiet", "origin", "main"]);
+
+    let fetch_status = fetch
+        .status()
+        .map_err(|error| format!("failed to fetch Platform Server origin/main: {error}"))?;
+
+    if !fetch_status.success() {
+        return Err(format!(
+            "failed to fetch Platform Server origin/main with {fetch_status}"
+        ));
+    }
+
+    let head = git_output(&root, &["rev-parse", "HEAD"])?;
+    let remote_head = git_output(&root, &["rev-parse", "origin/main"])?;
+
+    if head != remote_head {
+        return Err(format!(
+            "Vapor Platform Server local HEAD is not the deployed `origin/main` revision.\n  local:  {head}\n  remote: {remote_head}\nCommit/push or update the checkout before deploying."
+        ));
+    }
+
+    let previous_dispatch = latest_platform_deploy_dispatch()?.map(|run| run.database_id);
+
+    let mut auth = Command::new("gh");
+    auth.args(["auth", "status"]);
+
+    let auth_status = auth
+        .status()
+        .map_err(|error| format!("GitHub CLI `gh` is required for Platform Server deployment: {error}"))?;
+
+    if !auth_status.success() {
+        return Err(
+            "GitHub CLI is not authenticated; run `gh auth login` before Platform Server deployment"
+                .to_owned(),
+        );
+    }
+
+    println!(
+        "Triggering existing Platform Server deployment workflow for {}...",
+        &head[..12.min(head.len())],
+    );
+
+    let mut trigger = Command::new("gh");
+    trigger.args([
+        "workflow",
+        "run",
+        PLATFORM_SERVER_DEPLOY_WORKFLOW,
+        "--repo",
+        PLATFORM_SERVER_GITHUB_REPOSITORY,
+        "--ref",
+        "main",
+    ]);
+
+    let trigger_status = trigger
+        .status()
+        .map_err(|error| format!("failed to trigger Platform Server deployment workflow: {error}"))?;
+
+    if !trigger_status.success() {
+        return Err(format!(
+            "GitHub workflow dispatch failed with {trigger_status}"
+        ));
+    }
+
+    let run = (0..30)
+        .find_map(|_| {
+            let result = latest_platform_deploy_dispatch();
+
+            match result {
+                Ok(Some(run))
+                    if run.head_sha == head && Some(run.database_id) != previous_dispatch =>
+                {
+                    Some(Ok(run))
+                }
+
+                Ok(_) => {
+                    thread::sleep(Duration::from_secs(1));
+                    None
+                }
+
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .transpose()?
+        .ok_or_else(|| {
+            "GitHub accepted the deployment dispatch, but Vapor could not discover the new workflow run"
+                .to_owned()
+        })?;
+
+    println!("Deployment workflow: {}", run.url);
+    println!(
+        "Initial state: {}{}",
+        run.status,
+        run.conclusion
+            .as_deref()
+            .map(|value| format!(" ({value})"))
+            .unwrap_or_default(),
+    );
+
+    let run_id = run.database_id.to_string();
+    let mut watch = Command::new("gh");
+    watch.args([
+        "run",
+        "watch",
+        &run_id,
+        "--repo",
+        PLATFORM_SERVER_GITHUB_REPOSITORY,
+        "--exit-status",
+    ]);
+
+    let watch_status = watch
+        .status()
+        .map_err(|error| format!("failed to watch Platform Server deployment workflow: {error}"))?;
+
+    if watch_status.success() {
+        println!("Vapor Platform Server deployment completed successfully.");
+        Ok(())
+    } else {
+        Err(format!(
+            "Platform Server deployment workflow failed with {watch_status}; inspect {}",
+            run.url
+        ))
+    }
 }
 
 fn client_deploy_local() -> Result<(), String> {

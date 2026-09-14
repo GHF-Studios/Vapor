@@ -18,6 +18,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -244,15 +245,12 @@ impl ManagedToolchain {
         Ok(path)
     }
 
-    /// Construct Cargo with the Vapor-managed toolchain environment.
+    /// Construct any child process with the Vapor-managed Rust toolchain environment.
     ///
-    /// The environment is scoped to the spawned Cargo process and its descendants.
-    /// The caller's shell environment is never modified.
-    ///
-    /// `VAPOR_HOME` is propagated as well so Vapor processes launched through Cargo
-    /// remain attached to the same Installation even though their executable lives
-    /// in authored-source build output rather than `<installation>/bin`.
-    pub fn cargo_command(&self) -> Result<Command, ToolchainError> {
+    /// This is used when an operation is authored by another subsystem (for example,
+    /// a Platform Server repository script) but every Cargo/Rust process spawned by
+    /// that operation must still use Vapor's managed toolchain.
+    pub fn command(&self, program: impl AsRef<OsStr>) -> Result<Command, ToolchainError> {
         if !self.is_installed() {
             return Err(ToolchainError::ToolchainNotInstalled {
                 version: self.pin.version.clone(),
@@ -275,7 +273,7 @@ impl ManagedToolchain {
 
         let path = env::join_paths(paths).map_err(ToolchainError::JoinPaths)?;
 
-        let mut command = Command::new(&self.cargo_path);
+        let mut command = Command::new(program);
 
         command
             .env(crate::VAPOR_HOME_ENV, &self.vapor_home)
@@ -288,6 +286,11 @@ impl ManagedToolchain {
             .env_remove("RUSTC_WORKSPACE_WRAPPER");
 
         Ok(command)
+    }
+
+    /// Construct Cargo with the Vapor-managed toolchain environment.
+    pub fn cargo_command(&self) -> Result<Command, ToolchainError> {
+        self.command(&self.cargo_path)
     }
 
     fn local_rustup_path(&self) -> PathBuf {
