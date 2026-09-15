@@ -5,8 +5,10 @@
 
 use crate::installation::{InstallationError, VAPOR_HOME_ENV, VaporInstallation};
 use crate::source::{SourceError, source_state};
-use crate::superworkspace::{SuperworkspaceError, VaporSuperworkspace};
-use std::collections::BTreeSet;
+use crate::superworkspace::{
+    SUPERWORKSPACE_MANIFEST_FILE_NAME, SuperworkspaceError, VaporSuperworkspace,
+};
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt;
 use std::fs;
@@ -18,6 +20,8 @@ const LEGACY_APP_ROOT_ENV: &str = "LOO_CAST_APP_ROOT";
 const PROFILE_BLOCK_START: &str = "# >>> Vapor managed PATH >>>";
 const PROFILE_BLOCK_END: &str = "# <<< Vapor managed PATH <<<";
 const LEGACY_APP_MUTABLE_DIRS: &[&str] = &["rustup-home", "cargo-home", "development"];
+const MANAGED_SUPERWORKSPACE_REPOSITORIES: &[&str] =
+    &["Loo-Cast", "Vapor-Client", "Vapor-Platform-Server"];
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UninstallOptions {
@@ -61,6 +65,7 @@ pub fn uninstall_installation(
     let mut superworkspace_purged = false;
 
     if let Some(superworkspace) = &superworkspace_root {
+        ensure_superworkspace_purge_safe(superworkspace)?;
         superworkspace_purged = remove_owned_tree(
             superworkspace,
             &[installation.root.as_path(), user_data_root.as_path()],
@@ -358,6 +363,211 @@ fn remove_windows_user_environment(variable: &str) -> Result<bool, UninstallErro
     Ok(true)
 }
 
+fn ensure_superworkspace_purge_safe(root: &Path) -> Result<(), UninstallError> {
+    let root = fs::canonicalize(root).map_err(|source| UninstallError::Io {
+        path: root.to_path_buf(),
+        source,
+    })?;
+
+    for entry in fs::read_dir(&root).map_err(|source| UninstallError::Io {
+        path: root.clone(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| UninstallError::Io {
+            path: root.clone(),
+            source,
+        })?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return Err(UninstallError::UnsafeSuperworkspaceEntry { path });
+        };
+
+        if matches!(name, SUPERWORKSPACE_MANIFEST_FILE_NAME | ".vaporignore") {
+            continue;
+        }
+
+        if !MANAGED_SUPERWORKSPACE_REPOSITORIES.contains(&name) {
+            return Err(UninstallError::UnsafeSuperworkspaceEntry { path });
+        }
+
+        let file_type = entry.file_type().map_err(|source| UninstallError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if !file_type.is_dir() || file_type.is_symlink() {
+            return Err(UninstallError::UnsafeSuperworkspaceEntry { path });
+        }
+
+        ensure_expected_origin(name, &path)?;
+        ensure_source_checkout_safe(name, &path)?;
+    }
+
+    Ok(())
+}
+
+fn ensure_expected_origin(name: &str, root: &Path) -> Result<(), UninstallError> {
+    let origin = git_output(root, &["remote", "get-url", "origin"])?;
+    let normalized = origin
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
+    let expected = format!("GHF-Studios/{name}");
+
+    if !normalized.ends_with(&expected) {
+        return Err(UninstallError::UnsafeSource {
+            message: format!(
+                "refusing to purge `{}` because origin `{}` does not match expected first-party repository `{expected}`",
+                root.display(),
+                origin.trim(),
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+fn ensure_source_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallError> {
+    ensure_git_checkout_safe(name, root)?;
+
+    let submodules = git_output(root, &["submodule", "status"])?;
+    for line in submodules.lines() {
+        let Some(prefix) = line.chars().next() else {
+            continue;
+        };
+
+        if prefix == '-' {
+            continue;
+        }
+
+        if matches!(prefix, '+' | 'U') {
+            return Err(UninstallError::UnsafeSource {
+                message: format!(
+                    "refusing to purge source `{name}` because direct submodule state is not clean: {line}"
+                ),
+            });
+        }
+
+        let mut fields = line[1..].split_whitespace();
+        let _commit = fields.next();
+        let Some(path) = fields.next() else {
+            continue;
+        };
+        let submodule = root.join(path);
+        if submodule.is_dir() {
+            ensure_git_checkout_safe(&format!("{name}/{path}"), &submodule)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallError> {
+    let inside = git_output(root, &["rev-parse", "--is-inside-work-tree"])?;
+    if inside != "true" {
+        return Err(UninstallError::UnsafeSource {
+            message: format!("source `{name}` is not a Git work tree: `{}`", root.display()),
+        });
+    }
+
+    let dirty = git_output(
+        root,
+        &[
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+    )?;
+    if !dirty.is_empty() {
+        return Err(UninstallError::UnsafeSource {
+            message: format!(
+                "refusing to purge source `{name}` because it has uncommitted/untracked changes:\n{dirty}"
+            ),
+        });
+    }
+
+    git_output(root, &["fetch", "--quiet", "--prune", "origin"])?;
+
+    let local_only = git_output(root, &["rev-list", "--branches", "--not", "--remotes=origin"])?;
+    if !local_only.is_empty() {
+        return Err(UninstallError::UnsafeSource {
+            message: format!(
+                "refusing to purge source `{name}` because local branches contain commits not present on origin"
+            ),
+        });
+    }
+
+    let remote_contains_head = git_output(root, &["branch", "-r", "--contains", "HEAD"])?;
+    if remote_contains_head.is_empty() {
+        return Err(UninstallError::UnsafeSource {
+            message: format!(
+                "refusing to purge source `{name}` because HEAD is not reachable from an origin branch"
+            ),
+        });
+    }
+
+    let local_tags = git_output(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname:strip=2) %(objectname)",
+            "refs/tags",
+        ],
+    )?;
+    let remote_tags = git_output(root, &["ls-remote", "--tags", "--refs", "origin"])?;
+
+    let remote_tags = remote_tags
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let object = fields.next()?;
+            let reference = fields.next()?;
+            Some((
+                reference.trim_start_matches("refs/tags/").to_owned(),
+                object.to_owned(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for line in local_tags.lines() {
+        let Some((tag, object)) = line.split_once(' ') else {
+            continue;
+        };
+        if remote_tags.get(tag).map(String::as_str) != Some(object) {
+            return Err(UninstallError::UnsafeSource {
+                message: format!(
+                    "refusing to purge source `{name}` because local tag `{tag}` is not identically published on origin"
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<String, UninstallError> {
+    let command = format!("git -C {} {}", root.display(), args.join(" "));
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|source| UninstallError::CommandStart {
+            command: command.clone(),
+            source,
+        })?;
+
+    if !output.status.success() {
+        return Err(UninstallError::CommandFailed {
+            command,
+            status: output.status.to_string(),
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 fn remove_owned_tree(path: &Path, protected: &[&Path]) -> Result<bool, UninstallError> {
     if !path.exists() {
         return Ok(false);
@@ -405,6 +615,8 @@ pub enum UninstallError {
     Superworkspace(SuperworkspaceError),
     NoActiveSuperworkspace { state_path: PathBuf },
     UnsafePurgeRoot { path: PathBuf },
+    UnsafeSuperworkspaceEntry { path: PathBuf },
+    UnsafeSource { message: String },
     MalformedProfileBlock { path: PathBuf },
     CommandStart { command: String, source: io::Error },
     CommandFailed { command: String, status: String },
@@ -419,7 +631,7 @@ impl fmt::Display for UninstallError {
             Self::Superworkspace(error) => error.fmt(formatter),
             Self::NoActiveSuperworkspace { state_path } => write!(
                 formatter,
-                "--purge-superworkspace could not resolve one canonical Superworkspace; configure it with `vapor source setup <PATH>` or register an existing one with `vapor source open <PATH>` (source state: `{}`)",
+                "--purge-superworkspace could not resolve the canonical Superworkspace (source state: `{}`)",
                 state_path.display(),
             ),
             Self::UnsafePurgeRoot { path } => write!(
@@ -427,6 +639,12 @@ impl fmt::Display for UninstallError {
                 "refusing unsafe purge root `{}`",
                 path.display()
             ),
+            Self::UnsafeSuperworkspaceEntry { path } => write!(
+                formatter,
+                "refusing to purge Superworkspace because it contains unrecognized entry `{}`",
+                path.display()
+            ),
+            Self::UnsafeSource { message } => formatter.write_str(message),
             Self::MalformedProfileBlock { path } => write!(
                 formatter,
                 "managed Vapor PATH block in `{}` has no closing marker; refusing to rewrite it",

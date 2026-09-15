@@ -4,7 +4,10 @@
 //! local state and global command discovery without installing developer-role
 //! tooling or authored source.
 
-use crate::{VAPOR_HOME_ENV, VaporInstallation};
+use crate::{
+    SourceError, SuperworkspaceError, VAPOR_HOME_ENV, VaporInstallation, VaporSuperworkspace,
+    open_source, source_state,
+};
 use std::env;
 use std::fmt;
 use std::fs;
@@ -19,6 +22,7 @@ const PROFILE_BLOCK_END: &str = "# <<< Vapor managed PATH <<<";
 pub struct InstallReport {
     pub installation_root: PathBuf,
     pub user_data_root: PathBuf,
+    pub superworkspace_root: PathBuf,
     pub integration: Vec<String>,
 }
 
@@ -30,13 +34,59 @@ pub fn install_installation() -> Result<InstallReport, InstallError> {
         .ensure_state_root()
         .map_err(InstallError::Installation)?;
 
+    let superworkspace = ensure_canonical_superworkspace(&installation)?;
     let integration = install_machine_integration(&installation)?;
 
     Ok(InstallReport {
         installation_root: installation.root,
         user_data_root,
+        superworkspace_root: superworkspace.root,
         integration,
     })
+}
+
+pub fn ensure_canonical_superworkspace(
+    installation: &VaporInstallation,
+) -> Result<VaporSuperworkspace, InstallError> {
+    let state = source_state(installation).map_err(InstallError::Source)?;
+    let root = match state.superworkspace {
+        Some(root) => root,
+        None => default_superworkspace_root()?,
+    };
+
+    let installation_root = canonical_or_original(&installation.root);
+    let user_data_root = canonical_or_original(&installation.user_data_root());
+    let candidate = canonical_or_original(&root);
+
+    if roots_overlap(&candidate, &installation_root) || roots_overlap(&candidate, &user_data_root) {
+        return Err(InstallError::UnsafeSuperworkspaceRoot {
+            path: candidate,
+            installation: installation_root,
+            user_data: user_data_root,
+        });
+    }
+
+    let superworkspace =
+        VaporSuperworkspace::setup(&root).map_err(InstallError::Superworkspace)?;
+    open_source(installation, &superworkspace.root).map_err(InstallError::Source)?;
+
+    Ok(superworkspace)
+}
+
+fn default_superworkspace_root() -> Result<PathBuf, InstallError> {
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .map(|home| home.join("Vapor"))
+        .ok_or(InstallError::HomeUnavailable)
+}
+
+fn canonical_or_original(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn roots_overlap(left: &Path, right: &Path) -> bool {
+    left.starts_with(right) || right.starts_with(left)
 }
 
 fn install_machine_integration(
@@ -216,7 +266,15 @@ if (-not $present) { $entries += $bin }
 #[derive(Debug)]
 pub enum InstallError {
     Installation(crate::InstallationError),
+    Source(SourceError),
+    Superworkspace(SuperworkspaceError),
     UnsupportedHost,
+    HomeUnavailable,
+    UnsafeSuperworkspaceRoot {
+        path: PathBuf,
+        installation: PathBuf,
+        user_data: PathBuf,
+    },
     MissingBinaryDirectory { path: PathBuf },
     MalformedProfileBlock { path: PathBuf },
     CommandStart { command: String, source: io::Error },
@@ -228,8 +286,24 @@ impl fmt::Display for InstallError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Installation(error) => error.fmt(formatter),
+            Self::Source(error) => error.fmt(formatter),
+            Self::Superworkspace(error) => error.fmt(formatter),
             Self::UnsupportedHost => formatter.write_str(
                 "this host is not yet supported by Vapor Installation integration",
+            ),
+            Self::HomeUnavailable => {
+                formatter.write_str("cannot determine the current user's home directory")
+            }
+            Self::UnsafeSuperworkspaceRoot {
+                path,
+                installation,
+                user_data,
+            } => write!(
+                formatter,
+                "canonical Superworkspace `{}` must not overlap Vapor Installation `{}` or Vapor User Data `{}`",
+                path.display(),
+                installation.display(),
+                user_data.display(),
             ),
             Self::MissingBinaryDirectory { path } => write!(
                 formatter,
@@ -258,6 +332,8 @@ impl std::error::Error for InstallError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Installation(error) => Some(error),
+            Self::Source(error) => Some(error),
+            Self::Superworkspace(error) => Some(error),
             Self::CommandStart { source, .. } | Self::Io { source, .. } => Some(source),
             _ => None,
         }

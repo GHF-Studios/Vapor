@@ -20,6 +20,7 @@ use crate::{
     resolve_source_context, role_status, run_cargo_realization, run_workspace_operation,
     source_state, uninstall_installation, verify_local_library_cargo_dependencies,
 };
+use crate::install::ensure_canonical_superworkspace;
 use clap::Parser;
 use commands::*;
 use platform_activity::*;
@@ -131,11 +132,14 @@ fn execute_installer(command: InstallerCommand) -> Result<(), String> {
 
 fn installer_install() -> Result<(), String> {
     let report = install_installation().map_err(|error| error.to_string())?;
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let role = role_status(&installation).map_err(|error| error.to_string())?;
 
     println!("Vapor Installation installed:");
     println!("  installation: {}", report.installation_root.display());
     println!("  user data: {}", report.user_data_root.display());
-    println!("  role: Player");
+    println!("  superworkspace: {}", report.superworkspace_root.display());
+    println!("  role: {}", role.installed_role);
 
     if report.integration.is_empty() {
         println!("  integration: already current");
@@ -574,9 +578,7 @@ fn execute_source(command: SourceCommand) -> Result<(), String> {
 
         SourceCommand::List => source_list(),
 
-        SourceCommand::Setup { path } => source_setup(path),
-
-        SourceCommand::Open { path } => source_open(path),
+        SourceCommand::Setup => source_setup(),
 
         SourceCommand::Acquire { source } => source_acquire(&source),
 
@@ -584,46 +586,15 @@ fn execute_source(command: SourceCommand) -> Result<(), String> {
 
         SourceCommand::Teardown { yes } => source_teardown(yes),
 
-        SourceCommand::Restore { destination } => source_restore(destination),
+        SourceCommand::Restore => source_restore(),
     }
 }
 
-fn prompt_superworkspace_path() -> Result<PathBuf, String> {
-    eprint!("Superworkspace path: ");
-    io::stderr()
-        .flush()
-        .map_err(|error| format!("failed to write Superworkspace prompt: {error}"))?;
-
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .map_err(|error| format!("failed to read Superworkspace path: {error}"))?;
-
-    let input = input.trim();
-    if input.is_empty() {
-        return Err("Superworkspace path may not be empty".to_owned());
-    }
-
-    Ok(PathBuf::from(input))
-}
-
-fn source_setup(path: Option<PathBuf>) -> Result<(), String> {
+fn source_setup() -> Result<(), String> {
     let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
-    let path = match path {
-        Some(path) => path,
-        None => prompt_superworkspace_path()?,
-    };
-    let path = if path.is_absolute() {
-        path
-    } else {
-        env::current_dir()
-            .map_err(|error| format!("failed to determine current directory: {error}"))?
-            .join(path)
-    };
-
-    let superworkspace = VaporSuperworkspace::setup(&path).map_err(|error| error.to_string())?;
-    let state = crate::open_source(&installation, &superworkspace.root)
-        .map_err(|error| error.to_string())?;
+    let superworkspace =
+        ensure_canonical_superworkspace(&installation).map_err(|error| error.to_string())?;
+    let state = source_state(&installation).map_err(|error| error.to_string())?;
 
     println!("Vapor Superworkspace ready:");
     println!("  root: {}", superworkspace.root.display());
@@ -637,25 +608,7 @@ fn source_setup(path: Option<PathBuf>) -> Result<(), String> {
     println!("  source state: {}", state.state_path.display());
 
     if let Err(error) = synchronize_existing_development_environment(&superworkspace.root) {
-        eprintln!("warning: Superworkspace was configured, but development-state synchronization failed: {error}");
-    }
-
-    Ok(())
-}
-
-fn source_open(path: PathBuf) -> Result<(), String> {
-    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
-    let superworkspace =
-        VaporSuperworkspace::discover_from(&path).map_err(|error| error.to_string())?;
-    let state = crate::open_source(&installation, &superworkspace.root)
-        .map_err(|error| error.to_string())?;
-
-    println!("Vapor source opened:");
-    println!("  Superworkspace: {}", superworkspace.root.display());
-    println!("  source state: {}", state.state_path.display());
-
-    if let Err(error) = synchronize_existing_development_environment(&superworkspace.root) {
-        eprintln!("warning: source was registered, but development-state synchronization failed: {error}");
+        eprintln!("warning: Superworkspace was created, but development-state synchronization failed: {error}");
     }
 
     Ok(())
@@ -672,20 +625,14 @@ fn synchronize_existing_development_environment(source_root: &Path) -> Result<()
     Ok(())
 }
 
-fn source_restore(destination: Option<PathBuf>) -> Result<(), String> {
+fn source_restore() -> Result<(), String> {
     let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
-
-    let destination = match destination {
-        Some(destination) => destination,
-
-        None => env::current_dir()
-            .map_err(|error| format!("failed to determine restoration destination: {error}"))?,
-    };
+    let superworkspace = configured_superworkspace(&installation)?;
 
     println!("Restoring registered Vapor source...");
 
-    let report =
-        crate::acquire_ecosystem(&installation, &destination).map_err(|error| error.to_string())?;
+    let report = crate::acquire_ecosystem(&installation, &superworkspace.root)
+        .map_err(|error| error.to_string())?;
 
     println!();
     println!("Registration: {}", report.ecosystem_id);
@@ -729,15 +676,7 @@ fn source_selection(selector: &str) -> Result<Vec<&'static str>, String> {
 }
 
 fn configured_superworkspace(installation: &VaporInstallation) -> Result<VaporSuperworkspace, String> {
-    let state = source_state(installation).map_err(|error| error.to_string())?;
-    let root = state.superworkspace.ok_or_else(|| {
-        format!(
-            "no canonical Superworkspace is configured; run `vapor source setup [SUPERWORKSPACE]` first (source state: `{}`)",
-            state.state_path.display()
-        )
-    })?;
-
-    VaporSuperworkspace::discover_from(&root).map_err(|error| error.to_string())
+    ensure_canonical_superworkspace(installation).map_err(|error| error.to_string())
 }
 
 fn source_acquire(selector: &str) -> Result<(), String> {
@@ -805,7 +744,7 @@ fn source_remove(selector: &str, yes: bool) -> Result<(), String> {
 fn ensure_source_checkout_safe(name: &str, root: &Path) -> Result<(), String> {
     ensure_git_checkout_safe(name, root)?;
 
-    let submodules = git_output(root, &["submodule", "status", "--recursive"])?;
+    let submodules = git_output(root, &["submodule", "status"])?;
     for line in submodules.lines() {
         let trimmed = line.trim_start_matches(|character| matches!(character, ' ' | '-' | '+' | 'U'));
         let mut fields = trimmed.split_whitespace();

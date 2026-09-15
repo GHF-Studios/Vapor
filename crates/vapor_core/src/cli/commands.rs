@@ -226,17 +226,8 @@ pub(super) enum SourceCommand {
     Status,
     List,
 
-    /// Create and remember the canonical Vapor Superworkspace.
-    Setup {
-        #[arg(value_name = "SUPERWORKSPACE")]
-        path: Option<PathBuf>,
-    },
-
-    /// Register and select an existing canonical Vapor Superworkspace.
-    Open {
-        #[arg(value_name = "SUPERWORKSPACE")]
-        path: PathBuf,
-    },
+    /// Create or repair the single canonical Vapor Superworkspace.
+    Setup,
 
     /// Acquire first-party authored source into the canonical Superworkspace.
     Acquire {
@@ -262,10 +253,7 @@ pub(super) enum SourceCommand {
     },
 
     /// Convenience reconstruction of all registered first-party source.
-    Restore {
-        #[arg(value_name = "SUPERWORKSPACE")]
-        destination: Option<PathBuf>,
-    },
+    Restore,
 }
 
 #[derive(Debug, Subcommand)]
