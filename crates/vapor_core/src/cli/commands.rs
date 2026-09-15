@@ -142,6 +142,31 @@ pub(super) enum InstallerCommand {
         #[command(subcommand)]
         command: ToolchainCommand,
     },
+
+    /// Remove Vapor machine integration.
+    ///
+    /// Vapor-owned user data and authored source are preserved unless an
+    /// explicit purge flag is supplied.
+    Uninstall(UninstallArgs),
+}
+
+#[derive(Debug, Args)]
+pub(super) struct UninstallArgs {
+    /// Permanently delete Vapor-owned OS user data and caches.
+    ///
+    /// Requires typing `yes` at the confirmation prompt unless `--yes` is supplied.
+    #[arg(long = "purge-app-external", alias = "purge_app_external")]
+    pub(super) purge_app_external: bool,
+
+    /// Permanently delete the active Superworkspace, including authored source.
+    ///
+    /// Requires typing `yes` at the confirmation prompt unless `--yes` is supplied.
+    #[arg(long = "purge-superworkspace", alias = "purge_superworkspace")]
+    pub(super) purge_superworkspace: bool,
+
+    /// Skip the interactive confirmation required by destructive purge flags.
+    #[arg(long)]
+    pub(super) yes: bool,
 }
 
 #[derive(Debug, Subcommand)]

@@ -9,21 +9,23 @@ mod platform_activity;
 use crate::{
     CargoDependencyState, CargoPackageInspection, ContentKind, ContentVersionId,
     DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalContent, ManagedToolchain,
-    ResolvedComposition, ResolvedContentGraph, SteamDeploymentOptions, VaporId, VaporInstallation,
-    VaporProject, VaporRole, VaporSuperworkspace, VaporWorkspace, build_cargo_realization,
+    ResolvedComposition, ResolvedContentGraph, SteamDeploymentOptions, UninstallOptions, VaporId,
+    VaporInstallation, VaporProject, VaporRole, VaporSuperworkspace, VaporWorkspace,
+    build_cargo_realization,
     demote_role, deploy_ecosystem_to_steam, deploy_workspace, development_target_dir,
     diagnose_managed_state, discover_local_content, generate_local_cargo_realization,
     git_available, inspect_local_cargo_package, promote_role,
     reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
     repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
     resolve_source_context, role_status, run_cargo_realization, run_workspace_operation,
-    source_state, verify_local_library_cargo_dependencies,
+    source_state, uninstall_installation, verify_local_library_cargo_dependencies,
 };
 use clap::Parser;
 use commands::*;
 use platform_activity::*;
 use std::env;
 use std::ffi::OsString;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::thread;
@@ -118,7 +120,95 @@ fn execute_installer(command: InstallerCommand) -> Result<(), String> {
         InstallerCommand::Authority { command } => execute_authority(command),
 
         InstallerCommand::Toolchain { command } => execute_toolchain(command),
+
+        InstallerCommand::Uninstall(args) => installer_uninstall(args),
     }
+}
+
+fn installer_uninstall(args: UninstallArgs) -> Result<(), String> {
+    let destructive = args.purge_app_external || args.purge_superworkspace;
+
+    if destructive && !args.yes && !confirm_uninstall_purge(&args)? {
+        println!("Uninstall cancelled.");
+        return Ok(());
+    }
+
+    let report = uninstall_installation(UninstallOptions {
+        purge_app_external: args.purge_app_external,
+        purge_superworkspace: args.purge_superworkspace,
+    })
+    .map_err(|error| error.to_string())?;
+
+    println!("Vapor uninstall");
+    println!("  installation: {}", report.installation_root.display());
+    println!("  user data:    {}", report.user_data_root.display());
+
+    if let Some(superworkspace) = &report.superworkspace_root {
+        println!("  superworkspace: {}", superworkspace.display());
+    }
+
+    if report.integration.is_empty() {
+        println!("  integration: already absent");
+    } else {
+        println!("  integration:");
+        for item in &report.integration {
+            println!("    {item}");
+        }
+    }
+
+    if args.purge_app_external {
+        println!(
+            "  app external data: {}",
+            if report.app_external_purged {
+                "purged"
+            } else {
+                "already absent"
+            }
+        );
+    } else {
+        println!("  app external data: preserved");
+    }
+
+    if args.purge_superworkspace {
+        println!(
+            "  superworkspace: {}",
+            if report.superworkspace_purged {
+                "purged"
+            } else {
+                "already absent"
+            }
+        );
+    } else {
+        println!("  authored source: preserved");
+    }
+
+    println!("  note: already-running shells keep inherited environment until restarted");
+
+    Ok(())
+}
+
+fn confirm_uninstall_purge(args: &UninstallArgs) -> Result<bool, String> {
+    eprintln!("WARNING: the requested uninstall includes destructive purge operations.");
+
+    if args.purge_app_external {
+        eprintln!("  - permanently delete Vapor-owned OS user data and caches");
+    }
+
+    if args.purge_superworkspace {
+        eprintln!("  - permanently delete the active Superworkspace and authored source");
+    }
+
+    eprint!("Type `yes` to continue: ");
+    io::stderr()
+        .flush()
+        .map_err(|error| format!("failed to write confirmation prompt: {error}"))?;
+
+    let mut confirmation = String::new();
+    io::stdin()
+        .read_line(&mut confirmation)
+        .map_err(|error| format!("failed to read confirmation: {error}"))?;
+
+    Ok(confirmation.trim().eq_ignore_ascii_case("yes"))
 }
 
 fn execute_installation(command: InstallationCommand) -> Result<(), String> {

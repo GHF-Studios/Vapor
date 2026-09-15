@@ -21,6 +21,7 @@ pub mod source;
 pub mod steam;
 pub mod superworkspace;
 pub mod toolchain;
+pub mod uninstall;
 pub mod workspace;
 
 pub use cargo::{
@@ -101,6 +102,8 @@ pub use superworkspace::{
 };
 
 pub use toolchain::{ManagedToolchain, ToolchainError};
+
+pub use uninstall::{UninstallError, UninstallOptions, UninstallReport, uninstall_installation};
 
 pub use workspace::{
     ToolchainPin, VaporProject, VaporWorkspace, WORKSPACE_MANIFEST_FILE_NAME, WorkspaceError,
