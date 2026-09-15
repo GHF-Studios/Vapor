@@ -149,7 +149,7 @@ pub fn diagnose_managed_state() -> Result<MaintenanceStatus, MaintenanceError> {
 /// Today this includes:
 ///
 /// - installing the pinned managed Rust toolchain if it is missing;
-/// - reconciling an already-existing JetBrains/RustRover integration.
+/// - creating or reconciling JetBrains/RustRover integration when source exists.
 ///
 /// It deliberately does not modify authored source merely because diagnosis
 /// found legacy or incompatible repositories.
@@ -180,28 +180,19 @@ pub fn repair_managed_state() -> Result<MaintenanceRepairReport, MaintenanceErro
     })
 }
 
-/// Proactively reconcile development-environment state that already exists.
+/// Proactively reconcile the development environment after source changes.
 ///
-/// This is intentionally non-invasive:
-///
-/// - no JetBrains project -> no JetBrains project is created;
-/// - no recognized Superworkspace -> nothing happens;
-/// - missing toolchain -> broad `repair` owns installation of it;
-/// - existing JetBrains project -> Vapor reconciles its modeled Cargo projects
-///   and managed Rust configuration.
-///
-/// This operation is suitable for ordinary successful workflows such as
-/// `source open` and ecosystem deployment.
+/// Once a recognized Superworkspace contains Vapor Projects and the managed
+/// toolchain exists, the developer environment is materialized/reconciled.
+/// This makes successful source acquisition self-finalizing instead of requiring
+/// a follow-up `vapor installation repair`. Missing toolchain installation still
+/// belongs to Role promotion or broad repair.
 pub fn reconcile_existing_development_environment(
     source_root: &Path,
 ) -> Result<Vec<PathBuf>, MaintenanceError> {
     let Some(superworkspace) = optional_superworkspace(source_root)? else {
         return Ok(Vec::new());
     };
-
-    if !superworkspace.root.join(".idea").is_dir() {
-        return Ok(Vec::new());
-    }
 
     if superworkspace.projects.is_empty() {
         return Ok(Vec::new());

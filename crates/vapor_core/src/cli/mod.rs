@@ -645,11 +645,7 @@ fn source_restore() -> Result<(), String> {
         println!("  {} -> {}", repository.id, repository.root.display());
     }
 
-    if let Err(error) = synchronize_existing_development_environment(&report.superworkspace_root) {
-        eprintln!(
-            "warning: source restoration succeeded, but the existing development environment could not be synchronized: {error}"
-        );
-    }
+    synchronize_existing_development_environment(&report.superworkspace_root)?;
 
     Ok(())
 }
@@ -699,9 +695,7 @@ fn source_acquire(selector: &str) -> Result<(), String> {
         println!("  {} -> {}", repository.id, repository.root.display());
     }
 
-    if let Err(error) = synchronize_existing_development_environment(&report.superworkspace_root) {
-        eprintln!("warning: source acquisition succeeded, but development-state synchronization failed: {error}");
-    }
+    synchronize_existing_development_environment(&report.superworkspace_root)?;
 
     Ok(())
 }

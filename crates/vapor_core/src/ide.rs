@@ -274,10 +274,11 @@ fn build_plan(
     let run_configurations =
         run_configurations::build(&superworkspace.root, &toolchain.vapor_home);
 
-    let legacy_paths = vec![
+    let mut legacy_paths = vec![
         idea_root.join(LEGACY_CARGO_PROJECTS_FILE),
         idea_root.join(LEGACY_RUST_SETTINGS_FILE),
     ];
+    legacy_paths.extend(run_configurations::obsolete(&superworkspace.root));
 
     Ok(IdePlan {
         project_root: superworkspace.root.clone(),

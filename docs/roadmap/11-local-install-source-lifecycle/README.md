@@ -6,7 +6,7 @@ This ledger captures the clean-machine workflow that must work before Vapor infr
 
 1. **Steam App Instance** — replaceable product state: installed binaries, bootstrap executables, shipped metadata and resources.
 2. **Vapor User Data** — persistent mutable/derived state: role, source configuration, managed toolchains, build outputs, deployment staging, IDE/provider state and caches.
-3. **Canonical Superworkspace** — authored Git/source, explicitly configured and preserved independently of ordinary App uninstall/reinstall.
+3. **Canonical Superworkspace** — authored Git/source, created automatically at the single canonical user root and preserved independently of ordinary App uninstall/reinstall.
 
 ## Normal bootstrap
 
@@ -14,7 +14,6 @@ This ledger captures the clean-machine workflow that must work before Vapor infr
 Install Loo Cast through Steam
 vapor-installer install
 vapor-installer role promote ecosystem-developer
-vapor source setup [SUPERWORKSPACE]
 vapor source acquire first-party-all
 ```
 
@@ -23,7 +22,7 @@ vapor source acquire first-party-all
 ## Source lifecycle
 
 ```text
-vapor source setup [SUPERWORKSPACE]
+vapor source setup
 
 vapor source acquire loo-cast
 vapor source acquire vapor-client
@@ -40,7 +39,7 @@ vapor source remove first-party-all [--yes]
 vapor source teardown [--yes]
 ```
 
-The canonical Superworkspace is represented by `Superworkspace.vapor.toml` and persisted in Vapor User Data. An empty configured Superworkspace is therefore discoverable before any source is acquired.
+The single canonical Superworkspace is represented by `Superworkspace.vapor.toml`, persisted in Vapor User Data, and created automatically by `vapor-installer install`. `vapor source setup` is an idempotent create/repair operation rather than first-run configuration. Successful source acquisition also materializes/reconciles the managed RustRover development environment, so ordinary onboarding does not require a follow-up `vapor installation repair`.
 
 `--yes` means **confirmation only**. It never bypasses dirty/unpublished Git safety checks. Group removal validates every selected checkout before deleting any checkout.
 
@@ -78,14 +77,15 @@ Composer-or-higher Role promotion still requires Git on `PATH`; Vapor does not y
 
 - [x] Move mutable Rust/Cargo/build/Steam staging state outside the Steam App Instance.
 - [x] Preserve ordinary uninstall vs explicit purge semantics.
-- [ ] Establish `vapor-installer install` as the normal base bootstrap.
-- [ ] Persist and create a canonical marker-backed Superworkspace.
-- [ ] Implement granular first-party acquisition.
-- [ ] Implement safety-gated granular source removal and teardown.
-- [ ] Restore host-target-specific installed/staged binary layout.
-- [ ] Register `Loo-Cast`, `Vapor-Client`, and `Vapor-Platform-Server` as canonical first-party acquisition roots.
-- [ ] Restore Loo Cast's current-schema `Workspace.vapor.toml`.
-- [ ] Normalize special root manifests to `Vapor-Client.vapor.toml` and `Vapor-Platform-Server.vapor.toml`.
+- [x] Establish `vapor-installer install` as the normal base bootstrap.
+- [x] Persist and automatically create the single canonical marker-backed Superworkspace.
+- [x] Implement granular first-party acquisition.
+- [x] Implement safety-gated granular source removal and teardown.
+- [x] Restore host-target-specific installed/staged binary layout.
+- [x] Register `Loo-Cast`, `Vapor-Client`, and `Vapor-Platform-Server` as canonical first-party acquisition roots.
+- [x] Restore Loo Cast's current-schema `Workspace.vapor.toml`.
+- [x] Normalize special root manifests to `Vapor-Client.vapor.toml` and `Vapor-Platform-Server.vapor.toml`.
+- [x] Make source acquisition finalize managed RustRover state and generated workflow configurations.
 - [ ] Build/test/deploy locally and push every accepted repository change.
 - [ ] Update/deploy the Platform Server Registry submodule.
 - [ ] Audit the fresh Steam payload and Steamworks Launch Options.

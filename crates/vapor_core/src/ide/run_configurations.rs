@@ -16,34 +16,182 @@ pub(super) fn build(
 
     #[cfg(not(windows))]
     {
-        let run_root = project_root.join(".run");
-        let vapor = installation_root.join("bin/vapor");
+        let run_root = project_root.join(".run/Vapor");
+        let vapor = vapor_executable(installation_root);
+        let mut configurations = Vec::new();
 
-        let mut configurations = [
-            ("Vapor_Installation_Diagnose.run.xml", "Vapor · Installation · Diagnose", "installation diagnose"),
-            ("Vapor_Installation_Repair.run.xml", "Vapor · Installation · Repair", "installation repair"),
-            ("Vapor_Client_Status.run.xml", "Vapor · Client · Status", "client status"),
-            ("Vapor_Client_Build.run.xml", "Vapor · Client · Build", "client build"),
-            ("Vapor_Client_Test.run.xml", "Vapor · Client · Test", "client test"),
-            ("Vapor_Client_Deploy_Local.run.xml", "Vapor · Client · Deploy Local", "client deploy local"),
-            ("Vapor_Platform_Server_Status.run.xml", "Vapor · Platform Server · Status", "platform-server status"),
-            ("Vapor_Platform_Server_Runs.run.xml", "Vapor · Platform Server · Runs", "platform-server runs"),
-            ("Vapor_Platform_Server_Build.run.xml", "Vapor · Platform Server · Build", "platform-server build"),
-            ("Vapor_Platform_Server_Test.run.xml", "Vapor · Platform Server · Test", "platform-server test"),
-            ("Vapor_Platform_Server_Deploy.run.xml", "Vapor · Platform Server · Deploy", "platform-server deploy"),
-        ]
-        .into_iter()
-        .map(|(filename, name, arguments)| {
+        for (directory, folder, filename, name, arguments, terminal) in [
             (
-                run_root.join(filename),
-                shell_configuration(name, &vapor, arguments),
-            )
+                "Installation",
+                "Vapor · Installation",
+                "Diagnose.run.xml",
+                "Diagnose",
+                "installation diagnose",
+                false,
+            ),
+            (
+                "Installation",
+                "Vapor · Installation",
+                "Repair.run.xml",
+                "Repair",
+                "installation repair",
+                false,
+            ),
+            (
+                "Client",
+                "Vapor · Client",
+                "Status.run.xml",
+                "Status",
+                "client status",
+                false,
+            ),
+            (
+                "Client",
+                "Vapor · Client",
+                "Build.run.xml",
+                "Build",
+                "client build",
+                false,
+            ),
+            (
+                "Client",
+                "Vapor · Client",
+                "Test.run.xml",
+                "Test",
+                "client test",
+                false,
+            ),
+            (
+                "Client",
+                "Vapor · Client",
+                "Deploy_Local.run.xml",
+                "Deploy Local",
+                "client deploy local",
+                false,
+            ),
+            (
+                "Client",
+                "Vapor · Client",
+                "Deploy_Steam.run.xml",
+                "Deploy Steam",
+                "client deploy steam",
+                true,
+            ),
+            (
+                "Platform-Server",
+                "Vapor · Platform Server",
+                "Status.run.xml",
+                "Status",
+                "platform-server status",
+                false,
+            ),
+            (
+                "Platform-Server",
+                "Vapor · Platform Server",
+                "Runs.run.xml",
+                "Runs",
+                "platform-server runs",
+                false,
+            ),
+            (
+                "Platform-Server",
+                "Vapor · Platform Server",
+                "Build.run.xml",
+                "Build",
+                "platform-server build",
+                false,
+            ),
+            (
+                "Platform-Server",
+                "Vapor · Platform Server",
+                "Test.run.xml",
+                "Test",
+                "platform-server test",
+                false,
+            ),
+            (
+                "Platform-Server",
+                "Vapor · Platform Server",
+                "Deploy.run.xml",
+                "Deploy",
+                "platform-server deploy",
+                true,
+            ),
+        ] {
+            configurations.push((
+                run_root.join(directory).join(filename),
+                shell_configuration_at(
+                    name,
+                    folder,
+                    &vapor,
+                    arguments,
+                    "$PROJECT_DIR$",
+                    terminal,
+                ),
+            ));
+        }
+
+        if let Some(loo_cast_root) = child_named(project_root, "Loo-Cast") {
+            let working_directory = project_path(project_root, &loo_cast_root);
+            let loo_cast_run_root = run_root.join("Loo-Cast");
+
+            for (filename, name, arguments, terminal) in [
+                ("Inspect.run.xml", "Inspect", "packagepack inspect", false),
+                ("Resolve.run.xml", "Resolve", "packagepack resolve", false),
+                ("Build.run.xml", "Build", "packagepack build", false),
+                ("Run.run.xml", "Run", "packagepack run", true),
+            ] {
+                configurations.push((
+                    loo_cast_run_root.join(filename),
+                    shell_configuration_at(
+                        name,
+                        "Vapor · Loo Cast",
+                        &vapor,
+                        arguments,
+                        &working_directory,
+                        terminal,
+                    ),
+                ));
+            }
+        }
+
+        configurations.extend(client_run_configurations(project_root, &run_root, &vapor));
+
+        configurations.push((
+            run_root.join("Content/Other_Content.run.xml"),
+            shell_script_configuration_at(
+                "Other Content…",
+                "Vapor · Content",
+                &interactive_content_script(&vapor),
+                "$PROJECT_DIR$",
+                true,
+            ),
+        ));
+
+        configurations
+    }
+}
+
+pub(super) fn obsolete(project_root: &Path) -> Vec<PathBuf> {
+    let run_root = project_root.join(".run");
+    let Ok(entries) = fs::read_dir(&run_root) else {
+        return Vec::new();
+    };
+
+    let mut obsolete = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_str()?;
+
+            (path.is_file() && name.starts_with("Vapor_") && name.ends_with(".run.xml"))
+                .then_some(path)
         })
         .collect::<Vec<_>>();
 
-        configurations.extend(client_run_configurations(project_root, &run_root, &vapor));
-        configurations
-    }
+    obsolete.sort();
+    obsolete
 }
 
 #[cfg(not(windows))]
@@ -137,12 +285,16 @@ fn client_run_configurations(
             );
 
             configurations.push((
-                run_root.join(format!("Vapor_Client_Run_{}.run.xml", file_id(&suffix))),
+                run_root
+                    .join("Client/Run")
+                    .join(format!("{}.run.xml", file_id(&suffix))),
                 shell_configuration_at(
-                    &format!("Vapor · Client · Run · {label}"),
+                    &format!("Run · {label}"),
+                    "Vapor · Client",
                     vapor,
                     &arguments,
                     &project_path(project_root, &package_root),
+                    true,
                 ),
             ));
         }
@@ -187,6 +339,78 @@ fn cargo_binaries(vapor: &Path, root: &Path) -> Vec<(PathBuf, String)> {
     binaries.sort();
     binaries.dedup();
     binaries
+}
+
+#[cfg(not(windows))]
+fn vapor_executable(installation_root: &Path) -> PathBuf {
+    let bin = installation_root.join("bin");
+
+    if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "linux",
+        target_env = "gnu"
+    )) {
+        return bin.join("x86_64-unknown-linux-gnu/vapor");
+    }
+
+    if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "windows",
+        target_env = "msvc"
+    )) {
+        return bin.join("x86_64-pc-windows-msvc/vapor.exe");
+    }
+
+    bin.join("vapor")
+}
+
+#[cfg(not(windows))]
+fn interactive_content_script(vapor: &Path) -> String {
+    let mut script = format!(
+        "set -euo pipefail\nvapor={}\n\n",
+        shell_quote(&vapor.to_string_lossy()),
+    );
+
+    script.push_str(
+        r#"printf 'Content type? Possible options:\n'
+printf '  packagepack\n  enginepack\n  gamepack\n  modpack\n'
+printf '  engine\n  game\n  engine-mod\n  game-mod\n  extension-mod\n  library\n> '
+IFS= read -r kind
+
+case "$kind" in
+  packagepack) operations='inspect resolve build run' ;;
+  enginepack|gamepack|modpack) operations='inspect resolve' ;;
+  engine|game|engine-mod|game-mod|extension-mod) operations='inspect' ;;
+  library) operations='inspect resolve verify repair' ;;
+  *) printf 'Unknown content type: %s\n' "$kind" >&2; exit 2 ;;
+esac
+
+printf '\nAvailable %s content:\n' "$kind"
+"$vapor" "$kind" list || true
+
+printf '\nOperation? Possible options: %s\n> ' "$operations"
+IFS= read -r operation
+case " $operations " in
+  *" $operation "*) ;;
+  *) printf 'Unsupported %s operation: %s\n' "$kind" "$operation" >&2; exit 2 ;;
+esac
+
+printf '\nContent ID? Leave blank only if Vapor can infer it from context.\n> '
+IFS= read -r id
+
+command=("$vapor" "$kind" "$operation")
+if [[ -n "$id" ]]; then
+  command+=("$id")
+fi
+
+printf '\n→'
+printf ' %q' "${command[@]}"
+printf '\n\n'
+exec "${command[@]}"
+"#,
+    );
+
+    script
 }
 
 #[cfg(not(windows))]
@@ -239,22 +463,30 @@ fn file_id(value: &str) -> String {
 }
 
 #[cfg(not(windows))]
-fn shell_configuration(name: &str, vapor: &Path, arguments: &str) -> String {
-    shell_configuration_at(name, vapor, arguments, "$PROJECT_DIR$")
-}
-
-#[cfg(not(windows))]
 fn shell_configuration_at(
     name: &str,
+    folder: &str,
     vapor: &Path,
     arguments: &str,
     working_directory: &str,
+    terminal: bool,
 ) -> String {
     let command = format!("{} {arguments}", shell_quote(&vapor.to_string_lossy()));
 
+    shell_script_configuration_at(name, folder, &command, working_directory, terminal)
+}
+
+#[cfg(not(windows))]
+fn shell_script_configuration_at(
+    name: &str,
+    folder: &str,
+    script: &str,
+    working_directory: &str,
+    terminal: bool,
+) -> String {
     format!(
         "<component name=\"ProjectRunConfigurationManager\">\n\
-           <configuration default=\"false\" name=\"{}\" type=\"ShConfigurationType\">\n\
+           <configuration default=\"false\" name=\"{}\" type=\"ShConfigurationType\" folderName=\"{}\">\n\
              <option name=\"SCRIPT_TEXT\" value=\"{}\" />\n\
              <option name=\"INDEPENDENT_SCRIPT_PATH\" value=\"true\" />\n\
              <option name=\"SCRIPT_PATH\" value=\"\" />\n\
@@ -264,16 +496,25 @@ fn shell_configuration_at(
              <option name=\"INDEPENDENT_INTERPRETER_PATH\" value=\"true\" />\n\
              <option name=\"INTERPRETER_PATH\" value=\"/bin/bash\" />\n\
              <option name=\"INTERPRETER_OPTIONS\" value=\"\" />\n\
-             <option name=\"EXECUTE_IN_TERMINAL\" value=\"false\" />\n\
+             <option name=\"EXECUTE_IN_TERMINAL\" value=\"{}\" />\n\
              <option name=\"EXECUTE_SCRIPT_FILE\" value=\"false\" />\n\
              <envs />\n\
              <method v=\"2\" />\n\
            </configuration>\n\
          </component>\n",
         xml_escape(name),
-        xml_escape(&command),
+        xml_escape(folder),
+        xml_script(script),
         xml_escape(working_directory),
+        terminal,
     )
+}
+
+#[cfg(not(windows))]
+fn xml_script(value: &str) -> String {
+    xml_escape(value)
+        .replace('\r', "&#13;")
+        .replace('\n', "&#10;")
 }
 
 #[cfg(not(windows))]
