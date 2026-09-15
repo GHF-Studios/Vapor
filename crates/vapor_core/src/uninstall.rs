@@ -52,6 +52,15 @@ pub fn uninstall_installation(
         None
     };
 
+    // Phase 1: resolve and validate every safety-sensitive operation before
+    // mutating integration, user data, or authored source.
+    let preflight = preflight_uninstall(
+        &installation,
+        &user_data_root,
+        superworkspace_root.as_deref(),
+        options,
+    )?;
+
     if !options.purge_app_external && installation.root.join("state").is_dir() {
         installation
             .ensure_state_root()
@@ -59,22 +68,16 @@ pub fn uninstall_installation(
     }
 
     let legacy_app_state_removed = remove_legacy_app_mutable_state(&installation)?;
-    let integration = remove_machine_integration(&installation)?;
 
     let mut app_external_purged = false;
     let mut superworkspace_purged = false;
 
-    if let Some(superworkspace) = &superworkspace_root {
-        ensure_superworkspace_purge_safe(superworkspace)?;
-        superworkspace_purged = remove_owned_tree(
-            superworkspace,
-            &[installation.root.as_path(), user_data_root.as_path()],
-        )?;
+    if let Some(superworkspace) = &preflight.superworkspace_purge_root {
+        superworkspace_purged = remove_preflighted_tree(superworkspace)?;
     }
 
-    if options.purge_app_external {
-        app_external_purged =
-            remove_owned_tree(&user_data_root, &[installation.root.as_path()])?;
+    if let Some(app_external) = &preflight.app_external_purge_root {
+        app_external_purged = remove_preflighted_tree(app_external)?;
 
         let legacy_state = installation.root.join("state");
         if legacy_state.is_dir() {
@@ -86,6 +89,10 @@ pub fn uninstall_installation(
         }
     }
 
+    // Machine integration is committed last. Safety validation above has
+    // already completed, so a refused purge cannot partially uninstall Vapor.
+    let integration = remove_machine_integration(&installation)?;
+
     Ok(UninstallReport {
         installation_root: installation.root,
         user_data_root,
@@ -95,6 +102,119 @@ pub fn uninstall_installation(
         app_external_purged,
         superworkspace_purged,
     })
+}
+
+#[derive(Debug)]
+struct UninstallPreflight {
+    superworkspace_purge_root: Option<PathBuf>,
+    app_external_purge_root: Option<PathBuf>,
+}
+
+fn preflight_uninstall(
+    installation: &VaporInstallation,
+    user_data_root: &Path,
+    superworkspace_root: Option<&Path>,
+    options: UninstallOptions,
+) -> Result<UninstallPreflight, UninstallError> {
+    preflight_machine_integration_removal()?;
+
+    let superworkspace_purge_root = if let Some(superworkspace) = superworkspace_root {
+        let root = preflight_owned_tree(
+            superworkspace,
+            &[installation.root.as_path(), user_data_root],
+        )?
+        .ok_or_else(|| UninstallError::UnsafePurgeRoot {
+            path: superworkspace.to_path_buf(),
+        })?;
+
+        ensure_superworkspace_purge_safe(&root)?;
+        Some(root)
+    } else {
+        None
+    };
+
+    let app_external_purge_root = if options.purge_app_external {
+        preflight_owned_tree(user_data_root, &[installation.root.as_path()])?
+    } else {
+        None
+    };
+
+    Ok(UninstallPreflight {
+        superworkspace_purge_root,
+        app_external_purge_root,
+    })
+}
+
+fn preflight_owned_tree(
+    path: &Path,
+    protected: &[&Path],
+) -> Result<Option<PathBuf>, UninstallError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let path = fs::canonicalize(path).map_err(|source| UninstallError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    if path.parent().is_none() || home_dir().is_some_and(|home| same_path(&path, &home)) {
+        return Err(UninstallError::UnsafePurgeRoot { path });
+    }
+
+    for protected in protected {
+        let protected = fs::canonicalize(protected).unwrap_or_else(|_| (*protected).to_path_buf());
+        if path.starts_with(&protected) || protected.starts_with(&path) {
+            return Err(UninstallError::UnsafePurgeRoot { path });
+        }
+    }
+
+    Ok(Some(path))
+}
+
+fn preflight_machine_integration_removal() -> Result<(), UninstallError> {
+    if cfg!(windows) {
+        return Ok(());
+    }
+
+    for profile in shell_profiles() {
+        validate_managed_profile_block(&profile)?;
+    }
+
+    Ok(())
+}
+
+fn validate_managed_profile_block(path: &Path) -> Result<(), UninstallError> {
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(UninstallError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+
+    let mut inside = false;
+    for line in source.lines() {
+        if line == PROFILE_BLOCK_START {
+            inside = true;
+            continue;
+        }
+
+        if inside && line == PROFILE_BLOCK_END {
+            inside = false;
+        }
+    }
+
+    if inside {
+        return Err(UninstallError::MalformedProfileBlock {
+            path: path.to_path_buf(),
+        });
+    }
+
+    Ok(())
 }
 
 fn active_superworkspace(installation: &VaporInstallation) -> Result<PathBuf, UninstallError> {
@@ -387,15 +507,22 @@ fn ensure_superworkspace_purge_safe(root: &Path) -> Result<(), UninstallError> {
             continue;
         }
 
-        if !MANAGED_SUPERWORKSPACE_REPOSITORIES.contains(&name) {
-            return Err(UninstallError::UnsafeSuperworkspaceEntry { path });
-        }
-
         let file_type = entry.file_type().map_err(|source| UninstallError::Io {
             path: path.clone(),
             source,
         })?;
-        if !file_type.is_dir() || file_type.is_symlink() {
+
+        if matches!(name, ".idea" | ".run") {
+            if !file_type.is_dir() || file_type.is_symlink() {
+                return Err(UninstallError::UnsafeSuperworkspaceEntry { path });
+            }
+            continue;
+        }
+
+        if !MANAGED_SUPERWORKSPACE_REPOSITORIES.contains(&name)
+            || !file_type.is_dir()
+            || file_type.is_symlink()
+        {
             return Err(UninstallError::UnsafeSuperworkspaceEntry { path });
         }
 
@@ -568,29 +695,13 @@ fn git_output(root: &Path, args: &[&str]) -> Result<String, UninstallError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn remove_owned_tree(path: &Path, protected: &[&Path]) -> Result<bool, UninstallError> {
+fn remove_preflighted_tree(path: &Path) -> Result<bool, UninstallError> {
     if !path.exists() {
         return Ok(false);
     }
 
-    let path = fs::canonicalize(path).map_err(|source| UninstallError::Io {
+    fs::remove_dir_all(path).map_err(|source| UninstallError::Io {
         path: path.to_path_buf(),
-        source,
-    })?;
-
-    if path.parent().is_none() || home_dir().is_some_and(|home| same_path(&path, &home)) {
-        return Err(UninstallError::UnsafePurgeRoot { path });
-    }
-
-    for protected in protected {
-        let protected = fs::canonicalize(protected).unwrap_or_else(|_| (*protected).to_path_buf());
-        if path.starts_with(&protected) || protected.starts_with(&path) {
-            return Err(UninstallError::UnsafePurgeRoot { path });
-        }
-    }
-
-    fs::remove_dir_all(&path).map_err(|source| UninstallError::Io {
-        path: path.clone(),
         source,
     })?;
 
