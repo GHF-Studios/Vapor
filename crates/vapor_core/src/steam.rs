@@ -22,7 +22,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
-pub const ROOT_DISTRIBUTION_MANIFEST_FILE_NAME: &str = "App-Source.vapor.toml";
+pub const ROOT_DISTRIBUTION_MANIFEST_FILE_NAME: &str = "Vapor-Client.vapor.toml";
 
 pub const INSTALLED_ECOSYSTEM_METADATA_FILE_NAME: &str = "ecosystem.toml";
 
@@ -256,7 +256,9 @@ fn stage_distribution(
         &common_metadata_root.join(INSTALLED_ECOSYSTEM_METADATA_FILE_NAME),
     )?;
 
-    let platform_bin_root = platform_root.join(BIN_DIR);
+    let platform_bin_root = platform_root
+        .join(BIN_DIR)
+        .join(current_host_target()?);
 
     fs::create_dir_all(&platform_bin_root).map_err(|source| SteamDeploymentError::Io {
         path: platform_bin_root.clone(),
@@ -419,6 +421,26 @@ fn current_platform_depot(
         platform => Err(SteamDeploymentError::UnsupportedPlatform {
             platform: platform.to_owned(),
         }),
+    }
+}
+
+fn current_host_target() -> Result<&'static str, SteamDeploymentError> {
+    if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "linux",
+        target_env = "gnu"
+    )) {
+        Ok("x86_64-unknown-linux-gnu")
+    } else if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "windows",
+        target_env = "msvc"
+    )) {
+        Ok("x86_64-pc-windows-msvc")
+    } else {
+        Err(SteamDeploymentError::UnsupportedPlatform {
+            platform: env::consts::OS.to_owned(),
+        })
     }
 }
 

@@ -11,10 +11,10 @@ use crate::{
     DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalContent, ManagedToolchain,
     ResolvedComposition, ResolvedContentGraph, SteamDeploymentOptions, UninstallOptions, VaporId,
     VaporInstallation, VaporProject, VaporRole, VaporSuperworkspace, VaporWorkspace,
-    build_cargo_realization,
+    SUPERWORKSPACE_MANIFEST_FILE_NAME, acquire_ecosystem_repositories, build_cargo_realization,
     demote_role, deploy_ecosystem_to_steam, deploy_workspace, development_target_dir,
-    diagnose_managed_state, discover_local_content, generate_local_cargo_realization,
-    git_available, inspect_local_cargo_package, promote_role,
+    diagnose_managed_state, discover_local_content, forget_source, generate_local_cargo_realization,
+    git_available, inspect_local_cargo_package, install_installation, promote_role,
     reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
     repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
     resolve_source_context, role_status, run_cargo_realization, run_workspace_operation,
@@ -23,8 +23,10 @@ use crate::{
 use clap::Parser;
 use commands::*;
 use platform_activity::*;
+use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -113,6 +115,8 @@ fn execute_vapor(command: VaporCommand) -> Result<(), String> {
 
 fn execute_installer(command: InstallerCommand) -> Result<(), String> {
     match command {
+        InstallerCommand::Install => installer_install(),
+
         InstallerCommand::Installation { command } => execute_installation(command),
 
         InstallerCommand::Role { command } => execute_role(command),
@@ -123,6 +127,27 @@ fn execute_installer(command: InstallerCommand) -> Result<(), String> {
 
         InstallerCommand::Uninstall(args) => installer_uninstall(args),
     }
+}
+
+fn installer_install() -> Result<(), String> {
+    let report = install_installation().map_err(|error| error.to_string())?;
+
+    println!("Vapor Installation installed:");
+    println!("  installation: {}", report.installation_root.display());
+    println!("  user data: {}", report.user_data_root.display());
+    println!("  role: Player");
+
+    if report.integration.is_empty() {
+        println!("  integration: already current");
+    } else {
+        println!("  integration:");
+        for item in &report.integration {
+            println!("    {item}");
+        }
+    }
+
+    println!("  note: reopen existing shells to inherit updated environment");
+    Ok(())
 }
 
 fn installer_uninstall(args: UninstallArgs) -> Result<(), String> {
@@ -549,12 +574,73 @@ fn execute_source(command: SourceCommand) -> Result<(), String> {
 
         SourceCommand::List => source_list(),
 
+        SourceCommand::Setup { path } => source_setup(path),
+
         SourceCommand::Open { path } => source_open(path),
 
-        SourceCommand::Acquire { .. } => not_implemented("source", "acquire"),
+        SourceCommand::Acquire { source } => source_acquire(&source),
+
+        SourceCommand::Remove { source, yes } => source_remove(&source, yes),
+
+        SourceCommand::Teardown { yes } => source_teardown(yes),
 
         SourceCommand::Restore { destination } => source_restore(destination),
     }
+}
+
+fn prompt_superworkspace_path() -> Result<PathBuf, String> {
+    eprint!("Superworkspace path: ");
+    io::stderr()
+        .flush()
+        .map_err(|error| format!("failed to write Superworkspace prompt: {error}"))?;
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|error| format!("failed to read Superworkspace path: {error}"))?;
+
+    let input = input.trim();
+    if input.is_empty() {
+        return Err("Superworkspace path may not be empty".to_owned());
+    }
+
+    Ok(PathBuf::from(input))
+}
+
+fn source_setup(path: Option<PathBuf>) -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let path = match path {
+        Some(path) => path,
+        None => prompt_superworkspace_path()?,
+    };
+    let path = if path.is_absolute() {
+        path
+    } else {
+        env::current_dir()
+            .map_err(|error| format!("failed to determine current directory: {error}"))?
+            .join(path)
+    };
+
+    let superworkspace = VaporSuperworkspace::setup(&path).map_err(|error| error.to_string())?;
+    let state = crate::open_source(&installation, &superworkspace.root)
+        .map_err(|error| error.to_string())?;
+
+    println!("Vapor Superworkspace ready:");
+    println!("  root: {}", superworkspace.root.display());
+    println!(
+        "  marker: {}",
+        superworkspace
+            .root
+            .join(SUPERWORKSPACE_MANIFEST_FILE_NAME)
+            .display()
+    );
+    println!("  source state: {}", state.state_path.display());
+
+    if let Err(error) = synchronize_existing_development_environment(&superworkspace.root) {
+        eprintln!("warning: Superworkspace was configured, but development-state synchronization failed: {error}");
+    }
+
+    Ok(())
 }
 
 fn source_open(path: PathBuf) -> Result<(), String> {
@@ -616,6 +702,270 @@ fn source_restore(destination: Option<PathBuf>) -> Result<(), String> {
         eprintln!(
             "warning: source restoration succeeded, but the existing development environment could not be synchronized: {error}"
         );
+    }
+
+    Ok(())
+}
+
+const LOO_CAST_REPOSITORY: &str = "Loo-Cast";
+const VAPOR_CLIENT_REPOSITORY: &str = "Vapor-Client";
+const VAPOR_PLATFORM_SERVER_REPOSITORY: &str = "Vapor-Platform-Server";
+
+fn source_selection(selector: &str) -> Result<Vec<&'static str>, String> {
+    match selector {
+        "loo-cast" => Ok(vec![LOO_CAST_REPOSITORY]),
+        "vapor-client" => Ok(vec![VAPOR_CLIENT_REPOSITORY]),
+        "vapor-platform-server" => Ok(vec![VAPOR_PLATFORM_SERVER_REPOSITORY]),
+        "vapor-all" => Ok(vec![VAPOR_CLIENT_REPOSITORY, VAPOR_PLATFORM_SERVER_REPOSITORY]),
+        "first-party-all" => Ok(vec![
+            LOO_CAST_REPOSITORY,
+            VAPOR_CLIENT_REPOSITORY,
+            VAPOR_PLATFORM_SERVER_REPOSITORY,
+        ]),
+        other => Err(format!(
+            "unknown source selector `{other}`; expected loo-cast, vapor-client, vapor-platform-server, vapor-all, or first-party-all"
+        )),
+    }
+}
+
+fn configured_superworkspace(installation: &VaporInstallation) -> Result<VaporSuperworkspace, String> {
+    let state = source_state(installation).map_err(|error| error.to_string())?;
+    let root = state.superworkspace.ok_or_else(|| {
+        format!(
+            "no canonical Superworkspace is configured; run `vapor source setup [SUPERWORKSPACE]` first (source state: `{}`)",
+            state.state_path.display()
+        )
+    })?;
+
+    VaporSuperworkspace::discover_from(&root).map_err(|error| error.to_string())
+}
+
+fn source_acquire(selector: &str) -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let superworkspace = configured_superworkspace(&installation)?;
+    let selection = source_selection(selector)?;
+
+    let report = acquire_ecosystem_repositories(
+        &installation,
+        &superworkspace.root,
+        &selection,
+    )
+    .map_err(|error| error.to_string())?;
+
+    println!("Acquired Vapor source:");
+    println!("  selector: {selector}");
+    println!("  Registry: {}", report.registry_endpoint);
+    println!("  Superworkspace: {}", report.superworkspace_root.display());
+    for repository in &report.repositories {
+        println!("  {} -> {}", repository.id, repository.root.display());
+    }
+
+    if let Err(error) = synchronize_existing_development_environment(&report.superworkspace_root) {
+        eprintln!("warning: source acquisition succeeded, but development-state synchronization failed: {error}");
+    }
+
+    Ok(())
+}
+
+fn source_remove(selector: &str, yes: bool) -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let superworkspace = configured_superworkspace(&installation)?;
+    let selection = source_selection(selector)?;
+    let targets = selection
+        .iter()
+        .map(|name| ((*name).to_owned(), superworkspace.root.join(name)))
+        .filter(|(_, path)| path.exists())
+        .collect::<Vec<_>>();
+
+    if targets.is_empty() {
+        println!("No selected source is currently acquired.");
+        return Ok(());
+    }
+
+    // Validate the complete set before deleting any checkout.
+    for (name, path) in &targets {
+        ensure_source_checkout_safe(name, path)?;
+    }
+
+    if !yes && !confirm_source_removal(selector, &targets)? {
+        println!("Source removal cancelled.");
+        return Ok(());
+    }
+
+    for (name, path) in &targets {
+        fs::remove_dir_all(path).map_err(|error| {
+            format!("failed to remove source `{name}` at `{}`: {error}", path.display())
+        })?;
+        println!("Removed {name}: {}", path.display());
+    }
+
+    Ok(())
+}
+
+fn ensure_source_checkout_safe(name: &str, root: &Path) -> Result<(), String> {
+    ensure_git_checkout_safe(name, root)?;
+
+    let submodules = git_output(root, &["submodule", "status", "--recursive"])?;
+    for line in submodules.lines() {
+        let trimmed = line.trim_start_matches(|character| matches!(character, ' ' | '-' | '+' | 'U'));
+        let mut fields = trimmed.split_whitespace();
+        let _commit = fields.next();
+        let Some(path) = fields.next() else {
+            continue;
+        };
+        let submodule = root.join(path);
+        if submodule.is_dir() {
+            ensure_git_checkout_safe(&format!("{name}/{path}"), &submodule)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), String> {
+    let inside = git_output(root, &["rev-parse", "--is-inside-work-tree"])?;
+    if inside != "true" {
+        return Err(format!("source `{name}` is not a Git work tree: `{}`", root.display()));
+    }
+
+    let dirty = git_output(
+        root,
+        &[
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+    )?;
+    if !dirty.is_empty() {
+        return Err(format!(
+            "refusing to remove source `{name}` because it has uncommitted/untracked changes:\n{dirty}"
+        ));
+    }
+
+    git_output(root, &["fetch", "--quiet", "--prune", "origin"])?;
+
+    let local_only = git_output(root, &["rev-list", "--branches", "--not", "--remotes=origin"])?;
+    if !local_only.is_empty() {
+        return Err(format!(
+            "refusing to remove source `{name}` because local branches contain commits not present on origin"
+        ));
+    }
+
+    let remote_contains_head = git_output(root, &["branch", "-r", "--contains", "HEAD"])?;
+    if remote_contains_head.is_empty() {
+        return Err(format!(
+            "refusing to remove source `{name}` because HEAD is not reachable from an origin branch"
+        ));
+    }
+
+    let local_tags = git_output(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname:strip=2) %(objectname)",
+            "refs/tags",
+        ],
+    )?;
+    let remote_tags = git_output(root, &["ls-remote", "--tags", "--refs", "origin"])?;
+
+    let remote_tags = remote_tags
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let object = fields.next()?;
+            let reference = fields.next()?;
+            Some((
+                reference.trim_start_matches("refs/tags/").to_owned(),
+                object.to_owned(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for line in local_tags.lines() {
+        let Some((tag, object)) = line.split_once(' ') else {
+            continue;
+        };
+        if remote_tags.get(tag).map(String::as_str) != Some(object) {
+            return Err(format!(
+                "refusing to remove source `{name}` because local tag `{tag}` is not identically published on origin"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn confirm_source_removal(
+    selector: &str,
+    targets: &[(String, PathBuf)],
+) -> Result<bool, String> {
+    eprintln!("WARNING: source removal permanently deletes selected checkouts for `{selector}`.");
+    for (_, path) in targets {
+        eprintln!("  - {}", path.display());
+    }
+    eprint!("Type `yes` to continue: ");
+    io::stderr()
+        .flush()
+        .map_err(|error| format!("failed to write confirmation prompt: {error}"))?;
+
+    let mut confirmation = String::new();
+    io::stdin()
+        .read_line(&mut confirmation)
+        .map_err(|error| format!("failed to read confirmation: {error}"))?;
+
+    Ok(confirmation.trim().eq_ignore_ascii_case("yes"))
+}
+
+fn source_teardown(yes: bool) -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let superworkspace = configured_superworkspace(&installation)?;
+
+    if !superworkspace.repositories.is_empty() {
+        return Err(format!(
+            "refusing to tear down Superworkspace `{}` while {} managed repository/repositories remain; remove source first",
+            superworkspace.root.display(),
+            superworkspace.repositories.len()
+        ));
+    }
+
+    if !yes {
+        eprintln!("WARNING: this removes canonical Superworkspace configuration.");
+        eprintln!("  - {}", superworkspace.root.display());
+        eprint!("Type `yes` to continue: ");
+        io::stderr()
+            .flush()
+            .map_err(|error| format!("failed to write confirmation prompt: {error}"))?;
+        let mut confirmation = String::new();
+        io::stdin()
+            .read_line(&mut confirmation)
+            .map_err(|error| format!("failed to read confirmation: {error}"))?;
+        if !confirmation.trim().eq_ignore_ascii_case("yes") {
+            println!("Source teardown cancelled.");
+            return Ok(());
+        }
+    }
+
+    let marker = superworkspace.root.join(SUPERWORKSPACE_MANIFEST_FILE_NAME);
+    if marker.is_file() {
+        fs::remove_file(&marker)
+            .map_err(|error| format!("failed to remove `{}`: {error}", marker.display()))?;
+    }
+
+    forget_source(&installation, &superworkspace.root).map_err(|error| error.to_string())?;
+
+    match fs::remove_dir(&superworkspace.root) {
+        Ok(()) => println!("Removed empty Superworkspace directory: {}", superworkspace.root.display()),
+        Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => println!(
+            "Superworkspace configuration removed; retained non-empty directory: {}",
+            superworkspace.root.display()
+        ),
+        Err(error) => {
+            return Err(format!(
+                "Superworkspace configuration was removed, but `{}` could not be cleaned up: {error}",
+                superworkspace.root.display()
+            ));
+        }
     }
 
     Ok(())
@@ -1536,13 +1886,22 @@ fn source_status() -> Result<(), String> {
 
     let state = source_state(&installation).map_err(|error| error.to_string())?;
 
-    let context = resolve_source_context(&installation, None).map_err(|error| error.to_string())?;
+    let context = resolve_source_context(&installation, None).ok();
 
     println!("Vapor source context:");
 
     println!("  installation: {}", installation.root.display());
 
     println!("  state: {}", state.state_path.display());
+
+    println!(
+        "  Superworkspace: {}",
+        state
+            .superworkspace
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "none".to_owned())
+    );
 
     println!(
         "  active: {}",
@@ -1553,9 +1912,12 @@ fn source_status() -> Result<(), String> {
             .unwrap_or_else(|| "none".to_owned())
     );
 
-    println!("  effective: {}", context.root.display());
-
-    println!("  effective via: {}", context.source);
+    if let Some(context) = context {
+        println!("  effective: {}", context.root.display());
+        println!("  effective via: {}", context.source);
+    } else {
+        println!("  effective: none");
+    }
 
     println!("  known: {}", state.known.len());
 

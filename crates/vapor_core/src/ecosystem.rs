@@ -81,6 +81,14 @@ pub fn acquire_ecosystem(
     installation: &VaporInstallation,
     destination: &Path,
 ) -> Result<EcosystemAcquisitionReport, EcosystemError> {
+    acquire_ecosystem_repositories(installation, destination, &[])
+}
+
+pub fn acquire_ecosystem_repositories(
+    installation: &VaporInstallation,
+    destination: &Path,
+    repository_names: &[&str],
+) -> Result<EcosystemAcquisitionReport, EcosystemError> {
     if !git_available() {
         return Err(EcosystemError::GitUnavailable);
     }
@@ -93,7 +101,9 @@ pub fn acquire_ecosystem(
 
     let ecosystem = registry.ecosystem(namespace, name)?;
 
-    if ecosystem.repositories.is_empty() {
+    let repositories = select_repositories(&ecosystem.repositories, repository_names)?;
+
+    if repositories.is_empty() {
         return Err(EcosystemError::NoRepositories {
             ecosystem: ecosystem.id,
         });
@@ -102,9 +112,10 @@ pub fn acquire_ecosystem(
     let destination = prepare_destination(installation, destination)?;
 
     let mut checkout_paths = BTreeSet::new();
-    let mut acquired = Vec::new();
+    let mut prepared = Vec::new();
 
-    for repository in &ecosystem.repositories {
+    // Preflight the complete selection before cloning anything.
+    for repository in repositories {
         validate_repository(repository)?;
 
         let checkout_path = checkout_path(repository)?;
@@ -114,16 +125,22 @@ pub fn acquire_ecosystem(
         }
 
         let target = destination.join(checkout_path);
+        let existing = target.exists();
 
-        if target.exists() {
-            return Err(EcosystemError::CheckoutAlreadyExists {
-                repository: repository.id.clone(),
-                path: target,
-            });
+        if existing {
+            validate_existing_checkout(repository, &target)?;
         }
 
-        clone_repository(repository, &target)?;
-        initialize_submodules(repository, &target)?;
+        prepared.push((repository, target, existing));
+    }
+
+    let mut acquired = Vec::new();
+
+    for (repository, target, existing) in prepared {
+        if !existing {
+            clone_repository(repository, &target)?;
+            initialize_submodules(repository, &target)?;
+        }
 
         acquired.push(AcquiredRepository {
             id: repository.id.clone(),
@@ -272,6 +289,39 @@ fn prepare_destination(
     Ok(destination)
 }
 
+fn select_repositories<'a>(
+    repositories: &'a [RegisteredRepository],
+    requested: &[&str],
+) -> Result<Vec<&'a RegisteredRepository>, EcosystemError> {
+    if requested.is_empty() {
+        return Ok(repositories.iter().collect());
+    }
+
+    let mut selected = Vec::with_capacity(requested.len());
+
+    for name in requested {
+        let repository = repositories
+            .iter()
+            .find(|repository| repository.name == *name)
+            .ok_or_else(|| EcosystemError::UnknownRepository {
+                repository: (*name).to_owned(),
+                available: repositories
+                    .iter()
+                    .map(|repository| repository.name.clone())
+                    .collect(),
+            })?;
+
+        if !selected
+            .iter()
+            .any(|selected: &&RegisteredRepository| selected.id == repository.id)
+        {
+            selected.push(repository);
+        }
+    }
+
+    Ok(selected)
+}
+
 fn validate_repository(repository: &RegisteredRepository) -> Result<(), EcosystemError> {
     if repository.provider != "github" {
         return Err(EcosystemError::UnsupportedProvider {
@@ -280,10 +330,46 @@ fn validate_repository(repository: &RegisteredRepository) -> Result<(), Ecosyste
         });
     }
 
-    if repository.kind != "container-repo" {
+    if !matches!(repository.kind.as_str(), "container-repo" | "workspace") {
         return Err(EcosystemError::UnsupportedRepositoryKind {
             repository: repository.id.clone(),
             kind: repository.kind.clone(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_existing_checkout(
+    repository: &RegisteredRepository,
+    target: &Path,
+) -> Result<(), EcosystemError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(target)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .map_err(|source| EcosystemError::GitStart {
+            repository: repository.id.clone(),
+            operation: "existing-checkout validation",
+            source,
+        })?;
+
+    if !output.status.success() {
+        return Err(EcosystemError::CheckoutDoesNotMatch {
+            repository: repository.id.clone(),
+            path: target.to_path_buf(),
+        });
+    }
+
+    let actual = String::from_utf8_lossy(&output.stdout);
+    let expected = format!("{}/{}", repository.owner, repository.name);
+    let normalized = actual.trim().trim_end_matches('/').trim_end_matches(".git");
+
+    if !normalized.ends_with(&expected) {
+        return Err(EcosystemError::CheckoutDoesNotMatch {
+            repository: repository.id.clone(),
+            path: target.to_path_buf(),
         });
     }
 
@@ -393,6 +479,16 @@ pub enum EcosystemError {
     CheckoutAlreadyExists {
         repository: String,
         path: PathBuf,
+    },
+
+    CheckoutDoesNotMatch {
+        repository: String,
+        path: PathBuf,
+    },
+
+    UnknownRepository {
+        repository: String,
+        available: Vec<String>,
     },
 
     OverlapsInstallation {
@@ -522,6 +618,25 @@ impl fmt::Display for EcosystemError {
                     formatter,
                     "cannot acquire Registry repository `{repository}` because checkout path `{}` already exists",
                     path.display()
+                )
+            }
+
+            Self::CheckoutDoesNotMatch { repository, path } => {
+                write!(
+                    formatter,
+                    "existing checkout `{}` does not match Registry repository `{repository}`",
+                    path.display()
+                )
+            }
+
+            Self::UnknownRepository {
+                repository,
+                available,
+            } => {
+                write!(
+                    formatter,
+                    "Registry does not expose first-party repository `{repository}`; available: {}",
+                    available.join(", ")
                 )
             }
 

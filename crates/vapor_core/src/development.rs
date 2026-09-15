@@ -147,7 +147,10 @@ pub fn deploy_workspace(
 ) -> Result<EcosystemDeploymentReport, DevelopmentError> {
     let build = build_workspace_deployment_inputs(workspace)?;
 
-    let bin_root = build.installation_root.join(BIN_DIR);
+    let bin_root = build
+        .installation_root
+        .join(BIN_DIR)
+        .join(current_host_target()?);
 
     fs::create_dir_all(&bin_root).map_err(|source| DevelopmentError::Io {
         path: bin_root.clone(),
@@ -439,6 +442,7 @@ fn write_activation_script(
     let rust_bin = managed_toolchain_bin_user_data_relative(toolchain)?
         .to_string_lossy()
         .replace('\\', "/");
+    let host = current_host_target()?;
 
     let source = format!(
         r#"#!/usr/bin/env bash
@@ -463,7 +467,7 @@ else
     VAPOR_USER_DATA="$HOME/.local/share/vapor"
 fi
 
-VAPOR_BIN="$VAPOR_ROOT/bin"
+VAPOR_BIN="$VAPOR_ROOT/bin/{host}"
 VAPOR_RUST_BIN="$VAPOR_USER_DATA/{rust_bin}"
 
 for VAPOR_PATH in "$VAPOR_RUST_BIN" "$VAPOR_BIN"; do
@@ -515,6 +519,7 @@ fn write_activation_script(
     let rust_bin = managed_toolchain_bin_user_data_relative(toolchain)?
         .to_string_lossy()
         .replace('/', "\\");
+    let host = current_host_target()?;
 
     let source = format!(
         "@echo off\r\n\
@@ -523,7 +528,7 @@ fn write_activation_script(
              set \"VAPOR_HOME=\"\r\n\
              set \"VAPOR_ROOT=%~dp0\"\r\n\
              if defined LOCALAPPDATA (set \"VAPOR_USER_DATA=%LOCALAPPDATA%\\Vapor\") else (set \"VAPOR_USER_DATA=%USERPROFILE%\\AppData\\Local\\Vapor\")\r\n\
-             set \"PATH=%VAPOR_ROOT%bin;%VAPOR_USER_DATA%\\{rust_bin};%PATH%\"\r\n\
+             set \"PATH=%VAPOR_ROOT%bin\\{host};%VAPOR_USER_DATA%\\{rust_bin};%PATH%\"\r\n\
              set \"VAPOR_USER_DATA=\"\r\n\
              set \"VAPOR_ROOT=\"\r\n"
     );
@@ -540,9 +545,29 @@ fn executable_name(stem: &str) -> String {
     format!("{stem}{}", env::consts::EXE_SUFFIX,)
 }
 
+fn current_host_target() -> Result<&'static str, DevelopmentError> {
+    if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "linux",
+        target_env = "gnu"
+    )) {
+        Ok("x86_64-unknown-linux-gnu")
+    } else if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "windows",
+        target_env = "msvc"
+    )) {
+        Ok("x86_64-pc-windows-msvc")
+    } else {
+        Err(DevelopmentError::UnsupportedHost)
+    }
+}
+
 #[derive(Debug)]
 pub enum DevelopmentError {
     Toolchain(ToolchainError),
+
+    UnsupportedHost,
 
     BinaryTargetNotFound {
         binary: String,
@@ -610,6 +635,10 @@ impl fmt::Display for DevelopmentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Toolchain(error) => error.fmt(formatter),
+
+            Self::UnsupportedHost => formatter.write_str(
+                "this host is not yet supported by Vapor Client deployment",
+            ),
 
             Self::BinaryTargetNotFound { binary } => {
                 write!(

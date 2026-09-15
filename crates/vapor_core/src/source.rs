@@ -26,6 +26,7 @@ const SOURCE_STATE_FILE_NAME: &str = "sources.toml";
 
 #[derive(Debug, Clone)]
 pub struct SourceState {
+    pub superworkspace: Option<PathBuf>,
     pub active: Option<PathBuf>,
     pub known: Vec<PathBuf>,
     pub state_path: PathBuf,
@@ -56,6 +57,9 @@ pub struct ResolvedSourceContext {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct PersistedSourceState {
+    #[serde(default)]
+    superworkspace: Option<PathBuf>,
+
     active: Option<PathBuf>,
 
     #[serde(default)]
@@ -68,6 +72,7 @@ pub fn source_state(installation: &VaporInstallation) -> Result<SourceState, Sou
     let persisted = load(&state_path)?;
 
     Ok(SourceState {
+        superworkspace: persisted.superworkspace,
         active: persisted.active,
         known: persisted.known,
         state_path,
@@ -133,10 +138,34 @@ pub fn open_source(
         persisted.known.sort();
     }
 
+    persisted.superworkspace = Some(source.clone());
     persisted.active = Some(source);
 
     save(installation, &persisted)?;
 
+    source_state(installation)
+}
+
+/// Forget one canonical source root without deleting authored files.
+pub fn forget_source(
+    installation: &VaporInstallation,
+    source: &Path,
+) -> Result<SourceState, SourceError> {
+    let source = fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
+    let state_path = source_state_path(installation);
+    let mut persisted = load(&state_path)?;
+
+    persisted.known.retain(|known| known != &source);
+
+    if persisted.active.as_ref() == Some(&source) {
+        persisted.active = None;
+    }
+
+    if persisted.superworkspace.as_ref() == Some(&source) {
+        persisted.superworkspace = None;
+    }
+
+    save(installation, &persisted)?;
     source_state(installation)
 }
 
@@ -321,6 +350,7 @@ mod tests {
 
     fn state(active: Option<&str>, known: &[&str]) -> SourceState {
         SourceState {
+            superworkspace: None,
             active: active.map(PathBuf::from),
             known: known.iter().map(PathBuf::from).collect(),
             state_path: PathBuf::from("state"),

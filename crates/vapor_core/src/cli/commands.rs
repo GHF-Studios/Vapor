@@ -123,6 +123,9 @@ pub(super) enum VaporCommand {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum InstallerCommand {
+    /// Establish the base local Vapor Installation and global command integration.
+    Install,
+
     Installation {
         #[command(subcommand)]
         command: InstallationCommand,
@@ -223,29 +226,42 @@ pub(super) enum SourceCommand {
     Status,
     List,
 
+    /// Create and remember the canonical Vapor Superworkspace.
+    Setup {
+        #[arg(value_name = "SUPERWORKSPACE")]
+        path: Option<PathBuf>,
+    },
+
     /// Register and select an existing canonical Vapor Superworkspace.
     Open {
         #[arg(value_name = "SUPERWORKSPACE")]
         path: PathBuf,
     },
 
-    /// Acquire one existing authored source.
-    ///
-    /// Fine-grained provider-backed acquisition is modeled here and will be
-    /// implemented independently of first-party source restoration.
+    /// Acquire first-party authored source into the canonical Superworkspace.
     Acquire {
         #[arg(value_name = "SOURCE")]
         source: String,
-
-        #[arg(value_name = "PATH")]
-        path: Option<PathBuf>,
     },
 
-    /// Reconstruct the registered source topology belonging to this Vapor
-    /// installation.
-    ///
-    /// For the official Vapor installation this restores the known first-party
-    /// Container Repos into one Superworkspace.
+    /// Safely remove acquired first-party source.
+    Remove {
+        #[arg(value_name = "SOURCE")]
+        source: String,
+
+        /// Skip the interactive confirmation. Git safety checks still apply.
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Remove canonical Superworkspace configuration after acquired source is gone.
+    Teardown {
+        /// Skip the interactive confirmation. Safety checks still apply.
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Convenience reconstruction of all registered first-party source.
     Restore {
         #[arg(value_name = "SUPERWORKSPACE")]
         destination: Option<PathBuf>,

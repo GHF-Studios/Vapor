@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 
 const GITMODULES_FILE: &str = ".gitmodules";
 const VAPOR_IGNORE_FILE: &str = ".vaporignore";
+pub const SUPERWORKSPACE_MANIFEST_FILE_NAME: &str = "Superworkspace.vapor.toml";
 
 #[derive(Debug, Clone)]
 pub struct VaporSuperworkspace {
@@ -129,6 +130,41 @@ impl VaporIgnore {
 }
 
 impl VaporSuperworkspace {
+    /// Create or adopt an explicit canonical Superworkspace root.
+    pub fn setup(root: &Path) -> Result<Self, SuperworkspaceError> {
+        if root.exists() && !root.is_dir() {
+            return Err(SuperworkspaceError::InvalidStart {
+                path: root.to_path_buf(),
+            });
+        }
+
+        fs::create_dir_all(root).map_err(|source| SuperworkspaceError::Io {
+            path: root.to_path_buf(),
+            source,
+        })?;
+
+        let root = fs::canonicalize(root).map_err(|source| SuperworkspaceError::Io {
+            path: root.to_path_buf(),
+            source,
+        })?;
+
+        if is_container_repo(&root) || is_vapor_workspace(&root) {
+            return Err(SuperworkspaceError::InvalidStart { path: root });
+        }
+
+        let manifest = root.join(SUPERWORKSPACE_MANIFEST_FILE_NAME);
+        if !manifest.is_file() {
+            fs::write(&manifest, "schema = 1\n\n[superworkspace]\n").map_err(|source| {
+                SuperworkspaceError::Io {
+                    path: manifest,
+                    source,
+                }
+            })?;
+        }
+
+        Self::load_candidate(&root)?.ok_or(SuperworkspaceError::NotFound { start: root })
+    }
+
     /// Discover the nearest Vapor Superworkspace containing `start`.
     ///
     /// A candidate:
@@ -172,6 +208,7 @@ impl VaporSuperworkspace {
     }
 
     fn load_candidate(root: &Path) -> Result<Option<Self>, SuperworkspaceError> {
+        let explicit = root.join(SUPERWORKSPACE_MANIFEST_FILE_NAME).is_file();
         let ignore = VaporIgnore::load(root)?;
 
         let entries = fs::read_dir(root).map_err(|source| SuperworkspaceError::Io {
@@ -228,7 +265,7 @@ impl VaporSuperworkspace {
             }
         }
 
-        if repositories.is_empty() {
+        if repositories.is_empty() && !explicit {
             return Ok(None);
         }
 

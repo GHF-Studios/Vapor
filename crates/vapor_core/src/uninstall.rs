@@ -55,7 +55,7 @@ pub fn uninstall_installation(
     }
 
     let legacy_app_state_removed = remove_legacy_app_mutable_state(&installation)?;
-    let integration = remove_machine_integration()?;
+    let integration = remove_machine_integration(&installation)?;
 
     let mut app_external_purged = false;
     let mut superworkspace_purged = false;
@@ -94,6 +94,12 @@ pub fn uninstall_installation(
 
 fn active_superworkspace(installation: &VaporInstallation) -> Result<PathBuf, UninstallError> {
     let state = source_state(installation).map_err(UninstallError::Source)?;
+
+    if let Some(configured) = state.superworkspace.as_deref()
+        && let Ok(superworkspace) = VaporSuperworkspace::discover_from(configured)
+    {
+        return Ok(superworkspace.root);
+    }
 
     if let Some(active) = state.active.as_deref()
         && let Ok(superworkspace) = VaporSuperworkspace::discover_from(active)
@@ -146,7 +152,9 @@ fn remove_legacy_app_mutable_state(
     Ok(removed)
 }
 
-fn remove_machine_integration() -> Result<Vec<String>, UninstallError> {
+fn remove_machine_integration(
+    installation: &VaporInstallation,
+) -> Result<Vec<String>, UninstallError> {
     let mut removed = Vec::new();
 
     if let Some(anchor) = legacy_anchor_file() {
@@ -167,6 +175,10 @@ fn remove_machine_integration() -> Result<Vec<String>, UninstallError> {
     }
 
     if cfg!(windows) {
+        if remove_windows_user_path(installation)? {
+            removed.push("removed Vapor host binary directory from user PATH".to_owned());
+        }
+
         for variable in [VAPOR_HOME_ENV, LEGACY_APP_ROOT_ENV] {
             if remove_windows_user_environment(variable)? {
                 removed.push(format!("removed user environment variable {variable}"));
@@ -265,6 +277,55 @@ fn remove_managed_profile_block(path: &Path) -> Result<bool, UninstallError> {
     Ok(changed)
 }
 
+fn remove_windows_user_path(installation: &VaporInstallation) -> Result<bool, UninstallError> {
+    let target = if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "windows",
+        target_env = "msvc"
+    )) {
+        "x86_64-pc-windows-msvc"
+    } else {
+        return Ok(false);
+    };
+
+    let bin = installation.root.join("bin").join(target);
+    let legacy = format!(r"%VAPOR_HOME%\bin\{target}");
+    let script = r#"
+$bin = $args[0]
+$legacy = $args[1]
+$path = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($null -eq $path) { exit 0 }
+$entries = @($path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+$filtered = @($entries | Where-Object {
+    -not [string]::Equals($_, $bin, [StringComparison]::OrdinalIgnoreCase) -and
+    -not [string]::Equals($_, $legacy, [StringComparison]::OrdinalIgnoreCase)
+})
+if ($filtered.Count -ne $entries.Count) {
+    [Environment]::SetEnvironmentVariable('Path', ($filtered -join ';'), 'User')
+    Write-Output 'removed'
+}
+"#;
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .arg(&bin)
+        .arg(&legacy)
+        .output()
+        .map_err(|source| UninstallError::CommandStart {
+            command: "PowerShell user PATH cleanup".to_owned(),
+            source,
+        })?;
+
+    if !output.status.success() {
+        return Err(UninstallError::CommandFailed {
+            command: "PowerShell user PATH cleanup".to_owned(),
+            status: output.status.to_string(),
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).contains("removed"))
+}
+
 fn remove_windows_user_environment(variable: &str) -> Result<bool, UninstallError> {
     let key = r"HKCU\Environment";
     let query = Command::new("reg")
@@ -358,7 +419,7 @@ impl fmt::Display for UninstallError {
             Self::Superworkspace(error) => error.fmt(formatter),
             Self::NoActiveSuperworkspace { state_path } => write!(
                 formatter,
-                "--purge-superworkspace could not resolve one canonical Superworkspace; run from inside it or register it with `vapor source open <PATH>` (source state: `{}`)",
+                "--purge-superworkspace could not resolve one canonical Superworkspace; configure it with `vapor source setup <PATH>` or register an existing one with `vapor source open <PATH>` (source state: `{}`)",
                 state_path.display(),
             ),
             Self::UnsafePurgeRoot { path } => write!(

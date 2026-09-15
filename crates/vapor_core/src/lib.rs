@@ -10,6 +10,7 @@ pub mod development;
 pub mod ecosystem;
 pub mod ide;
 pub mod identity;
+pub mod install;
 pub mod installation;
 pub mod local;
 pub mod maintenance;
@@ -48,7 +49,7 @@ pub use development::{
 
 pub use ecosystem::{
     AcquiredRepository, EcosystemAcquisitionReport, EcosystemBootstrap, EcosystemError,
-    acquire_ecosystem, install_ecosystem_bootstrap,
+    acquire_ecosystem, acquire_ecosystem_repositories, install_ecosystem_bootstrap,
 };
 
 pub use ide::{
@@ -56,6 +57,8 @@ pub use ide::{
 };
 
 pub use identity::{ContentVersionId, ParseVaporIdError, VaporId};
+
+pub use install::{InstallError, InstallReport, install_installation};
 
 pub use installation::{
     InstallationError, InstallationRootSource, VAPOR_HOME_ENV, VaporInstallation,
@@ -88,7 +91,7 @@ pub use role::{
 
 pub use source::{
     ResolvedSourceContext, SourceContextSource, SourceError, SourceState, active_source,
-    open_source, resolve_source_context, source_state,
+    forget_source, open_source, resolve_source_context, source_state,
 };
 
 pub use steam::{
@@ -97,8 +100,8 @@ pub use steam::{
 };
 
 pub use superworkspace::{
-    SuperworkspaceError, SuperworkspaceProject, SuperworkspaceRepository,
-    SuperworkspaceRepositoryKind, VaporSuperworkspace,
+    SUPERWORKSPACE_MANIFEST_FILE_NAME, SuperworkspaceError, SuperworkspaceProject,
+    SuperworkspaceRepository, SuperworkspaceRepositoryKind, VaporSuperworkspace,
 };
 
 pub use toolchain::{ManagedToolchain, ToolchainError};
