@@ -223,6 +223,12 @@ pub(super) enum SourceCommand {
     Status,
     List,
 
+    /// Register and select an existing canonical Vapor Superworkspace.
+    Open {
+        #[arg(value_name = "SUPERWORKSPACE")]
+        path: PathBuf,
+    },
+
     /// Acquire one existing authored source.
     ///
     /// Fine-grained provider-backed acquisition is modeled here and will be

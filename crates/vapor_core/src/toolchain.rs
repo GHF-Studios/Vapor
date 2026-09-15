@@ -53,6 +53,7 @@ pub struct ManagedToolchain {
     pub workspace_root: PathBuf,
 
     pub vapor_home: PathBuf,
+    pub user_data_root: PathBuf,
     pub installation_source: InstallationRootSource,
 
     pub rustup_home: PathBuf,
@@ -109,10 +110,11 @@ impl ManagedToolchain {
         pin: ToolchainPin,
     ) -> Result<Self, ToolchainError> {
         let vapor_home = installation.root.clone();
+        let user_data_root = installation.user_data_root();
 
-        let rustup_home = vapor_home.join(RUSTUP_HOME_DIR);
+        let rustup_home = user_data_root.join(RUSTUP_HOME_DIR);
 
-        let cargo_home = vapor_home.join(CARGO_HOME_DIR);
+        let cargo_home = user_data_root.join(CARGO_HOME_DIR);
 
         let host = current_host_triple()?;
 
@@ -125,6 +127,7 @@ impl ManagedToolchain {
         Ok(Self {
             workspace_root,
             vapor_home,
+            user_data_root,
             installation_source: installation.root_source,
             rustup_home,
             cargo_home,

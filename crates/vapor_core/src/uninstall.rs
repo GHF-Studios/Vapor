@@ -6,6 +6,7 @@
 use crate::installation::{InstallationError, VAPOR_HOME_ENV, VaporInstallation};
 use crate::source::{SourceError, source_state};
 use crate::superworkspace::{SuperworkspaceError, VaporSuperworkspace};
+use std::collections::BTreeSet;
 use std::env;
 use std::fmt;
 use std::fs;
@@ -16,6 +17,7 @@ use std::process::Command;
 const LEGACY_APP_ROOT_ENV: &str = "LOO_CAST_APP_ROOT";
 const PROFILE_BLOCK_START: &str = "# >>> Vapor managed PATH >>>";
 const PROFILE_BLOCK_END: &str = "# <<< Vapor managed PATH <<<";
+const LEGACY_APP_MUTABLE_DIRS: &[&str] = &["rustup-home", "cargo-home", "development"];
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UninstallOptions {
@@ -29,6 +31,7 @@ pub struct UninstallReport {
     pub user_data_root: PathBuf,
     pub superworkspace_root: Option<PathBuf>,
     pub integration: Vec<String>,
+    pub legacy_app_state_removed: Vec<PathBuf>,
     pub app_external_purged: bool,
     pub superworkspace_purged: bool,
 }
@@ -51,6 +54,7 @@ pub fn uninstall_installation(
             .map_err(UninstallError::Installation)?;
     }
 
+    let legacy_app_state_removed = remove_legacy_app_mutable_state(&installation)?;
     let integration = remove_machine_integration()?;
 
     let mut app_external_purged = false;
@@ -82,6 +86,7 @@ pub fn uninstall_installation(
         user_data_root,
         superworkspace_root,
         integration,
+        legacy_app_state_removed,
         app_external_purged,
         superworkspace_purged,
     })
@@ -89,11 +94,56 @@ pub fn uninstall_installation(
 
 fn active_superworkspace(installation: &VaporInstallation) -> Result<PathBuf, UninstallError> {
     let state = source_state(installation).map_err(UninstallError::Source)?;
-    let active = state.active.ok_or(UninstallError::NoActiveSuperworkspace)?;
-    let superworkspace =
-        VaporSuperworkspace::discover_from(&active).map_err(UninstallError::Superworkspace)?;
 
-    Ok(superworkspace.root)
+    if let Some(active) = state.active.as_deref()
+        && let Ok(superworkspace) = VaporSuperworkspace::discover_from(active)
+    {
+        return Ok(superworkspace.root);
+    }
+
+    if let Ok(current) = env::current_dir()
+        && let Ok(superworkspace) = VaporSuperworkspace::discover_from(&current)
+    {
+        return Ok(superworkspace.root);
+    }
+
+    let mut known = BTreeSet::new();
+    for source in &state.known {
+        if let Ok(superworkspace) = VaporSuperworkspace::discover_from(source) {
+            known.insert(superworkspace.root);
+        }
+    }
+
+    if known.len() == 1 {
+        return Ok(known.into_iter().next().expect("length checked"));
+    }
+
+    Err(UninstallError::NoActiveSuperworkspace {
+        state_path: state.state_path,
+    })
+}
+
+fn remove_legacy_app_mutable_state(
+    installation: &VaporInstallation,
+) -> Result<Vec<PathBuf>, UninstallError> {
+    let mut removed = Vec::new();
+
+    for name in LEGACY_APP_MUTABLE_DIRS {
+        let path = installation.root.join(name);
+
+        if !path.exists() {
+            continue;
+        }
+
+        fs::remove_dir_all(&path).map_err(|source| UninstallError::Io {
+            path: path.clone(),
+            source,
+        })?;
+
+        removed.push(path);
+    }
+
+    Ok(removed)
 }
 
 fn remove_machine_integration() -> Result<Vec<String>, UninstallError> {
@@ -292,7 +342,7 @@ pub enum UninstallError {
     Installation(InstallationError),
     Source(SourceError),
     Superworkspace(SuperworkspaceError),
-    NoActiveSuperworkspace,
+    NoActiveSuperworkspace { state_path: PathBuf },
     UnsafePurgeRoot { path: PathBuf },
     MalformedProfileBlock { path: PathBuf },
     CommandStart { command: String, source: io::Error },
@@ -306,8 +356,10 @@ impl fmt::Display for UninstallError {
             Self::Installation(error) => error.fmt(formatter),
             Self::Source(error) => error.fmt(formatter),
             Self::Superworkspace(error) => error.fmt(formatter),
-            Self::NoActiveSuperworkspace => formatter.write_str(
-                "--purge-superworkspace requires a remembered active Vapor source/Superworkspace",
+            Self::NoActiveSuperworkspace { state_path } => write!(
+                formatter,
+                "--purge-superworkspace could not resolve one canonical Superworkspace; run from inside it or register it with `vapor source open <PATH>` (source state: `{}`)",
+                state_path.display(),
             ),
             Self::UnsafePurgeRoot { path } => write!(
                 formatter,

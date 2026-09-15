@@ -147,6 +147,13 @@ fn installer_uninstall(args: UninstallArgs) -> Result<(), String> {
         println!("  superworkspace: {}", superworkspace.display());
     }
 
+    if !report.legacy_app_state_removed.is_empty() {
+        println!("  removed legacy App Instance mutable state:");
+        for path in &report.legacy_app_state_removed {
+            println!("    {}", path.display());
+        }
+    }
+
     if report.integration.is_empty() {
         println!("  integration: already absent");
     } else {
@@ -542,10 +549,30 @@ fn execute_source(command: SourceCommand) -> Result<(), String> {
 
         SourceCommand::List => source_list(),
 
+        SourceCommand::Open { path } => source_open(path),
+
         SourceCommand::Acquire { .. } => not_implemented("source", "acquire"),
 
         SourceCommand::Restore { destination } => source_restore(destination),
     }
+}
+
+fn source_open(path: PathBuf) -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let superworkspace =
+        VaporSuperworkspace::discover_from(&path).map_err(|error| error.to_string())?;
+    let state = crate::open_source(&installation, &superworkspace.root)
+        .map_err(|error| error.to_string())?;
+
+    println!("Vapor source opened:");
+    println!("  Superworkspace: {}", superworkspace.root.display());
+    println!("  source state: {}", state.state_path.display());
+
+    if let Err(error) = synchronize_existing_development_environment(&superworkspace.root) {
+        eprintln!("warning: source was registered, but development-state synchronization failed: {error}");
+    }
+
+    Ok(())
 }
 
 fn synchronize_existing_development_environment(source_root: &Path) -> Result<(), String> {
@@ -800,6 +827,8 @@ fn installation_status() -> Result<(), String> {
     println!("  root: {}", installation.root.display());
 
     println!("  resolved via: {}", installation.root_source);
+    println!("  user data: {}", installation.user_data_root().display());
+    println!("  state: {}", installation.state_root().display());
 
     println!("  role: {}", role.installed_role);
 
@@ -923,6 +952,7 @@ fn toolchain_status() -> Result<(), String> {
         toolchain.pin.channel, toolchain.pin.version, toolchain.pin.date,
     );
     println!("  installation: {}", toolchain.vapor_home.display());
+    println!("  user data: {}", toolchain.user_data_root.display());
     println!("  installation source: {}", toolchain.installation_source);
     println!("  cargo: {}", toolchain.cargo_path.display());
     println!("  rustc: {}", toolchain.rustc_path.display());
@@ -952,7 +982,7 @@ fn toolchain_install() -> Result<(), String> {
     println!(
         "Installed Vapor-managed Rust {} at {}",
         toolchain.pin.version,
-        toolchain.vapor_home.display()
+        toolchain.user_data_root.display()
     );
 
     Ok(())

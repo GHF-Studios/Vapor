@@ -212,7 +212,7 @@ fn stage_distribution(
     let (platform_name, platform_depot) = current_platform_depot(&steam.depots)?;
 
     let stage_root = build
-        .installation_root
+        .user_data_root
         .join(DEVELOPMENT_DIR)
         .join(STEAM_DIR)
         .join(steam.app_id.to_string());

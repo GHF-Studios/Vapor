@@ -49,6 +49,7 @@ pub struct BuiltBinary {
 #[derive(Debug, Clone)]
 pub struct EcosystemBuildReport {
     pub installation_root: PathBuf,
+    pub user_data_root: PathBuf,
     pub binaries: Vec<BuiltBinary>,
     pub activation_script: PathBuf,
     pub toolchain_metadata: PathBuf,
@@ -102,6 +103,7 @@ pub fn build_workspace_deployment_inputs(
         .map_err(DevelopmentError::Toolchain)?;
 
     let installation_root = toolchain.vapor_home.clone();
+    let user_data_root = toolchain.user_data_root.clone();
 
     let mut binaries = Vec::new();
 
@@ -131,6 +133,7 @@ pub fn build_workspace_deployment_inputs(
 
     Ok(EcosystemBuildReport {
         installation_root,
+        user_data_root,
         binaries,
         activation_script,
         toolchain_metadata,
@@ -174,7 +177,7 @@ pub fn deploy_workspace(
 
 pub fn development_target_dir(toolchain: &ManagedToolchain, project: &VaporProject) -> PathBuf {
     toolchain
-        .vapor_home
+        .user_data_root
         .join(DEVELOPMENT_DIR)
         .join(&project.name)
         .join(TARGET_DIR)
@@ -407,8 +410,7 @@ fn activation_script_name() -> &'static str {
     }
 }
 
-fn managed_toolchain_bin_relative(
-    installation_root: &Path,
+fn managed_toolchain_bin_user_data_relative(
     toolchain: &ManagedToolchain,
 ) -> Result<PathBuf, DevelopmentError> {
     let rust_bin =
@@ -420,7 +422,7 @@ fn managed_toolchain_bin_relative(
             })?;
 
     rust_bin
-        .strip_prefix(installation_root)
+        .strip_prefix(&toolchain.user_data_root)
         .map(Path::to_path_buf)
         .map_err(|_| DevelopmentError::InvalidDeploymentPath {
             path: rust_bin.to_path_buf(),
@@ -434,7 +436,7 @@ fn write_activation_script(
 ) -> Result<PathBuf, DevelopmentError> {
     let path = installation_root.join(activation_script_name());
 
-    let rust_bin = managed_toolchain_bin_relative(installation_root, toolchain)?
+    let rust_bin = managed_toolchain_bin_user_data_relative(toolchain)?
         .to_string_lossy()
         .replace('\\', "/");
 
@@ -455,8 +457,14 @@ VAPOR_ROOT="$(
 
 unset VAPOR_HOME
 
+if [[ -n "${{XDG_DATA_HOME:-}}" ]]; then
+    VAPOR_USER_DATA="$XDG_DATA_HOME/vapor"
+else
+    VAPOR_USER_DATA="$HOME/.local/share/vapor"
+fi
+
 VAPOR_BIN="$VAPOR_ROOT/bin"
-VAPOR_RUST_BIN="$VAPOR_ROOT/{rust_bin}"
+VAPOR_RUST_BIN="$VAPOR_USER_DATA/{rust_bin}"
 
 for VAPOR_PATH in "$VAPOR_RUST_BIN" "$VAPOR_BIN"; do
     case ":$PATH:" in
@@ -468,6 +476,7 @@ done
 unset VAPOR_PATH
 unset VAPOR_BIN
 unset VAPOR_RUST_BIN
+unset VAPOR_USER_DATA
 unset VAPOR_ROOT
 "#
     );
@@ -503,7 +512,7 @@ fn write_activation_script(
 ) -> Result<PathBuf, DevelopmentError> {
     let path = installation_root.join(activation_script_name());
 
-    let rust_bin = managed_toolchain_bin_relative(installation_root, toolchain)?
+    let rust_bin = managed_toolchain_bin_user_data_relative(toolchain)?
         .to_string_lossy()
         .replace('/', "\\");
 
@@ -513,7 +522,9 @@ fn write_activation_script(
              rem This script is intentionally relocatable with the App Instance.\r\n\
              set \"VAPOR_HOME=\"\r\n\
              set \"VAPOR_ROOT=%~dp0\"\r\n\
-             set \"PATH=%VAPOR_ROOT%bin;%VAPOR_ROOT%{rust_bin};%PATH%\"\r\n\
+             if defined LOCALAPPDATA (set \"VAPOR_USER_DATA=%LOCALAPPDATA%\\Vapor\") else (set \"VAPOR_USER_DATA=%USERPROFILE%\\AppData\\Local\\Vapor\")\r\n\
+             set \"PATH=%VAPOR_ROOT%bin;%VAPOR_USER_DATA%\\{rust_bin};%PATH%\"\r\n\
+             set \"VAPOR_USER_DATA=\"\r\n\
              set \"VAPOR_ROOT=\"\r\n"
     );
 
