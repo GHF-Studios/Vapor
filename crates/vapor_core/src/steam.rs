@@ -278,6 +278,16 @@ fn stage_distribution(
     }
 
     copy_required(
+        &build.launch_script,
+        &platform_root.join(BIN_DIR).join(
+            build
+                .launch_script
+                .file_name()
+                .ok_or_else(|| SteamDeploymentError::MissingInput(build.launch_script.clone()))?,
+        ),
+    )?;
+
+    copy_required(
         &build.activation_script,
         &platform_root.join(
             build.activation_script.file_name().ok_or_else(|| {

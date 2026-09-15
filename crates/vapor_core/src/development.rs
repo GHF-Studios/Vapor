@@ -3,7 +3,7 @@
 //! Development happens against external authored source while build outputs
 //! and managed tooling belong operationally to the active Vapor Installation.
 
-use crate::{ManagedToolchain, ToolchainError, VaporProject, VaporWorkspace};
+use crate::{ManagedToolchain, ToolchainError, VaporProject, VaporSuperworkspace, VaporWorkspace};
 use serde::Deserialize;
 use std::env;
 use std::fmt;
@@ -16,8 +16,9 @@ const DEVELOPMENT_DIR: &str = "development";
 const TARGET_DIR: &str = "target";
 const DEV_PROFILE_DIR: &str = "debug";
 const BIN_DIR: &str = "bin";
+const CLIENT_DISTRIBUTION_MANIFEST_FILE_NAME: &str = "Vapor-Client.vapor.toml";
 
-const SELF_HOST_BINARIES: &[&str] = &["vapor", "vapor-installer"];
+const DISTRIBUTION_BINARIES: &[&str] = &["vapor", "vapor-installer", "vapor-entrypoint"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevelopmentOperation {
@@ -51,6 +52,7 @@ pub struct EcosystemBuildReport {
     pub installation_root: PathBuf,
     pub user_data_root: PathBuf,
     pub binaries: Vec<BuiltBinary>,
+    pub launch_script: PathBuf,
     pub activation_script: PathBuf,
     pub toolchain_metadata: PathBuf,
 }
@@ -66,6 +68,7 @@ pub struct DeployedBinary {
 pub struct EcosystemDeploymentReport {
     pub installation_root: PathBuf,
     pub binaries: Vec<DeployedBinary>,
+    pub launch_script: PathBuf,
     pub activation_script: PathBuf,
 }
 
@@ -106,9 +109,10 @@ pub fn build_workspace_deployment_inputs(
     let user_data_root = toolchain.user_data_root.clone();
 
     let mut binaries = Vec::new();
+    let projects = deployment_projects(workspace);
 
-    for &binary in SELF_HOST_BINARIES {
-        let target = find_binary_target(&toolchain, workspace, binary)?;
+    for &binary in DISTRIBUTION_BINARIES {
+        let target = find_binary_target(&toolchain, &projects, binary)?;
 
         build_binary(&toolchain, &target, binary)?;
 
@@ -129,12 +133,14 @@ pub fn build_workspace_deployment_inputs(
         });
     }
 
+    let launch_script = client_launch_script(workspace)?;
     let activation_script = write_activation_script(&installation_root, &toolchain)?;
 
     Ok(EcosystemBuildReport {
         installation_root,
         user_data_root,
         binaries,
+        launch_script,
         activation_script,
         toolchain_metadata,
     })
@@ -171,9 +177,20 @@ pub fn deploy_workspace(
         });
     }
 
+    let launch_script = build.installation_root.join(BIN_DIR).join(
+        build
+            .launch_script
+            .file_name()
+            .ok_or_else(|| DevelopmentError::InvalidDeploymentPath {
+                path: build.launch_script.clone(),
+            })?,
+    );
+    promote_file(&build.launch_script, &launch_script)?;
+
     Ok(EcosystemDeploymentReport {
         installation_root: build.installation_root,
         binaries,
+        launch_script,
         activation_script: build.activation_script,
     })
 }
@@ -220,6 +237,45 @@ fn run_project_operation(
     Ok(())
 }
 
+fn deployment_projects(workspace: &VaporWorkspace) -> Vec<VaporProject> {
+    let mut projects = VaporSuperworkspace::discover_from(&workspace.root)
+        .map(|superworkspace| {
+            superworkspace
+                .projects
+                .into_iter()
+                .map(|project| project.project)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|_| workspace.projects.clone());
+
+    projects.sort_by(|left, right| left.cargo_manifest_path.cmp(&right.cargo_manifest_path));
+    projects.dedup_by(|left, right| left.cargo_manifest_path == right.cargo_manifest_path);
+    projects
+}
+
+fn client_launch_script(workspace: &VaporWorkspace) -> Result<PathBuf, DevelopmentError> {
+    let client_root = workspace
+        .root
+        .ancestors()
+        .find(|root| root.join(CLIENT_DISTRIBUTION_MANIFEST_FILE_NAME).is_file())
+        .ok_or_else(|| DevelopmentError::ClientDistributionNotFound {
+            start: workspace.root.clone(),
+        })?;
+
+    let relative = if cfg!(windows) {
+        Path::new("resources/vapor/shell-scripts/windows/vapor-launch.cmd")
+    } else {
+        Path::new("resources/vapor/shell-scripts/linux/vapor-launch.sh")
+    };
+    let path = client_root.join(relative);
+
+    if !path.is_file() {
+        return Err(DevelopmentError::MissingLaunchScript { path });
+    }
+
+    Ok(path)
+}
+
 #[derive(Debug, Clone)]
 struct BinaryTarget {
     project: VaporProject,
@@ -228,12 +284,12 @@ struct BinaryTarget {
 
 fn find_binary_target(
     toolchain: &ManagedToolchain,
-    workspace: &VaporWorkspace,
+    projects: &[VaporProject],
     binary: &str,
 ) -> Result<BinaryTarget, DevelopmentError> {
     let mut matches = Vec::new();
 
-    for project in &workspace.projects {
+    for project in projects {
         let metadata = cargo_metadata(toolchain, project)?;
 
         for package in metadata.packages {
@@ -621,6 +677,14 @@ pub enum DevelopmentError {
         path: PathBuf,
     },
 
+    ClientDistributionNotFound {
+        start: PathBuf,
+    },
+
+    MissingLaunchScript {
+        path: PathBuf,
+    },
+
     InvalidDeploymentPath {
         path: PathBuf,
     },
@@ -726,6 +790,18 @@ impl fmt::Display for DevelopmentError {
                     path.display()
                 )
             }
+
+            Self::ClientDistributionNotFound { start } => write!(
+                formatter,
+                "could not find `{CLIENT_DISTRIBUTION_MANIFEST_FILE_NAME}` above Vapor Workspace `{}`",
+                start.display(),
+            ),
+
+            Self::MissingLaunchScript { path } => write!(
+                formatter,
+                "required Vapor Client launch wrapper is missing at `{}`",
+                path.display(),
+            ),
 
             Self::InvalidDeploymentPath { path } => {
                 write!(
