@@ -75,7 +75,7 @@ pub(super) fn build(
                 "Deploy_Steam.run.xml",
                 "Deploy Steam",
                 "client deploy steam",
-                true,
+                false,
             ),
             (
                 "Platform-Server",

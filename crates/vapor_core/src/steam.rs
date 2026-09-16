@@ -11,9 +11,9 @@
 //! manifests, chunking, upload, Build IDs, and branch delivery.
 
 use crate::{
-    DevelopmentError, VaporInstallation, VaporWorkspace, build_workspace_deployment_inputs,
+    DevelopmentError, VaporWorkspace, build_workspace_deployment_inputs,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::env;
 use std::ffi::OsString;
 use std::fmt;
@@ -44,10 +44,6 @@ const BIN_DIR: &str = "bin";
 
 const RUSTUP_DIR: &str = "rustup/bin";
 
-const STEAM_STATE_FILE_NAME: &str = "steam.toml";
-
-const STEAM_ACCOUNT_ENV: &str = "VAPOR_STEAM_ACCOUNT";
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct EcosystemDistributionManifest {
     pub schema: u32,
@@ -70,6 +66,9 @@ pub struct EcosystemSteamDistribution {
 
     #[serde(rename = "development-branch")]
     pub development_branch: String,
+
+    #[serde(rename = "build-account", default)]
+    pub build_account: String,
 
     pub depots: EcosystemSteamDepots,
 }
@@ -115,6 +114,7 @@ pub struct SteamDeploymentReport {
     pub output_root: PathBuf,
 
     pub app_build_script: PathBuf,
+    pub binaries: Vec<PathBuf>,
     pub depots: Vec<SteamDepotStage>,
 
     pub exit_status: ExitStatus,
@@ -124,11 +124,6 @@ pub struct SteamDeploymentReport {
 struct LoadedDistribution {
     manifest_path: PathBuf,
     manifest: EcosystemDistributionManifest,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct PersistedSteamState {
-    account: Option<String>,
 }
 
 pub fn deploy_ecosystem_to_steam(
@@ -142,9 +137,7 @@ pub fn deploy_ecosystem_to_steam(
     let build =
         build_workspace_deployment_inputs(workspace).map_err(SteamDeploymentError::Development)?;
 
-    let installation = VaporInstallation::discover().map_err(SteamDeploymentError::Installation)?;
-
-    let account = resolve_account(&installation, options.account)?;
+    let account = resolve_account(&distribution.manifest, options.account)?;
 
     let steamcmd = resolve_steamcmd(&build.installation_root, options.steamcmd.as_deref())
         .ok_or_else(|| SteamDeploymentError::SteamCmdUnavailable)?;
@@ -186,6 +179,7 @@ pub fn deploy_ecosystem_to_steam(
         output_root: stage.output_root,
 
         app_build_script: stage.app_build_script,
+        binaries: stage.binaries,
 
         depots: stage.depots,
 
@@ -199,6 +193,7 @@ struct SteamStage {
     scripts_root: PathBuf,
     output_root: PathBuf,
     app_build_script: PathBuf,
+    binaries: Vec<PathBuf>,
     depots: Vec<SteamDepotStage>,
 }
 
@@ -265,16 +260,18 @@ fn stage_distribution(
         source,
     })?;
 
+    let mut binaries = Vec::new();
+
     for binary in &build.binaries {
-        copy_required(
-            &binary.source,
-            &platform_bin_root.join(
-                binary
-                    .source
-                    .file_name()
-                    .ok_or_else(|| SteamDeploymentError::MissingInput(binary.source.clone()))?,
-            ),
-        )?;
+        let destination = platform_bin_root.join(
+            binary
+                .source
+                .file_name()
+                .ok_or_else(|| SteamDeploymentError::MissingInput(binary.source.clone()))?,
+        );
+
+        copy_required(&binary.source, &destination)?;
+        binaries.push(destination);
     }
 
     copy_required(
@@ -335,6 +332,7 @@ fn stage_distribution(
         scripts_root,
         output_root,
         app_build_script,
+        binaries,
 
         depots: vec![
             SteamDepotStage {
@@ -409,6 +407,10 @@ fn validate_distribution(
         return Err(SteamDeploymentError::MissingDevelopmentBranch);
     }
 
+    if steam.build_account.trim().is_empty() {
+        return Err(SteamDeploymentError::MissingSteamAccount);
+    }
+
     if steam.development_branch == "default" {
         return Err(SteamDeploymentError::DefaultBranchCannotBeSetLive);
     }
@@ -455,68 +457,26 @@ fn current_host_target() -> Result<&'static str, SteamDeploymentError> {
 }
 
 fn resolve_account(
-    installation: &VaporInstallation,
+    manifest: &EcosystemDistributionManifest,
     explicit: Option<String>,
 ) -> Result<String, SteamDeploymentError> {
-    if let Some(account) = explicit {
-        let account = account.trim();
+    let expected = manifest.root.steam.build_account.trim();
 
-        if account.is_empty() {
-            return Err(SteamDeploymentError::MissingSteamAccount);
-        }
-
-        persist_account(installation, account)?;
-
-        return Ok(account.to_owned());
+    if expected.is_empty() {
+        return Err(SteamDeploymentError::MissingSteamAccount);
     }
 
-    if let Some(account) = env::var_os(STEAM_ACCOUNT_ENV).filter(|value| !value.is_empty()) {
-        return Ok(account.to_string_lossy().into_owned());
-    }
-
-    let state_path = installation.state_root().join(STEAM_STATE_FILE_NAME);
-
-    if state_path.is_file() {
-        let source =
-            fs::read_to_string(&state_path).map_err(|source| SteamDeploymentError::Io {
-                path: state_path.clone(),
-                source,
-            })?;
-
-        let state: PersistedSteamState =
-            toml::from_str(&source).map_err(|error| SteamDeploymentError::InvalidSteamState {
-                path: state_path.clone(),
-                message: error.to_string(),
-            })?;
-
-        if let Some(account) = state.account
-            && !account.trim().is_empty()
-        {
-            return Ok(account);
+    if let Some(explicit) = explicit {
+        let found = explicit.trim();
+        if found != expected {
+            return Err(SteamDeploymentError::SteamAccountMismatch {
+                expected: expected.to_owned(),
+                found: found.to_owned(),
+            });
         }
     }
 
-    Err(SteamDeploymentError::MissingSteamAccount)
-}
-
-fn persist_account(
-    installation: &VaporInstallation,
-    account: &str,
-) -> Result<(), SteamDeploymentError> {
-    let state_root = installation
-        .ensure_state_root()
-        .map_err(|error| SteamDeploymentError::Installation(error))?;
-
-    let path = state_root.join(STEAM_STATE_FILE_NAME);
-
-    let source = toml::to_string_pretty(&PersistedSteamState {
-        account: Some(account.to_owned()),
-    })
-    .map_err(|error| SteamDeploymentError::EncodeSteamState {
-        message: error.to_string(),
-    })?;
-
-    fs::write(&path, source).map_err(|source| SteamDeploymentError::Io { path, source })
+    Ok(expected.to_owned())
 }
 
 fn resolve_steamcmd(installation_root: &Path, explicit: Option<&Path>) -> Option<PathBuf> {
@@ -723,9 +683,7 @@ pub enum SteamDeploymentError {
 
     MissingSteamAccount,
 
-    InvalidSteamState { path: PathBuf, message: String },
-
-    EncodeSteamState { message: String },
+    SteamAccountMismatch { expected: String, found: String },
 
     SteamCmdUnavailable,
 
@@ -825,29 +783,13 @@ impl fmt::Display for SteamDeploymentError {
             }
 
             Self::MissingSteamAccount => {
-                write!(
-                    formatter,
-                    "no Steam build account is configured; pass `--account <ACCOUNT>` once or set `{STEAM_ACCOUNT_ENV}`",
-                )
+                formatter.write_str("Vapor ecosystem distribution declares no Steam build account")
             }
 
-            Self::InvalidSteamState {
-                path,
-                message,
-            } => {
+            Self::SteamAccountMismatch { expected, found } => {
                 write!(
                     formatter,
-                    "invalid Vapor Steam state `{}`: {message}",
-                    path.display(),
-                )
-            }
-
-            Self::EncodeSteamState {
-                message,
-            } => {
-                write!(
-                    formatter,
-                    "failed to encode Vapor Steam state: {message}",
+                    "Steam build account `{found}` does not match the first-party distribution account `{expected}`",
                 )
             }
 

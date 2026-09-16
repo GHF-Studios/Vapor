@@ -4,6 +4,7 @@
 //! application CLIs expose subsets of the same underlying core operations.
 
 mod commands;
+mod interactive_terminal;
 mod platform_activity;
 
 use crate::{
@@ -151,12 +152,25 @@ fn installer_install() -> Result<(), String> {
     }
 
     println!("  note: reopen existing shells to inherit updated environment");
+    println!();
+    println!("First-party developer reconstruction:");
+    println!("  vapor source setup");
+    println!("  vapor role promote ecosystem-developer");
+    println!("  vapor source acquire first-party-all");
+    println!("  vapor installation repair");
+    println!("  note: `vapor source setup` is idempotent and install already established the canonical Superworkspace");
     Ok(())
 }
 
 fn installer_uninstall(args: UninstallArgs) -> Result<(), String> {
     let destructive = args.purge_app_external || args.purge_superworkspace;
 
+    if destructive
+        && !args.yes
+        && interactive_terminal::delegate_if_needed("Vapor · Uninstall")?
+    {
+        return Ok(());
+    }
     if destructive && !args.yes && !confirm_uninstall_purge(&args)? {
         println!("Uninstall cancelled.");
         return Ok(());
@@ -715,6 +729,10 @@ fn source_remove(selector: &str, yes: bool) -> Result<(), String> {
         return Ok(());
     }
 
+    if !yes && interactive_terminal::delegate_if_needed("Vapor · Remove Source")? {
+        return Ok(());
+    }
+
     // Validate the complete set before deleting any checkout.
     for (name, path) in &targets {
         ensure_source_checkout_safe(name, path)?;
@@ -860,6 +878,10 @@ fn source_teardown(yes: bool) -> Result<(), String> {
             superworkspace.root.display(),
             superworkspace.repositories.len()
         ));
+    }
+
+    if !yes && interactive_terminal::delegate_if_needed("Vapor · Teardown Source")? {
+        return Ok(());
     }
 
     if !yes {
@@ -1729,6 +1751,7 @@ fn client_deploy_local() -> Result<(), String> {
         println!("  {} -> {}", binary.name, binary.destination.display());
     }
 
+    println!("Launch wrapper: {}", report.launch_script.display());
     println!("Shell activation: {}", report.activation_script.display());
     println!("Source bootstrap: {}", bootstrap.display());
 
@@ -1742,6 +1765,10 @@ fn client_deploy_local() -> Result<(), String> {
 }
 
 fn client_deploy_steam(args: SteamDeployArgs) -> Result<(), String> {
+    if interactive_terminal::delegate_if_needed("Vapor · Deploy Steam")? {
+        return Ok(());
+    }
+
     let workspace = client_workspace()?;
 
     println!(
@@ -1751,6 +1778,10 @@ fn client_deploy_steam(args: SteamDeployArgs) -> Result<(), String> {
         workspace.manifest.workspace.version,
         if args.preview { " (preview)" } else { "" },
     );
+
+    if let Ok(executable) = env::current_exe() {
+        println!("  deployer: {}", executable.display());
+    }
 
     let report = deploy_ecosystem_to_steam(
         &workspace,
@@ -1769,6 +1800,12 @@ fn client_deploy_steam(args: SteamDeployArgs) -> Result<(), String> {
     println!("  account: {}", report.account);
     println!("  SteamCMD: {}", report.steamcmd.display());
     println!("  stage: {}", report.stage_root.display());
+
+    println!("  staged binaries:");
+
+    for binary in &report.binaries {
+        println!("    {}", binary.display());
+    }
 
     println!("  depots:");
 
