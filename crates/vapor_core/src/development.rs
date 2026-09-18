@@ -22,6 +22,8 @@ const DISTRIBUTION_BINARIES: &[&str] = &["vapor", "vapor-monitor", "vapor-instal
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevelopmentOperation {
+    Fmt,
+    Check,
     Build,
     Test,
 }
@@ -29,6 +31,8 @@ pub enum DevelopmentOperation {
 impl DevelopmentOperation {
     fn cargo_subcommand(self) -> &'static str {
         match self {
+            Self::Fmt => "fmt",
+            Self::Check => "check",
             Self::Build => "build",
             Self::Test => "test",
         }
