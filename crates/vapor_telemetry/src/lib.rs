@@ -195,7 +195,6 @@ fn dispatch_events(
         encoded.push(b'\n');
 
         let _ = writer.write_all(&encoded);
-        let _ = writer.flush();
 
         let Ok(mut consumers) = consumers.lock() else {
             continue;
