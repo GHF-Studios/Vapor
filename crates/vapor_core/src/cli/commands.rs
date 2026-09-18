@@ -62,6 +62,8 @@ pub(super) enum VaporCommand {
 
     Run(RunArgs),
 
+    Monitor(MonitorArgs),
+
     Source {
         #[command(subcommand)]
         command: SourceCommand,
@@ -141,6 +143,15 @@ pub(super) struct RunArgs {
     /// Convenience alias for the `profiling-memory` Run Configuration.
     #[arg(long = "profiling-memory")]
     pub(super) profiling_memory: bool,
+}
+
+#[derive(Debug, Args)]
+pub(super) struct MonitorArgs {
+    /// Tracy profiler executable or AppImage.
+    ///
+    /// When supplied, Vapor remembers this path for future `vapor monitor` calls.
+    #[arg(long, value_name = "PATH")]
+    pub(super) tracy: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]

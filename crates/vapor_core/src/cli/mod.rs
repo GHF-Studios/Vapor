@@ -31,7 +31,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -92,6 +92,8 @@ fn execute_vapor(command: VaporCommand) -> Result<(), String> {
         VaporCommand::Build => execute_workspace_operation(DevelopmentOperation::Build),
 
         VaporCommand::Run(args) => execute_run(args),
+
+        VaporCommand::Monitor(args) => execute_monitor(args),
 
         VaporCommand::Source { command } => execute_source(command),
 
@@ -355,6 +357,144 @@ fn execute_run(args: RunArgs) -> Result<(), String> {
     );
 
     run_workspace_configuration(&workspace, configuration).map_err(|error| error.to_string())
+}
+
+const TRACY_PATH_ENV: &str = "VAPOR_TRACY_PATH";
+const TRACY_PATH_FILE: &str = "tracy-profiler-path";
+
+fn execute_monitor(args: MonitorArgs) -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let user_data_root = installation.user_data_root();
+    let tracy = resolve_tracy_profiler(args.tracy.as_deref(), &user_data_root)?;
+
+    if args.tracy.is_some() {
+        remember_tracy_profiler(&user_data_root, &tracy)?;
+    }
+
+    Command::new(&tracy)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("failed to launch Tracy at `{}`: {error}", tracy.display()))?;
+
+    println!("Opened Tracy: {}", tracy.display());
+    Ok(())
+}
+
+fn resolve_tracy_profiler(
+    explicit: Option<&Path>,
+    user_data_root: &Path,
+) -> Result<PathBuf, String> {
+    if let Some(path) = explicit {
+        return tracy_candidate(path).ok_or_else(|| {
+            format!(
+                "no Tracy profiler executable found at `{}`",
+                path.display()
+            )
+        });
+    }
+
+    if let Some(path) = env::var_os(TRACY_PATH_ENV) {
+        let path = PathBuf::from(path);
+        if let Some(path) = tracy_candidate(&path) {
+            return Ok(path);
+        }
+    }
+
+    let remembered = user_data_root
+        .join("development")
+        .join(TRACY_PATH_FILE);
+    if let Ok(path) = fs::read_to_string(&remembered) {
+        let path = PathBuf::from(path.trim());
+        if let Some(path) = tracy_candidate(&path) {
+            return Ok(path);
+        }
+    }
+
+    let mut directories = vec![user_data_root.join("tools/tracy")];
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        directories.extend([
+            home.join(".local/bin"),
+            home.join("Applications"),
+            home.join("Downloads"),
+        ]);
+    }
+
+    for directory in directories {
+        if let Some(path) = tracy_candidate(&directory) {
+            return Ok(path);
+        }
+    }
+
+    if let Some(path) = find_tracy_on_path() {
+        return Ok(path);
+    }
+
+    Err(
+        "Tracy profiler not found. Run `vapor monitor --tracy /path/to/tracy-profiler` once; Vapor will remember it."
+            .to_owned(),
+    )
+}
+
+fn tracy_candidate(path: &Path) -> Option<PathBuf> {
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    if !path.is_dir() {
+        return None;
+    }
+
+    for name in [
+        "tracy-profiler",
+        "tracy-profiler.exe",
+        "Tracy",
+        "Tracy.exe",
+        "Tracy-release",
+        "Tracy-release.exe",
+    ] {
+        let candidate = path.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    let mut discovered = fs::read_dir(path)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|candidate| candidate.is_file())
+        .filter(|candidate| {
+            let name = candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            name.starts_with("tracy-profiler") || name == "tracy-release"
+        })
+        .collect::<Vec<_>>();
+    discovered.sort();
+    discovered.pop()
+}
+
+fn find_tracy_on_path() -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    for directory in env::split_paths(&path) {
+        if let Some(candidate) = tracy_candidate(&directory) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn remember_tracy_profiler(user_data_root: &Path, tracy: &Path) -> Result<(), String> {
+    let directory = user_data_root.join("development");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("failed to create `{}`: {error}", directory.display()))?;
+
+    let path = directory.join(TRACY_PATH_FILE);
+    fs::write(&path, tracy.to_string_lossy().as_bytes())
+        .map_err(|error| format!("failed to save `{}`: {error}", path.display()))
 }
 
 fn toolchain_cargo(explicit_project: Option<String>, args: Vec<OsString>) -> Result<(), String> {
