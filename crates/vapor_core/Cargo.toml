@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+vapor_telemetry = { path = "../vapor_telemetry" }
 clap = { version = "4.6.6", features = ["derive"] }
 pathdiff = "0.2.3"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }

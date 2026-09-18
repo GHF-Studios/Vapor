@@ -55,6 +55,13 @@ pub(super) enum VaporCommand {
         command: ToolchainCommand,
     },
 
+    Fmt,
+    Check,
+    Test,
+    Build,
+
+    Run(RunArgs),
+
     Source {
         #[command(subcommand)]
         command: SourceCommand,
@@ -119,6 +126,21 @@ pub(super) enum VaporCommand {
         #[command(subcommand)]
         command: LibraryCommand,
     },
+}
+
+#[derive(Debug, Args)]
+pub(super) struct RunArgs {
+    /// Named Workspace Run Configuration. Defaults to `default`.
+    #[arg(value_name = "CONFIGURATION")]
+    pub(super) configuration: Option<String>,
+
+    /// Convenience alias for the `profiling` Run Configuration.
+    #[arg(long)]
+    pub(super) profiling: bool,
+
+    /// Convenience alias for the `profiling-memory` Run Configuration.
+    #[arg(long = "profiling-memory")]
+    pub(super) profiling_memory: bool,
 }
 
 #[derive(Debug, Subcommand)]

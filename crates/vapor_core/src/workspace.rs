@@ -5,7 +5,7 @@
 
 use semver::Version;
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt;
 use std::fs;
@@ -45,6 +45,41 @@ pub struct WorkspaceProjectSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct RunConfigurationSpec {
+    pub name: String,
+    pub extends: Option<String>,
+    pub project: Option<String>,
+    pub package: Option<String>,
+    pub binary: Option<String>,
+    pub profile: Option<String>,
+
+    #[serde(default)]
+    pub features: Vec<String>,
+
+    #[serde(default)]
+    pub arguments: Vec<String>,
+
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+
+    pub telemetry: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunConfiguration {
+    pub name: String,
+    pub project: Option<String>,
+    pub package: Option<String>,
+    pub binary: Option<String>,
+    pub profile: Option<String>,
+    pub features: Vec<String>,
+    pub arguments: Vec<String>,
+    pub environment: BTreeMap<String, String>,
+    pub telemetry: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkspaceManifest {
     pub schema: u32,
     pub workspace: WorkspaceHeader,
@@ -52,6 +87,9 @@ pub struct WorkspaceManifest {
 
     #[serde(default, rename = "project")]
     pub projects: Vec<WorkspaceProjectSpec>,
+
+    #[serde(default, rename = "run")]
+    pub run_configurations: Vec<RunConfigurationSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +153,21 @@ impl VaporWorkspace {
 
         let mut names = BTreeSet::new();
         let mut projects = Vec::with_capacity(manifest.projects.len());
+        let mut run_names = BTreeSet::new();
+
+        for run in &manifest.run_configurations {
+            if !valid_project_name(&run.name) {
+                return Err(WorkspaceError::InvalidRunConfigurationName {
+                    name: run.name.clone(),
+                });
+            }
+
+            if !run_names.insert(run.name.clone()) {
+                return Err(WorkspaceError::DuplicateRunConfigurationName {
+                    name: run.name.clone(),
+                });
+            }
+        }
 
         for project in &manifest.projects {
             if !valid_project_name(&project.name) {
@@ -177,6 +230,73 @@ impl VaporWorkspace {
     pub fn project(&self, name: &str) -> Option<&VaporProject> {
         self.projects.iter().find(|project| project.name == name)
     }
+
+    pub fn run_configuration(
+        &self,
+        name: &str,
+    ) -> Result<RunConfiguration, RunConfigurationError> {
+        self.resolve_run_configuration(name, &mut BTreeSet::new())
+    }
+
+    fn resolve_run_configuration(
+        &self,
+        name: &str,
+        resolving: &mut BTreeSet<String>,
+    ) -> Result<RunConfiguration, RunConfigurationError> {
+        let spec = self
+            .manifest
+            .run_configurations
+            .iter()
+            .find(|configuration| configuration.name == name)
+            .ok_or_else(|| RunConfigurationError::Unknown {
+                name: name.to_owned(),
+            })?;
+
+        if !resolving.insert(name.to_owned()) {
+            return Err(RunConfigurationError::InheritanceCycle {
+                name: name.to_owned(),
+            });
+        }
+
+        let mut resolved = if let Some(parent) = spec.extends.as_deref() {
+            self.resolve_run_configuration(parent, resolving)?
+        } else {
+            RunConfiguration {
+                name: name.to_owned(),
+                project: None,
+                package: None,
+                binary: None,
+                profile: None,
+                features: Vec::new(),
+                arguments: Vec::new(),
+                environment: BTreeMap::new(),
+                telemetry: true,
+            }
+        };
+
+        resolved.name = spec.name.clone();
+        resolved.project = spec.project.clone().or(resolved.project);
+        resolved.package = spec.package.clone().or(resolved.package);
+        resolved.binary = spec.binary.clone().or(resolved.binary);
+        resolved.profile = spec.profile.clone().or(resolved.profile);
+
+        for feature in &spec.features {
+            if !resolved.features.contains(feature) {
+                resolved.features.push(feature.clone());
+            }
+        }
+
+        resolved.arguments.extend(spec.arguments.iter().cloned());
+        resolved.environment.extend(spec.environment.clone());
+
+        if let Some(telemetry) = spec.telemetry {
+            resolved.telemetry = telemetry;
+        }
+
+        resolving.remove(name);
+
+        Ok(resolved)
+    }
 }
 
 fn find_workspace_root(start: &Path) -> Option<PathBuf> {
@@ -210,6 +330,10 @@ pub enum WorkspaceError {
     InvalidProjectName { name: String },
 
     DuplicateProjectName { name: String },
+
+    InvalidRunConfigurationName { name: String },
+
+    DuplicateRunConfigurationName { name: String },
 
     AbsoluteProjectPath { name: String, path: PathBuf },
 
@@ -270,6 +394,20 @@ impl fmt::Display for WorkspaceError {
                 )
             }
 
+            Self::InvalidRunConfigurationName { name } => {
+                write!(
+                    formatter,
+                    "invalid Vapor Run Configuration name `{name}`; use ASCII letters, digits, `.`, `-`, or `_`"
+                )
+            }
+
+            Self::DuplicateRunConfigurationName { name } => {
+                write!(
+                    formatter,
+                    "Vapor Workspace declares Run Configuration `{name}` more than once"
+                )
+            }
+
             Self::AbsoluteProjectPath { name, path } => {
                 write!(
                     formatter,
@@ -306,3 +444,31 @@ impl std::error::Error for WorkspaceError {
         }
     }
 }
+
+#[derive(Debug)]
+pub enum RunConfigurationError {
+    Unknown { name: String },
+    InheritanceCycle { name: String },
+}
+
+impl fmt::Display for RunConfigurationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown { name } => {
+                write!(
+                    formatter,
+                    "Vapor Workspace declares no Run Configuration `{name}`"
+                )
+            }
+
+            Self::InheritanceCycle { name } => {
+                write!(
+                    formatter,
+                    "Vapor Run Configuration inheritance contains a cycle at `{name}`"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RunConfigurationError {}

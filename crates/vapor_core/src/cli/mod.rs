@@ -18,8 +18,8 @@ use crate::{
     git_available, inspect_local_cargo_package, install_installation, promote_role,
     reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
     repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
-    resolve_source_context, role_status, run_cargo_realization, run_workspace_operation,
-    source_state, uninstall_installation, verify_local_library_cargo_dependencies,
+    resolve_source_context, role_status, run_cargo_realization, run_workspace_configuration,
+    run_workspace_operation, source_state, uninstall_installation, verify_local_library_cargo_dependencies,
 };
 use crate::install::ensure_canonical_superworkspace;
 use clap::Parser;
@@ -82,6 +82,16 @@ fn execute_vapor(command: VaporCommand) -> Result<(), String> {
         VaporCommand::Authority { command } => execute_authority(command),
 
         VaporCommand::Toolchain { command } => execute_toolchain(command),
+
+        VaporCommand::Fmt => execute_workspace_operation(DevelopmentOperation::Fmt),
+
+        VaporCommand::Check => execute_workspace_operation(DevelopmentOperation::Check),
+
+        VaporCommand::Test => execute_workspace_operation(DevelopmentOperation::Test),
+
+        VaporCommand::Build => execute_workspace_operation(DevelopmentOperation::Build),
+
+        VaporCommand::Run(args) => execute_run(args),
 
         VaporCommand::Source { command } => execute_source(command),
 
@@ -299,6 +309,52 @@ fn execute_toolchain(command: ToolchainCommand) -> Result<(), String> {
 
         ToolchainCommand::Cargo { project, args } => toolchain_cargo(project, args),
     }
+}
+
+fn execute_workspace_operation(operation: DevelopmentOperation) -> Result<(), String> {
+    let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
+    println!(
+        "{} {}/{}...",
+        match operation {
+            DevelopmentOperation::Fmt => "Formatting",
+            DevelopmentOperation::Check => "Checking",
+            DevelopmentOperation::Test => "Testing",
+            DevelopmentOperation::Build => "Building",
+        },
+        workspace.manifest.workspace.organization,
+        workspace.manifest.workspace.name,
+    );
+    run_workspace_operation(&workspace, operation).map_err(|error| error.to_string())
+}
+
+fn execute_run(args: RunArgs) -> Result<(), String> {
+    let selected = usize::from(args.configuration.is_some())
+        + usize::from(args.profiling)
+        + usize::from(args.profiling_memory);
+
+    if selected > 1 {
+        return Err(
+            "choose one Run Configuration selector: positional CONFIGURATION, --profiling, or --profiling-memory"
+                .to_owned(),
+        );
+    }
+
+    let configuration = if args.profiling_memory {
+        "profiling-memory"
+    } else if args.profiling {
+        "profiling"
+    } else {
+        args.configuration.as_deref().unwrap_or("default")
+    };
+
+    let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
+
+    println!(
+        "Running {}/{} with `{configuration}`...",
+        workspace.manifest.workspace.organization, workspace.manifest.workspace.name,
+    );
+
+    run_workspace_configuration(&workspace, configuration).map_err(|error| error.to_string())
 }
 
 fn toolchain_cargo(explicit_project: Option<String>, args: Vec<OsString>) -> Result<(), String> {
@@ -1825,6 +1881,8 @@ fn run_client_operation(operation: DevelopmentOperation) -> Result<(), String> {
     let workspace = client_workspace()?;
 
     let verb = match operation {
+        DevelopmentOperation::Fmt => "Formatting",
+        DevelopmentOperation::Check => "Checking",
         DevelopmentOperation::Build => "Building",
         DevelopmentOperation::Test => "Testing",
     };
@@ -1839,6 +1897,8 @@ fn run_client_operation(operation: DevelopmentOperation) -> Result<(), String> {
     run_workspace_operation(&workspace, operation).map_err(|error| error.to_string())?;
 
     let completed = match operation {
+        DevelopmentOperation::Fmt => "Formatted",
+        DevelopmentOperation::Check => "Checked",
         DevelopmentOperation::Build => "Built",
         DevelopmentOperation::Test => "Tested",
     };

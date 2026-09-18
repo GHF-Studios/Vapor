@@ -17,6 +17,7 @@ pub mod maintenance;
 pub mod manifest;
 pub mod registry;
 pub mod resolution;
+pub mod run;
 pub mod role;
 pub mod source;
 pub mod steam;
@@ -84,6 +85,11 @@ pub use resolution::{
     resolve_local_packagepack, validate_resolved_content_graph,
 };
 
+pub use run::{
+    ActiveDevelopmentSession, DevelopmentRunError, active_development_session,
+    run_workspace_configuration,
+};
+
 pub use role::{
     ParseVaporRoleError, RoleError, RoleStatus, RoleTransitionReport, VaporRole, demote_role,
     git_available, installed_role, promote_role, role_status,
@@ -109,6 +115,7 @@ pub use toolchain::{ManagedToolchain, ToolchainError};
 pub use uninstall::{UninstallError, UninstallOptions, UninstallReport, uninstall_installation};
 
 pub use workspace::{
-    ToolchainPin, VaporProject, VaporWorkspace, WORKSPACE_MANIFEST_FILE_NAME, WorkspaceError,
-    WorkspaceHeader, WorkspaceManifest, WorkspaceProjectSpec,
+    RunConfiguration, RunConfigurationError, RunConfigurationSpec, ToolchainPin, VaporProject,
+    VaporWorkspace, WORKSPACE_MANIFEST_FILE_NAME, WorkspaceError, WorkspaceHeader,
+    WorkspaceManifest, WorkspaceProjectSpec,
 };

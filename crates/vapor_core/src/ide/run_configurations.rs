@@ -1,3 +1,4 @@
+use crate::VaporWorkspace;
 use super::xml_escape;
 use serde::Deserialize;
 use std::fs;
@@ -131,6 +132,8 @@ pub(super) fn build(
             ));
         }
 
+        configurations.extend(workspace_run_configurations(project_root, &run_root, &vapor));
+
         if let Some(loo_cast_root) = child_named(project_root, "Loo-Cast") {
             let working_directory = project_path(project_root, &loo_cast_root);
             let loo_cast_run_root = run_root.join("Loo-Cast");
@@ -192,6 +195,64 @@ pub(super) fn obsolete(project_root: &Path) -> Vec<PathBuf> {
 
     obsolete.sort();
     obsolete
+}
+
+#[cfg(not(windows))]
+fn workspace_run_configurations(
+    project_root: &Path,
+    run_root: &Path,
+    vapor: &Path,
+) -> Vec<(PathBuf, String)> {
+    let mut roots = vec![project_root.to_path_buf()];
+
+    if let Ok(entries) = fs::read_dir(project_root) {
+        roots.extend(
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir() && path.join("Workspace.vapor.toml").is_file()),
+        );
+    }
+
+    roots.sort();
+    roots.dedup();
+
+    let mut configurations = Vec::new();
+
+    for root in roots {
+        let Ok(workspace) = VaporWorkspace::load(&root) else {
+            continue;
+        };
+
+        if workspace.manifest.run_configurations.is_empty() {
+            continue;
+        }
+
+        let workspace_name = title(&workspace.manifest.workspace.name);
+        let folder = format!("Vapor · {workspace_name} · Run");
+        let working_directory = project_path(project_root, &workspace.root);
+
+        for configuration in &workspace.manifest.run_configurations {
+            let arguments = format!("run {}", shell_quote(&configuration.name));
+
+            configurations.push((
+                run_root
+                    .join("Run")
+                    .join(file_id(&workspace.manifest.workspace.name))
+                    .join(format!("{}.run.xml", file_id(&configuration.name))),
+                shell_configuration_at(
+                    &title(&configuration.name),
+                    &folder,
+                    vapor,
+                    &arguments,
+                    &working_directory,
+                    true,
+                ),
+            ));
+        }
+    }
+
+    configurations
 }
 
 #[cfg(not(windows))]

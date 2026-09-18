@@ -1213,11 +1213,30 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "vapor_telemetry",
 ]
 
 [[package]]
 name = "vapor_macros"
 version = "0.5.0"
+
+[[package]]
+name = "vapor_monitor"
+version = "0.5.0"
+dependencies = [
+ "clap",
+ "serde_json",
+ "vapor_core",
+ "vapor_telemetry",
+]
+
+[[package]]
+name = "vapor_telemetry"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "want"

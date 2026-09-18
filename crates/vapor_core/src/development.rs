@@ -18,7 +18,7 @@ const DEV_PROFILE_DIR: &str = "debug";
 const BIN_DIR: &str = "bin";
 const CLIENT_DISTRIBUTION_MANIFEST_FILE_NAME: &str = "Vapor-Client.vapor.toml";
 
-const DISTRIBUTION_BINARIES: &[&str] = &["vapor", "vapor-installer", "vapor-entrypoint"];
+const DISTRIBUTION_BINARIES: &[&str] = &["vapor", "vapor-monitor", "vapor-installer", "vapor-entrypoint"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevelopmentOperation {
