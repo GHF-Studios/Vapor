@@ -487,20 +487,13 @@ struct RustPackage {
 
 impl RustPackage {
     fn load(content: &LocalContent) -> Result<Self, CargoRealizationError> {
-        let manifest_path = content.root.join("Cargo.toml");
-
-        let manifest: CargoManifest = toml::from_str(&read(&manifest_path)?).map_err(|error| {
-            CargoRealizationError::InvalidCargoManifest {
-                path: manifest_path.clone(),
-                message: error.to_string(),
-            }
-        })?;
+        let package = inspect_local_cargo_package(content)?;
 
         let root =
             fs::canonicalize(&content.root).map_err(|error| io_error(&content.root, error))?;
 
         Ok(Self {
-            name: manifest.package.name,
+            name: package.name,
             root,
             version: content.manifest.content.version.clone(),
         })
@@ -514,16 +507,6 @@ impl RustPackage {
             toml_string(format!("={}", self.version)),
         )
     }
-}
-
-#[derive(Deserialize)]
-struct CargoManifest {
-    package: CargoPackage,
-}
-
-#[derive(Deserialize)]
-struct CargoPackage {
-    name: String,
 }
 
 fn local<'a>(
@@ -594,10 +577,7 @@ pub enum CargoRealizationError {
         count: usize,
     },
 
-    InvalidCargoManifest {
-        path: PathBuf,
-        message: String,
-    },
+    CargoInspection(CargoInspectionError),
 
     Toolchain(ToolchainError),
 
@@ -610,6 +590,12 @@ pub enum CargoRealizationError {
         operation: &'static str,
         status: ExitStatus,
     },
+}
+
+impl From<CargoInspectionError> for CargoRealizationError {
+    fn from(error: CargoInspectionError) -> Self {
+        Self::CargoInspection(error)
+    }
 }
 
 impl From<ToolchainError> for CargoRealizationError {
@@ -635,13 +621,7 @@ impl fmt::Display for CargoRealizationError {
                 )
             }
 
-            Self::InvalidCargoManifest { path, message } => {
-                write!(
-                    formatter,
-                    "invalid Cargo manifest `{}`: {message}",
-                    path.display()
-                )
-            }
+            Self::CargoInspection(error) => write!(formatter, "{error}"),
 
             Self::Toolchain(error) => {
                 write!(formatter, "{error}")
@@ -661,6 +641,7 @@ impl fmt::Display for CargoRealizationError {
 impl std::error::Error for CargoRealizationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::CargoInspection(error) => Some(error),
             Self::Toolchain(error) => Some(error),
             Self::Io { source, .. } => Some(source),
             _ => None,
