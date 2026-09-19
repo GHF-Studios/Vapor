@@ -423,7 +423,6 @@ fn run_cargo(
 struct AppPackages {
     engine: RustPackage,
     game: RustPackage,
-    game_mod: RustPackage,
 }
 
 impl AppPackages {
@@ -431,24 +430,24 @@ impl AppPackages {
         catalog: &LocalCatalog,
         composition: &ResolvedComposition,
     ) -> Result<Self, CargoRealizationError> {
-        let game_mods: Vec<_> = composition
+        let mod_count = composition
             .nodes
             .values()
-            .filter(|node| node.kind == ContentKind::GameMod)
-            .collect();
+            .filter(|node| {
+                matches!(
+                    node.kind,
+                    ContentKind::EngineMod | ContentKind::GameMod | ContentKind::ExtensionMod
+                )
+            })
+            .count();
 
-        if game_mods.len() != 1 {
-            return Err(CargoRealizationError::UnsupportedGameModCount {
-                count: game_mods.len(),
-            });
+        if mod_count != 0 {
+            return Err(CargoRealizationError::UnsupportedModCount { count: mod_count });
         }
 
         Ok(Self {
             engine: RustPackage::load(local(catalog, &composition.effective_engine)?)?,
-
             game: RustPackage::load(local(catalog, &composition.effective_game)?)?,
-
-            game_mod: RustPackage::load(local(catalog, &game_mods[0].identity)?)?,
         })
     }
 
@@ -471,13 +470,11 @@ path = "src/main.rs"
 [dependencies]
 engine = {engine}
 game = {game}
-game_mod = {game_mod}
 
 [workspace]
 "#,
             engine = self.engine.dependency(),
             game = self.game.dependency(),
-            game_mod = self.game_mod.dependency(),
         )
     }
 }
@@ -578,7 +575,6 @@ const GENERATED_LIBRARY: &str = r#"//! Generated static Vapor App Composition.
 pub fn run() {
     engine::run(|app| {
         game::install(app);
-        game_mod::install(app);
     });
 }
 "#;
@@ -594,7 +590,7 @@ pub enum CargoRealizationError {
         identity: ContentVersionId,
     },
 
-    UnsupportedGameModCount {
+    UnsupportedModCount {
         count: usize,
     },
 
@@ -632,10 +628,10 @@ impl fmt::Display for CargoRealizationError {
                 )
             }
 
-            Self::UnsupportedGameModCount { count } => {
+            Self::UnsupportedModCount { count } => {
                 write!(
                     formatter,
-                    "Vertical Slice 0 requires exactly one Game Mod, found {count}"
+                    "static Cargo realization does not support Mods yet, but the resolved composition contains {count}"
                 )
             }
 
