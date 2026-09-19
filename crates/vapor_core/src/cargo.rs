@@ -380,6 +380,8 @@ pub fn generate_local_cargo_realization(
 
     write(&source.join("main.rs"), GENERATED_MAIN)?;
 
+    packages.seed_shared_workspace_lockfile(&root)?;
+
     Ok(CargoRealization {
         root,
         manifest_path,
@@ -477,11 +479,34 @@ game = {game}
             game = self.game.dependency(),
         )
     }
+
+    fn seed_shared_workspace_lockfile(
+        &self,
+        realization_root: &Path,
+    ) -> Result<(), CargoRealizationError> {
+        if self.engine.workspace_root != self.game.workspace_root {
+            return Ok(());
+        }
+
+        let source = self.engine.workspace_root.join("Cargo.lock");
+
+        if !source.is_file() {
+            return Ok(());
+        }
+
+        let destination = realization_root.join("Cargo.lock");
+
+        fs::copy(&source, &destination)
+            .map_err(|error| io_error(&destination, error))?;
+
+        Ok(())
+    }
 }
 
 struct RustPackage {
     name: String,
     root: PathBuf,
+    workspace_root: PathBuf,
     version: Version,
 }
 
@@ -492,9 +517,13 @@ impl RustPackage {
         let root =
             fs::canonicalize(&content.root).map_err(|error| io_error(&content.root, error))?;
 
+        let workspace_root = fs::canonicalize(&package.workspace_root)
+            .map_err(|error| io_error(&package.workspace_root, error))?;
+
         Ok(Self {
             name: package.name,
             root,
+            workspace_root,
             version: content.manifest.content.version.clone(),
         })
     }
