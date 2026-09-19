@@ -84,10 +84,15 @@ impl MonitorApp {
         if self.configured_style {
             return;
         }
-        let mut style = (*ctx.style()).clone();
-        style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-        style.spacing.button_padding = egui::vec2(10.0, 5.0);
-        ctx.set_style(style);
+        let mut dark_style = (*ctx.style_of(egui::Theme::Dark)).clone();
+        dark_style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+        dark_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+        ctx.set_style_of(egui::Theme::Dark, dark_style);
+
+        let mut light_style = (*ctx.style_of(egui::Theme::Light)).clone();
+        light_style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+        light_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+        ctx.set_style_of(egui::Theme::Light, light_style);
         self.configured_style = true;
     }
 
