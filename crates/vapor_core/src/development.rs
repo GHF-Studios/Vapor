@@ -26,6 +26,7 @@ pub enum DevelopmentOperation {
     Check,
     Build,
     Test,
+    Clean,
 }
 
 impl DevelopmentOperation {
@@ -35,6 +36,7 @@ impl DevelopmentOperation {
             Self::Check => "check",
             Self::Build => "build",
             Self::Test => "test",
+            Self::Clean => "clean",
         }
     }
 }
@@ -213,6 +215,20 @@ fn run_project_operation(
     operation: DevelopmentOperation,
 ) -> Result<(), DevelopmentError> {
     let target_dir = development_target_dir(toolchain, project);
+
+    // Development targets are Vapor-owned disposable state. Clean them
+    // directly rather than asking Cargo to infer a target directory from the
+    // authored Workspace. This is both cheaper and exactly matches `vapor run`.
+    if operation == DevelopmentOperation::Clean {
+        return match fs::remove_dir_all(&target_dir) {
+            Ok(()) => Ok(()),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(DevelopmentError::Io {
+                path: target_dir,
+                source,
+            }),
+        };
+    }
 
     let status = toolchain
         .cargo_command()

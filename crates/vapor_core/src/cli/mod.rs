@@ -91,6 +91,8 @@ fn execute_vapor(command: VaporCommand) -> Result<(), String> {
 
         VaporCommand::Build => execute_workspace_operation(DevelopmentOperation::Build),
 
+        VaporCommand::Clean => execute_workspace_operation(DevelopmentOperation::Clean),
+
         VaporCommand::Run(args) => execute_run(args),
 
         VaporCommand::Monitor(args) => execute_monitor(args),
@@ -322,6 +324,7 @@ fn execute_workspace_operation(operation: DevelopmentOperation) -> Result<(), St
             DevelopmentOperation::Check => "Checking",
             DevelopmentOperation::Test => "Testing",
             DevelopmentOperation::Build => "Building",
+            DevelopmentOperation::Clean => "Cleaning",
         },
         workspace.manifest.workspace.organization,
         workspace.manifest.workspace.name,
@@ -509,7 +512,9 @@ fn toolchain_cargo(explicit_project: Option<String>, args: Vec<OsString>) -> Res
     command.args(&args);
 
     if let Some(project) = &project {
-        command.current_dir(&project.root);
+        command
+            .current_dir(&project.root)
+            .env("CARGO_TARGET_DIR", development_target_dir(&toolchain, project));
     }
 
     let status = command.status().map_err(|error| {
@@ -2020,11 +2025,17 @@ fn client_deploy_steam(args: SteamDeployArgs) -> Result<(), String> {
 fn run_client_operation(operation: DevelopmentOperation) -> Result<(), String> {
     let workspace = client_workspace()?;
 
-    let verb = match operation {
-        DevelopmentOperation::Fmt => "Formatting",
-        DevelopmentOperation::Check => "Checking",
-        DevelopmentOperation::Build => "Building",
-        DevelopmentOperation::Test => "Testing",
+    // The Client command surface currently exposes only build/test. Keep that
+    // domain explicit instead of silently inheriting every Workspace operation
+    // added to DevelopmentOperation.
+    let (verb, completed) = match operation {
+        DevelopmentOperation::Build => ("Building", "Built"),
+        DevelopmentOperation::Test => ("Testing", "Tested"),
+        unsupported => {
+            return Err(format!(
+                "Vapor Client does not expose development operation `{unsupported}`"
+            ));
+        }
     };
 
     println!(
@@ -2035,13 +2046,6 @@ fn run_client_operation(operation: DevelopmentOperation) -> Result<(), String> {
     );
 
     run_workspace_operation(&workspace, operation).map_err(|error| error.to_string())?;
-
-    let completed = match operation {
-        DevelopmentOperation::Fmt => "Formatted",
-        DevelopmentOperation::Check => "Checked",
-        DevelopmentOperation::Build => "Built",
-        DevelopmentOperation::Test => "Tested",
-    };
 
     println!(
         "{completed} Vapor Client {}/{}",

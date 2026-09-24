@@ -59,6 +59,8 @@ pub(super) enum VaporCommand {
     Check,
     Test,
     Build,
+    /// Remove Vapor-managed build outputs for the current Workspace.
+    Clean,
 
     Run(RunArgs),
 
@@ -240,6 +242,9 @@ pub(super) enum ToolchainCommand {
     Repair,
 
     /// Run Cargo from the active Vapor Installation's managed Rust toolchain.
+    ///
+    /// When a Vapor Project is resolved, Cargo uses the same Installation-owned
+    /// development target directory as `vapor run`, `build`, `check` and `test`.
     Cargo {
         /// Explicit Vapor Project to use as Cargo's execution context.
         ///
