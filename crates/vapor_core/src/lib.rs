@@ -8,12 +8,14 @@ pub mod cli;
 pub mod content;
 pub mod development;
 pub mod ecosystem;
+pub mod host;
 pub mod ide;
 pub mod identity;
 pub mod install;
 pub mod installation;
 pub mod local;
 pub mod maintenance;
+pub mod managed_tool;
 pub mod manifest;
 pub mod registry;
 pub mod resolution;
@@ -23,6 +25,7 @@ pub mod source;
 pub mod steam;
 pub mod superworkspace;
 pub mod toolchain;
+pub mod tracy;
 pub mod uninstall;
 pub mod workspace;
 
@@ -59,6 +62,11 @@ pub use ide::{
 
 pub use identity::{ContentVersionId, ParseVaporIdError, VaporId};
 
+pub use host::{
+    DisplayServer, HostAbi, HostArchitecture, HostCapability, HostEnvironment,
+    HostEnvironmentError, HostOperatingSystem, HostTarget,
+};
+
 pub use install::{InstallError, InstallReport, install_installation};
 
 pub use installation::{
@@ -73,6 +81,12 @@ pub use local::{
 pub use maintenance::{
     MaintenanceError, MaintenanceIssue, MaintenanceRepairReport, MaintenanceStatus,
     diagnose_managed_state, reconcile_existing_development_environment, repair_managed_state,
+};
+
+pub use managed_tool::{
+    ManagedToolError, ManagedToolRequest, ReleaseAssetStatus,
+    download_verified_github_release_asset, find_executable, find_executable_on_path,
+    github_release_client,
 };
 
 pub use manifest::{ContentHeader, ContentManifest, ManifestError, parse_content_manifest};
@@ -111,6 +125,11 @@ pub use superworkspace::{
 };
 
 pub use toolchain::{ManagedToolchain, ToolchainError};
+
+pub use tracy::{
+    ResolvedTracyProfiler, TRACY_PROFILER_VERSION, TracyError, TracyProfilerOrigin,
+    remember_tracy_profiler, resolve_tracy_profiler,
+};
 
 pub use uninstall::{UninstallError, UninstallOptions, UninstallReport, uninstall_installation};
 

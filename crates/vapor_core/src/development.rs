@@ -622,21 +622,9 @@ fn executable_name(stem: &str) -> String {
 }
 
 fn current_host_target() -> Result<&'static str, DevelopmentError> {
-    if cfg!(all(
-        target_arch = "x86_64",
-        target_os = "linux",
-        target_env = "gnu"
-    )) {
-        Ok("x86_64-unknown-linux-gnu")
-    } else if cfg!(all(
-        target_arch = "x86_64",
-        target_os = "windows",
-        target_env = "msvc"
-    )) {
-        Ok("x86_64-pc-windows-msvc")
-    } else {
-        Err(DevelopmentError::UnsupportedHost)
-    }
+    crate::HostTarget::current()
+        .map(|target| target.triple())
+        .map_err(|_| DevelopmentError::UnsupportedHost)
 }
 
 #[derive(Debug)]

@@ -381,21 +381,9 @@ fn executable_name(stem: &str) -> String {
 }
 
 fn current_host_triple() -> Result<&'static str, ToolchainError> {
-    if cfg!(all(
-        target_arch = "x86_64",
-        target_os = "linux",
-        target_env = "gnu"
-    )) {
-        Ok("x86_64-unknown-linux-gnu")
-    } else if cfg!(all(
-        target_arch = "x86_64",
-        target_os = "windows",
-        target_env = "msvc"
-    )) {
-        Ok("x86_64-pc-windows-msvc")
-    } else {
-        Err(ToolchainError::UnsupportedHost)
-    }
+    crate::HostTarget::current()
+        .map(|target| target.triple())
+        .map_err(|_| ToolchainError::UnsupportedHost)
 }
 
 #[derive(Debug)]

@@ -1,0 +1,175 @@
+# managed-tracy-artifacts-v1
+name: Managed Tracy artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tracy_version:
+        description: Tracy version to build
+        required: true
+        default: "0.14.0"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/managed-tracy.yml"
+
+permissions:
+  contents: read
+
+env:
+  TRACY_VERSION: ${{ inputs.tracy_version || '0.14.0' }}
+  TRACY_COMMIT_0_14_0: 099df3de3dc37eca4712c06b8320fb9c53596edd
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.display }}
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    strategy:
+      matrix:
+        display: [x11, wayland]
+    steps:
+      - name: Install build dependencies
+        run: >-
+          pacman -Syu --noconfirm &&
+          pacman -S --noconfirm --needed
+          cmake git freetype2 debuginfod dbus libglvnd libxkbcommon
+          wayland wayland-protocols
+          libx11 libxrandr libxinerama libxcursor libxi
+          nodejs lua clang sdl3_image python-jinja
+
+      - name: Resolve pinned upstream commit
+        shell: bash
+        run: |
+          if [[ "$TRACY_VERSION" != "0.14.0" ]]; then
+            echo "This workflow currently has no reviewed commit pin for Tracy $TRACY_VERSION." >&2
+            exit 1
+          fi
+          echo "TRACY_COMMIT=$TRACY_COMMIT_0_14_0" >> "$GITHUB_ENV"
+
+      - name: Checkout Tracy
+        uses: actions/checkout@v4
+        with:
+          repository: wolfpld/tracy
+          ref: ${{ env.TRACY_COMMIT_0_14_0 }}
+          path: tracy
+
+      - name: Configure
+        shell: bash
+        run: |
+          extra=()
+          if [[ "${{ matrix.display }}" == "x11" ]]; then
+            extra+=("-DLEGACY=ON")
+          else
+            extra+=("-DLEGACY=OFF")
+          fi
+          cmake \
+            -B tracy/profiler/build \
+            -S tracy/profiler \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGIT_REV="$TRACY_COMMIT" \
+            "${extra[@]}"
+
+      - name: Build
+        run: cmake --build tracy/profiler/build --parallel 2
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          asset="tracy-profiler-${TRACY_VERSION}-x86_64-unknown-linux-gnu-${{ matrix.display }}"
+          cp tracy/profiler/build/tracy-profiler "dist/$asset"
+          strip "dist/$asset"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracy-linux-${{ matrix.display }}
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows MSVC
+    runs-on: windows-latest
+    steps:
+      - name: Resolve pinned upstream commit
+        shell: pwsh
+        run: |
+          if ($env:TRACY_VERSION -ne "0.14.0") {
+            throw "This workflow currently has no reviewed commit pin for Tracy $env:TRACY_VERSION."
+          }
+          "TRACY_COMMIT=$env:TRACY_COMMIT_0_14_0" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Checkout Tracy
+        uses: actions/checkout@v4
+        with:
+          repository: wolfpld/tracy
+          ref: ${{ env.TRACY_COMMIT_0_14_0 }}
+          path: tracy
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          cmake -B tracy/profiler/build -S tracy/profiler -DCMAKE_BUILD_TYPE=Release "-DGIT_REV=$env:TRACY_COMMIT"
+          cmake --build tracy/profiler/build --parallel 2 --config Release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $asset = "tracy-profiler-$env:TRACY_VERSION-x86_64-pc-windows-msvc-native.exe"
+          Copy-Item tracy/profiler/build/Release/tracy-profiler.exe "dist/$asset"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracy-windows
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish managed artifacts
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve pinned upstream commit
+        shell: bash
+        run: |
+          if [[ "$TRACY_VERSION" != "0.14.0" ]]; then
+            echo "This workflow currently has no reviewed commit pin for Tracy $TRACY_VERSION." >&2
+            exit 1
+          fi
+          echo "TRACY_COMMIT=$TRACY_COMMIT_0_14_0" >> "$GITHUB_ENV"
+
+      - name: Checkout Tracy license
+        uses: actions/checkout@v4
+        with:
+          repository: wolfpld/tracy
+          ref: ${{ env.TRACY_COMMIT_0_14_0 }}
+          path: tracy
+
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: tracy-*
+          path: dist
+          merge-multiple: true
+
+      - name: Add license notice
+        shell: bash
+        run: cp tracy/LICENSE "dist/tracy-license-${TRACY_VERSION}.txt"
+
+      - name: Create or update release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="managed-tracy-v${TRACY_VERSION}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "Managed Tracy ${TRACY_VERSION}" \
+              --notes "Vapor-managed Tracy profiler artifacts built from upstream commit ${TRACY_COMMIT}. Tracy is redistributed under its BSD-3-Clause license, included as a release asset."
+          fi
+          gh release upload "$tag" dist/* --clobber
