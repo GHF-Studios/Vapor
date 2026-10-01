@@ -5,9 +5,9 @@ use std::time::Duration;
 use vapor_core::active_development_session;
 use vapor_telemetry::TelemetryConsumer;
 
-use crate::model::{MonitorMessage, SessionInfo};
+use crate::model::{ProfileMessage, SessionInfo};
 
-pub fn spawn_connection_worker(explicit_address: Option<String>, sender: Sender<MonitorMessage>) {
+pub fn spawn_connection_worker(explicit_address: Option<String>, sender: Sender<ProfileMessage>) {
     thread::spawn(move || {
         let mut last_waiting = String::new();
         loop {
@@ -20,25 +20,16 @@ pub fn spawn_connection_worker(explicit_address: Option<String>, sender: Sender<
                             configuration: session.configuration.clone(),
                             workspace: session.workspace.display().to_string(),
                             address: session.address.clone(),
+                            profiling: session.profiling,
                         };
                         (session.address, Some(info))
                     }
                     Ok(None) => {
-                        wait(
-                            &sender,
-                            &mut last_waiting,
-                            "Waiting for `vapor run`…".to_owned(),
-                            Duration::from_millis(500),
-                        );
+                        wait(&sender, &mut last_waiting, "No active Vapor run".to_owned(), Duration::from_millis(500));
                         continue;
                     }
                     Err(error) => {
-                        wait(
-                            &sender,
-                            &mut last_waiting,
-                            format!("Waiting for Vapor session state: {error}"),
-                            Duration::from_secs(1),
-                        );
+                        wait(&sender, &mut last_waiting, format!("Waiting for session state: {error}"), Duration::from_secs(1));
                         continue;
                     }
                 },
@@ -47,50 +38,36 @@ pub fn spawn_connection_worker(explicit_address: Option<String>, sender: Sender<
             match TelemetryConsumer::connect(&address) {
                 Ok(mut consumer) => {
                     last_waiting.clear();
-                    if sender.send(MonitorMessage::Connected(session)).is_err() {
+                    if sender.send(ProfileMessage::Connected(session)).is_err() {
                         return;
                     }
                     loop {
                         match consumer.recv() {
                             Ok(Some(event)) => {
-                                if sender.send(MonitorMessage::Event(event)).is_err() {
+                                if sender.send(ProfileMessage::Event(event)).is_err() {
                                     return;
                                 }
                             }
                             Ok(None) => break,
                             Err(error) => {
-                                let _ = sender.send(MonitorMessage::Disconnected(format!(
-                                    "Telemetry disconnected: {error}"
-                                )));
+                                let _ = sender.send(ProfileMessage::Disconnected(format!("Telemetry disconnected: {error}")));
                                 break;
                             }
                         }
                     }
                 }
                 Err(error) => {
-                    wait(
-                        &sender,
-                        &mut last_waiting,
-                        format!("Waiting for telemetry at {address}: {error}"),
-                        Duration::from_millis(500),
-                    );
-                    continue;
+                    wait(&sender, &mut last_waiting, format!("Waiting for telemetry at {address}: {error}"), Duration::from_millis(500));
                 }
             }
-
             thread::sleep(Duration::from_millis(500));
         }
     });
 }
 
-fn wait(
-    sender: &Sender<MonitorMessage>,
-    last_waiting: &mut String,
-    message: String,
-    duration: Duration,
-) {
+fn wait(sender: &Sender<ProfileMessage>, last_waiting: &mut String, message: String, duration: Duration) {
     if message != *last_waiting {
-        let _ = sender.send(MonitorMessage::Waiting(message.clone()));
+        let _ = sender.send(ProfileMessage::Waiting(message.clone()));
         *last_waiting = message;
     }
     thread::sleep(duration);

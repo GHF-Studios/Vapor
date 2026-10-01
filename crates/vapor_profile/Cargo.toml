@@ -1,10 +1,10 @@
 [package]
-name = "vapor_monitor"
+name = "vapor_profile"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "vapor-monitor"
+name = "vapor-profile"
 path = "src/main.rs"
 
 [dependencies]

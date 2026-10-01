@@ -64,7 +64,8 @@ pub(super) enum VaporCommand {
 
     Run(RunArgs),
 
-    Monitor(MonitorArgs),
+    /// Unified local performance-analysis suite.
+    Profile(ProfileArgs),
 
     Source {
         #[command(subcommand)]
@@ -148,12 +149,84 @@ pub(super) struct RunArgs {
 }
 
 #[derive(Debug, Args)]
-pub(super) struct MonitorArgs {
-    /// Tracy profiler executable or AppImage.
-    ///
-    /// When supplied, Vapor remembers this path for future `vapor monitor` calls.
-    #[arg(long, value_name = "PATH")]
-    pub(super) tracy: Option<PathBuf>,
+pub(super) struct ProfileArgs {
+    #[command(subcommand)]
+    pub(super) command: Option<ProfileCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum ProfileCommand {
+    /// Launch the Vapor Profile application.
+    Open(ProfileOpenArgs),
+    /// Launch Tracy as the native collector/viewer.
+    Tracy(ProfileTracyArgs),
+    /// Register a manually saved .tracy capture in the Vapor trace library.
+    Import(ProfileImportArgs),
+    /// List saved trace-library entries.
+    List,
+    /// Analyze a saved capture without opening the GUI.
+    Report(ProfileReportArgs),
+    /// Explicitly install the optional tracy-csvexport analysis helper.
+    Setup,
+}
+
+#[derive(Debug, Args)]
+pub(super) struct ProfileOpenArgs {
+    #[arg(long)]
+    pub(super) address: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(super) struct ProfileTracyArgs {
+    #[arg(value_name = "TRACE")]
+    pub(super) trace: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(super) struct ProfileImportArgs {
+    #[arg(value_name = "TRACE")]
+    pub(super) trace: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(super) enum ProfileSortArg {
+    Total,
+    Count,
+    Mean,
+    Median,
+    P90,
+    P95,
+    P99,
+    Max,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(super) enum ProfileOutputFormat {
+    Table,
+    Csv,
+    Json,
+}
+
+#[derive(Debug, Args)]
+pub(super) struct ProfileReportArgs {
+    #[arg(value_name = "TRACE")]
+    pub(super) trace: Option<String>,
+    #[arg(long, default_value_t = 50)]
+    pub(super) top: usize,
+    #[arg(long, value_enum, default_value = "p95")]
+    pub(super) sort: ProfileSortArg,
+    #[arg(long = "thread", value_name = "ID")]
+    pub(super) threads: Vec<u64>,
+    #[arg(long, value_name = "MS")]
+    pub(super) after_ms: Option<f64>,
+    #[arg(long, value_name = "MS")]
+    pub(super) before_ms: Option<f64>,
+    #[arg(long, value_name = "TEXT")]
+    pub(super) filter: Option<String>,
+    #[arg(long)]
+    pub(super) self_time: bool,
+    #[arg(long, value_enum, default_value = "table")]
+    pub(super) format: ProfileOutputFormat,
 }
 
 #[derive(Debug, Subcommand)]

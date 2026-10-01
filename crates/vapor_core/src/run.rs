@@ -31,6 +31,10 @@ pub struct ActiveDevelopmentSession {
     pub address: String,
     pub process_id: Option<u32>,
     pub state: String,
+
+    /// True only when the caller explicitly selected Vapor's profiling workflow.
+    #[serde(default)]
+    pub profiling: bool,
 }
 
 struct DevelopmentSession {
@@ -45,6 +49,7 @@ impl DevelopmentSession {
         toolchain: &ManagedToolchain,
         workspace: &VaporWorkspace,
         configuration: &str,
+        profiling: bool,
     ) -> Result<Self, DevelopmentRunError> {
         let root = toolchain.user_data_root.join(SESSION_ROOT);
         fs::create_dir_all(&root).map_err(|source| DevelopmentRunError::Io {
@@ -71,6 +76,7 @@ impl DevelopmentSession {
             address: broker.address().to_string(),
             process_id: None,
             state: "starting".to_owned(),
+            profiling,
         };
         let session_path = session_root.join(SESSION_FILE);
         let active_path = root.join(ACTIVE_SESSION_FILE);
@@ -152,9 +158,50 @@ pub fn active_development_session(
         .map_err(|source| DevelopmentRunError::SessionMetadata { path, source })
 }
 
+/// Persistent Development Session history, newest first.
+pub fn development_sessions() -> Result<Vec<ActiveDevelopmentSession>, DevelopmentRunError> {
+    let installation =
+        VaporInstallation::discover().map_err(DevelopmentRunError::Installation)?;
+    let root = installation.user_data_root().join(SESSION_ROOT);
+
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(DevelopmentRunError::Io { path: root, source }),
+    };
+
+    let mut sessions = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path().join(SESSION_FILE);
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(session) = serde_json::from_str::<ActiveDevelopmentSession>(&source) {
+            sessions.push(session);
+        }
+    }
+
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.started_unix_ms));
+    Ok(sessions)
+}
+
 pub fn run_workspace_configuration(
     workspace: &VaporWorkspace,
     name: &str,
+) -> Result<(), DevelopmentRunError> {
+    run_workspace_configuration_with_profile_hint(workspace, name, false)
+}
+
+/// Run a configuration while annotating whether it was selected through
+/// Vapor's explicit profiling workflow. This metadata path never resolves,
+/// builds or launches Tracy.
+pub fn run_workspace_configuration_with_profile_hint(
+    workspace: &VaporWorkspace,
+    name: &str,
+    profiling: bool,
 ) -> Result<(), DevelopmentRunError> {
     let configuration = workspace
         .run_configuration(name)
@@ -201,10 +248,17 @@ pub fn run_workspace_configuration(
         return cargo_result(name, status);
     }
 
-    let mut session = DevelopmentSession::start(&toolchain, workspace, name)?;
+    let mut session =
+        DevelopmentSession::start(&toolchain, workspace, name, profiling)?;
     println!(
-        "Development Session {} · telemetry {} · open `vapor-monitor` to observe",
-        session.info.id, session.info.address
+        "Development Session {} · telemetry {} · {}",
+        session.info.id,
+        session.info.address,
+        if profiling {
+            "profiling run · open `vapor profile` and Tracy when wanted"
+        } else {
+            "telemetry run · open `vapor profile` to observe"
+        },
     );
     command
         .env(TELEMETRY_ADDR_ENV, &session.info.address)

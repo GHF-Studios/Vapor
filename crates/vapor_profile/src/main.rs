@@ -9,11 +9,10 @@ use std::sync::mpsc;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "vapor-monitor",
-    about = "Live Vapor Development Session observability dashboard"
+    name = "vapor-profile",
+    about = "Vapor live telemetry and saved Tracy analysis workspace"
 )]
 struct Cli {
-    /// Connect directly to a telemetry broker instead of following the active Vapor session.
     #[arg(long)]
     address: Option<String>,
 }
@@ -25,20 +24,20 @@ fn main() -> ExitCode {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Vapor Monitor")
-            .with_inner_size([1240.0, 820.0])
-            .with_min_inner_size([760.0, 520.0]),
+            .with_title("Vapor Profile")
+            .with_inner_size([1480.0, 900.0])
+            .with_min_inner_size([980.0, 620.0]),
         ..Default::default()
     };
 
     match eframe::run_native(
-        "vapor-monitor",
+        "Vapor Profile",
         options,
-        Box::new(move |_creation| Ok(Box::new(app::MonitorApp::new(receiver)))),
+        Box::new(move |_creation| Ok(Box::new(app::ProfileApp::new(receiver)))),
     ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("vapor-monitor: {error}");
+            eprintln!("Vapor Profile: {error}");
             ExitCode::FAILURE
         }
     }

@@ -20,6 +20,7 @@ pub mod manifest;
 pub mod registry;
 pub mod resolution;
 pub mod run;
+pub mod profiling;
 pub mod role;
 pub mod source;
 pub mod steam;
@@ -101,7 +102,14 @@ pub use resolution::{
 
 pub use run::{
     ActiveDevelopmentSession, DevelopmentRunError, active_development_session,
-    run_workspace_configuration,
+    development_sessions, run_workspace_configuration,
+    run_workspace_configuration_with_profile_hint,
+};
+
+pub use profiling::{
+    ProfileError, ProfileReport, ProfileReportOptions, ProfileSort, ProfileTraceRecord,
+    ProfileZoneSummary, analyze_profile_trace, import_profile_trace, launch_tracy,
+    list_profile_traces, profile_library_path, resolve_profile_trace,
 };
 
 pub use role::{
@@ -128,7 +136,8 @@ pub use toolchain::{ManagedToolchain, ToolchainError};
 
 pub use tracy::{
     ResolvedTracyProfiler, TRACY_PROFILER_VERSION, TracyError, TracyProfilerOrigin,
-    remember_tracy_profiler, resolve_tracy_profiler,
+    install_tracy_csvexport, remember_tracy_profiler, resolve_tracy_csvexport,
+    resolve_tracy_profiler,
 };
 
 pub use uninstall::{UninstallError, UninstallOptions, UninstallReport, uninstall_installation};

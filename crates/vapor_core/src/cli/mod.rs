@@ -95,7 +95,7 @@ fn execute_vapor(command: VaporCommand) -> Result<(), String> {
 
         VaporCommand::Run(args) => execute_run(args),
 
-        VaporCommand::Monitor(args) => execute_monitor(args),
+        VaporCommand::Profile(args) => execute_profile(args),
 
         VaporCommand::Source { command } => execute_source(command),
 
@@ -359,39 +359,174 @@ fn execute_run(args: RunArgs) -> Result<(), String> {
         workspace.manifest.workspace.organization, workspace.manifest.workspace.name,
     );
 
-    run_workspace_configuration(&workspace, configuration).map_err(|error| error.to_string())
+    crate::run_workspace_configuration_with_profile_hint(
+        &workspace,
+        configuration,
+        args.profiling || args.profiling_memory,
+    )
+    .map_err(|error| error.to_string())
 }
 
-fn execute_monitor(args: MonitorArgs) -> Result<(), String> {
-    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
-    let user_data_root = installation.user_data_root();
-    let tracy = crate::resolve_tracy_profiler(args.tracy.as_deref(), &user_data_root)
-        .map_err(|error| error.to_string())?;
-
-    if args.tracy.is_some() {
-        crate::remember_tracy_profiler(&user_data_root, &tracy.executable)
-            .map_err(|error| error.to_string())?;
+fn execute_profile(args: ProfileArgs) -> Result<(), String> {
+    match args.command {
+        None => launch_profile_app(None),
+        Some(ProfileCommand::Open(args)) => launch_profile_app(args.address.as_deref()),
+        Some(ProfileCommand::Tracy(args)) => {
+            let trace = match args.trace.as_deref() {
+                Some(selector) => Some(
+                    crate::resolve_profile_trace(Some(selector))
+                        .map_err(|error| error.to_string())?,
+                ),
+                None => None,
+            };
+            crate::launch_tracy(trace.as_ref().map(|record| record.path.as_path()))
+                .map_err(|error| error.to_string())
+        }
+        Some(ProfileCommand::Import(args)) => {
+            let record = crate::import_profile_trace(&args.trace)
+                .map_err(|error| error.to_string())?;
+            println!("Added {} -> {}", record.id, record.path.display());
+            Ok(())
+        }
+        Some(ProfileCommand::List) => {
+            let records = crate::list_profile_traces().map_err(|error| error.to_string())?;
+            println!("{:<28}  {:<8}  {:<20}  {}", "TRACE", "STATUS", "CONFIGURATION", "PATH");
+            for record in records {
+                println!(
+                    "{:<28}  {:<8}  {:<20}  {}",
+                    record.id,
+                    if record.exists() { "ready" } else { "missing" },
+                    record.configuration.as_deref().unwrap_or("—"),
+                    record.path.display(),
+                );
+            }
+            Ok(())
+        }
+        Some(ProfileCommand::Report(args)) => profile_report(args),
+        Some(ProfileCommand::Setup) => {
+            let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+            let path = crate::install_tracy_csvexport(&installation.user_data_root())
+                .map_err(|error| error.to_string())?;
+            println!("Tracy analysis helper: {}", path.display());
+            Ok(())
+        }
     }
+}
 
-    Command::new(&tracy.executable)
+fn launch_profile_app(address: Option<&str>) -> Result<(), String> {
+    let executable_name = if cfg!(windows) { "vapor-profile.exe" } else { "vapor-profile" };
+    let sibling = env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.join(executable_name)))
+        .filter(|path| path.is_file());
+    let mut command = match sibling {
+        Some(path) => Command::new(path),
+        None => Command::new(executable_name),
+    };
+    if let Some(address) = address {
+        command.arg("--address").arg(address);
+    }
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|error| {
-            format!(
-                "failed to launch Tracy at `{}`: {error}",
-                tracy.executable.display()
-            )
-        })?;
-
-    println!(
-        "Opened Tracy {} ({}) at {}",
-        tracy.version,
-        tracy.origin,
-        tracy.executable.display()
-    );
+        .map_err(|error| format!(
+            "failed to launch Vapor Profile (`{executable_name}`): {error}; deploy current Vapor source first"
+        ))?;
     Ok(())
+}
+
+fn profile_report(args: ProfileReportArgs) -> Result<(), String> {
+    let record = crate::resolve_profile_trace(args.trace.as_deref())
+        .map_err(|error| error.to_string())?;
+    let options = crate::ProfileReportOptions {
+        top: args.top,
+        sort: match args.sort {
+            ProfileSortArg::Total => crate::ProfileSort::Total,
+            ProfileSortArg::Count => crate::ProfileSort::Count,
+            ProfileSortArg::Mean => crate::ProfileSort::Mean,
+            ProfileSortArg::Median => crate::ProfileSort::Median,
+            ProfileSortArg::P90 => crate::ProfileSort::P90,
+            ProfileSortArg::P95 => crate::ProfileSort::P95,
+            ProfileSortArg::P99 => crate::ProfileSort::P99,
+            ProfileSortArg::Max => crate::ProfileSort::Max,
+        },
+        thread_ids: args.threads,
+        after_ms: args.after_ms,
+        before_ms: args.before_ms,
+        name_filter: args.filter,
+        self_time: args.self_time,
+    };
+    let report = crate::analyze_profile_trace(&record, &options)
+        .map_err(|error| error.to_string())?;
+
+    match args.format {
+        ProfileOutputFormat::Table => {
+            println!("trace: {}", report.trace.display());
+            println!(
+                "{} occurrences · {} zones · {} timing",
+                report.occurrence_count,
+                report.zone_count,
+                if report.self_time { "self" } else { "inclusive" },
+            );
+            println!();
+            println!("{:<4} {:>7} {:>10} {:>10} {:>10} {:>10} {:>10}  {}", "#", "calls", "total", "median", "p95", "p99", "max", "zone");
+            for (index, zone) in report.zones.iter().enumerate() {
+                println!(
+                    "{:<4} {:>7} {:>10} {:>10} {:>10} {:>10} {:>10}  {}  [{}:{}]",
+                    index + 1,
+                    zone.count,
+                    format_profile_ns(zone.total_ns),
+                    format_profile_ns(zone.median_ns),
+                    format_profile_ns(zone.p95_ns),
+                    format_profile_ns(zone.p99_ns),
+                    format_profile_ns(zone.max_ns),
+                    zone.name,
+                    zone.source,
+                    zone.line,
+                );
+            }
+        }
+        ProfileOutputFormat::Csv => {
+            println!("rank,name,source,line,threads,count,total_ns,mean_ns,median_ns,p90_ns,p95_ns,p99_ns,max_ns");
+            for (index, zone) in report.zones.iter().enumerate() {
+                let threads = zone.threads.iter().map(u64::to_string).collect::<Vec<_>>().join("|");
+                println!(
+                    "{},{:?},{:?},{},{:?},{},{},{},{},{},{},{},{}",
+                    index + 1,
+                    zone.name,
+                    zone.source,
+                    zone.line,
+                    threads,
+                    zone.count,
+                    zone.total_ns,
+                    zone.mean_ns,
+                    zone.median_ns,
+                    zone.p90_ns,
+                    zone.p95_ns,
+                    zone.p99_ns,
+                    zone.max_ns,
+                );
+            }
+        }
+        ProfileOutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?);
+        }
+    }
+    Ok(())
+}
+
+fn format_profile_ns(ns: u64) -> String {
+    if ns >= 1_000_000_000 {
+        format!("{:.2}s", ns as f64 / 1_000_000_000.0)
+    } else if ns >= 1_000_000 {
+        format!("{:.2}ms", ns as f64 / 1_000_000.0)
+    } else if ns >= 1_000 {
+        format!("{:.1}µs", ns as f64 / 1_000.0)
+    } else {
+        format!("{ns}ns")
+    }
 }
 
 fn toolchain_cargo(explicit_project: Option<String>, args: Vec<OsString>) -> Result<(), String> {
