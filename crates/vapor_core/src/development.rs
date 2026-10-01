@@ -10,13 +10,14 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::ExitStatus;
+use std::process::{Command, ExitStatus};
 
 const DEVELOPMENT_DIR: &str = "development";
 const TARGET_DIR: &str = "target";
 const DEV_PROFILE_DIR: &str = "debug";
 const BIN_DIR: &str = "bin";
 const CLIENT_DISTRIBUTION_MANIFEST_FILE_NAME: &str = "Vapor-Client.vapor.toml";
+const LOCAL_DEPLOYMENT_AUTHORITY_ENV: &str = "VAPOR_LOCAL_DEPLOYMENT_AUTHORITY";
 
 const DISTRIBUTION_BINARIES: &[&str] = &["vapor", "vapor-devtools", "vapor-installer", "vapor-entrypoint"];
 
@@ -78,6 +79,12 @@ pub struct EcosystemDeploymentReport {
     pub activation_script: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalDeploymentAuthority {
+    pub executable: PathBuf,
+    pub installation_root: PathBuf,
+}
+
 pub fn run_workspace_operation(
     workspace: &VaporWorkspace,
     operation: DevelopmentOperation,
@@ -104,6 +111,13 @@ pub fn run_workspace_operation(
 pub fn build_workspace_deployment_inputs(
     workspace: &VaporWorkspace,
 ) -> Result<EcosystemBuildReport, DevelopmentError> {
+    build_workspace_deployment_inputs_with_authority(workspace, None)
+}
+
+fn build_workspace_deployment_inputs_with_authority(
+    workspace: &VaporWorkspace,
+    authority_executable: Option<&Path>,
+) -> Result<EcosystemBuildReport, DevelopmentError> {
     let toolchain =
         ManagedToolchain::for_workspace(workspace).map_err(DevelopmentError::Toolchain)?;
 
@@ -118,20 +132,22 @@ pub fn build_workspace_deployment_inputs(
     let projects = deployment_projects(workspace);
 
     for &binary in DISTRIBUTION_BINARIES {
-        let target = find_binary_target(&toolchain, &projects, binary)?;
-
-        build_binary(&toolchain, &target, binary)?;
-
-        let source = development_target_dir(&toolchain, &target.project)
-            .join(DEV_PROFILE_DIR)
-            .join(executable_name(binary));
-
-        if !source.is_file() {
-            return Err(DevelopmentError::MissingBuiltExecutable {
-                binary: binary.to_owned(),
-                path: source,
-            });
-        }
+        let source = if binary == "vapor" {
+            match authority_executable {
+                Some(authority) => {
+                    if !authority.is_file() {
+                        return Err(DevelopmentError::MissingBuiltExecutable {
+                            binary: binary.to_owned(),
+                            path: authority.to_path_buf(),
+                        });
+                    }
+                    authority.to_path_buf()
+                }
+                None => build_distribution_binary(&toolchain, &projects, binary)?,
+            }
+        } else {
+            build_distribution_binary(&toolchain, &projects, binary)?
+        };
 
         binaries.push(BuiltBinary {
             name: binary.to_owned(),
@@ -158,7 +174,21 @@ pub fn deploy_workspace(
     workspace: &VaporWorkspace,
 ) -> Result<EcosystemDeploymentReport, DevelopmentError> {
     let build = build_workspace_deployment_inputs(workspace)?;
+    promote_workspace_build(build)
+}
 
+pub fn deploy_workspace_from_authority(
+    workspace: &VaporWorkspace,
+    authority_executable: &Path,
+) -> Result<EcosystemDeploymentReport, DevelopmentError> {
+    let build =
+        build_workspace_deployment_inputs_with_authority(workspace, Some(authority_executable))?;
+    promote_workspace_build(build)
+}
+
+fn promote_workspace_build(
+    build: EcosystemBuildReport,
+) -> Result<EcosystemDeploymentReport, DevelopmentError> {
     let bin_root = build
         .installation_root
         .join(BIN_DIR)
@@ -349,6 +379,105 @@ fn find_binary_target(
                 .map(|target| format!("{}/{}", target.project.name, target.package,))
                 .collect(),
         }),
+    }
+}
+
+fn build_distribution_binary(
+    toolchain: &ManagedToolchain,
+    projects: &[VaporProject],
+    binary: &str,
+) -> Result<PathBuf, DevelopmentError> {
+    let target = find_binary_target(toolchain, projects, binary)?;
+
+    build_binary(toolchain, &target, binary)?;
+
+    let source = development_target_dir(toolchain, &target.project)
+        .join(DEV_PROFILE_DIR)
+        .join(executable_name(binary));
+
+    if !source.is_file() {
+        return Err(DevelopmentError::MissingBuiltExecutable {
+            binary: binary.to_owned(),
+            path: source,
+        });
+    }
+
+    Ok(source)
+}
+
+pub fn build_workspace_deployment_authority(
+    workspace: &VaporWorkspace,
+) -> Result<LocalDeploymentAuthority, DevelopmentError> {
+    let toolchain =
+        ManagedToolchain::for_workspace(workspace).map_err(DevelopmentError::Toolchain)?;
+
+    let projects = deployment_projects(workspace);
+    let executable = build_distribution_binary(&toolchain, &projects, "vapor")?;
+
+    Ok(LocalDeploymentAuthority {
+        executable,
+        installation_root: toolchain.vapor_home,
+    })
+}
+
+pub fn local_deployment_authority_active() -> Result<bool, DevelopmentError> {
+    let Some(expected) = env::var_os(LOCAL_DEPLOYMENT_AUTHORITY_ENV) else {
+        return Ok(false);
+    };
+
+    let expected_path = PathBuf::from(expected);
+    let expected =
+        fs::canonicalize(&expected_path).map_err(|source| DevelopmentError::Io {
+            path: expected_path,
+            source,
+        })?;
+
+    let current_path =
+        env::current_exe().map_err(DevelopmentError::CurrentExecutable)?;
+    let current =
+        fs::canonicalize(&current_path).map_err(|source| DevelopmentError::Io {
+            path: current_path,
+            source,
+        })?;
+
+    if current != expected {
+        return Err(DevelopmentError::DeploymentAuthorityMismatch {
+            expected,
+            current,
+        });
+    }
+
+    Ok(true)
+}
+
+pub fn run_workspace_deployment_authority(
+    workspace: &VaporWorkspace,
+    authority: &LocalDeploymentAuthority,
+) -> Result<(), DevelopmentError> {
+    let canonical_authority =
+        fs::canonicalize(&authority.executable).map_err(|source| DevelopmentError::Io {
+            path: authority.executable.clone(),
+            source,
+        })?;
+
+    let status = Command::new(&canonical_authority)
+        .args(["client", "deploy", "local"])
+        .current_dir(&workspace.root)
+        .env(crate::VAPOR_HOME_ENV, &authority.installation_root)
+        .env(LOCAL_DEPLOYMENT_AUTHORITY_ENV, &canonical_authority)
+        .status()
+        .map_err(|source| DevelopmentError::DeploymentAuthorityStart {
+            executable: canonical_authority.clone(),
+            source,
+        })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(DevelopmentError::DeploymentAuthorityFailed {
+            executable: canonical_authority,
+            status,
+        })
     }
 }
 
@@ -640,6 +769,23 @@ fn current_host_target() -> Result<&'static str, DevelopmentError> {
 pub enum DevelopmentError {
     Toolchain(ToolchainError),
 
+    CurrentExecutable(io::Error),
+
+    DeploymentAuthorityMismatch {
+        expected: PathBuf,
+        current: PathBuf,
+    },
+
+    DeploymentAuthorityStart {
+        executable: PathBuf,
+        source: io::Error,
+    },
+
+    DeploymentAuthorityFailed {
+        executable: PathBuf,
+        status: ExitStatus,
+    },
+
     UnsupportedHost,
 
     BinaryTargetNotFound {
@@ -716,6 +862,35 @@ impl fmt::Display for DevelopmentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Toolchain(error) => error.fmt(formatter),
+
+            Self::CurrentExecutable(error) => {
+                write!(formatter, "failed to resolve the running Vapor executable: {error}")
+            }
+
+            Self::DeploymentAuthorityMismatch { expected, current } => {
+                write!(
+                    formatter,
+                    "local deployment authority mismatch: expected `{}`, running `{}`",
+                    expected.display(),
+                    current.display(),
+                )
+            }
+
+            Self::DeploymentAuthorityStart { executable, source } => {
+                write!(
+                    formatter,
+                    "failed to start source deployment authority `{}`: {source}",
+                    executable.display(),
+                )
+            }
+
+            Self::DeploymentAuthorityFailed { executable, status } => {
+                write!(
+                    formatter,
+                    "source deployment authority `{}` failed with {status}",
+                    executable.display(),
+                )
+            }
 
             Self::UnsupportedHost => formatter.write_str(
                 "this host is not yet supported by Vapor Client deployment",
@@ -839,6 +1014,10 @@ impl std::error::Error for DevelopmentError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Toolchain(error) => Some(error),
+
+            Self::CurrentExecutable(error) => Some(error),
+
+            Self::DeploymentAuthorityStart { source, .. } => Some(source),
 
             Self::CargoStart { source, .. } => Some(source),
 

@@ -87,7 +87,7 @@ impl DevtoolsApp {
     fn handle_drops(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|input| input.raw.dropped_files.clone());
         for file in dropped {
-            let Some(path) = file.path else { continue; };
+            let path = file.path();
             if path.extension().and_then(|value| value.to_str()) != Some("tracy") { continue; }
             match import_profile_trace(&path) {
                 Ok(record) => {
@@ -342,9 +342,9 @@ impl eframe::App for DevtoolsApp {
         self.handle_drops(ui.ctx());
         ui.ctx().request_repaint_after(Duration::from_millis(100));
 
-        egui::TopBottomPanel::top("profile-header").show_inside(ui, |ui| self.draw_header(ui));
-        egui::SidePanel::left("trace-library").resizable(true).default_width(300.0).min_width(230.0).show_inside(ui, |ui| self.draw_left(ui));
-        egui::SidePanel::right("profile-inspector").resizable(true).default_width(310.0).min_width(240.0).show_inside(ui, |ui| self.draw_right(ui));
+        egui::Panel::top("profile-header").show(ui, |ui| self.draw_header(ui));
+        egui::Panel::left("trace-library").resizable(true).default_size(300.0).min_size(230.0).show(ui, |ui| self.draw_left(ui));
+        egui::Panel::right("profile-inspector").resizable(true).default_size(310.0).min_size(240.0).show(ui, |ui| self.draw_right(ui));
         egui::CentralPanel::default().show_inside(ui, |ui| {
             if let Some(trace) = self.selected_trace_record() { self.draw_trace(ui, &trace); }
             else { self.draw_live(ui); }

@@ -49,8 +49,11 @@ pub use content::{ContentKind, DependencySpec};
 
 pub use development::{
     BuiltBinary, DeployedBinary, DevelopmentError, DevelopmentOperation, EcosystemBuildReport,
-    EcosystemDeploymentReport, build_workspace_deployment_inputs, deploy_workspace,
-    development_target_dir, run_workspace_operation,
+    EcosystemDeploymentReport, LocalDeploymentAuthority,
+    build_workspace_deployment_authority, build_workspace_deployment_inputs, deploy_workspace,
+    deploy_workspace_from_authority, development_target_dir,
+    local_deployment_authority_active, run_workspace_deployment_authority,
+    run_workspace_operation,
 };
 
 pub use developer_environment::{

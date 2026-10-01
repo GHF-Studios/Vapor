@@ -13,13 +13,15 @@ use crate::{
     ResolvedComposition, ResolvedContentGraph, SteamDeploymentOptions, UninstallOptions, VaporId,
     VaporInstallation, VaporProject, VaporRole, VaporSuperworkspace, VaporWorkspace,
     SUPERWORKSPACE_MANIFEST_FILE_NAME, acquire_ecosystem_repositories, build_cargo_realization,
-    demote_role, deploy_ecosystem_to_steam, deploy_workspace, development_target_dir,
+    build_workspace_deployment_authority, demote_role, deploy_ecosystem_to_steam,
+    deploy_workspace_from_authority, development_target_dir,
     diagnose_managed_state, discover_local_content, forget_source, generate_local_cargo_realization,
     git_available, inspect_local_cargo_package, install_installation, promote_role,
     reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
     repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
-    resolve_source_context, role_status, run_cargo_realization,
-    run_workspace_operation, source_state, uninstall_installation, verify_local_library_cargo_dependencies,
+    local_deployment_authority_active, resolve_source_context, role_status,
+    run_cargo_realization, run_workspace_deployment_authority, run_workspace_operation,
+    source_state, uninstall_installation, verify_local_library_cargo_dependencies,
 };
 use crate::install::ensure_canonical_superworkspace;
 use clap::Parser;
@@ -1910,17 +1912,40 @@ fn platform_server_deploy() -> Result<(), String> {
 fn client_deploy_local() -> Result<(), String> {
     let workspace = client_workspace()?;
 
-    // Resolve before self-deployment replaces the running executable.
+    if !local_deployment_authority_active().map_err(|error| error.to_string())? {
+        println!(
+            "Preparing source-authoritative local deployment for {}/{} {}...",
+            workspace.manifest.workspace.organization,
+            workspace.manifest.workspace.name,
+            workspace.manifest.workspace.version,
+        );
+
+        let authority =
+            build_workspace_deployment_authority(&workspace).map_err(|error| error.to_string())?;
+
+        println!(
+            "Transferring deployment authority to newly-built source CLI: {}",
+            authority.executable.display(),
+        );
+
+        return run_workspace_deployment_authority(&workspace, &authority)
+            .map_err(|error| error.to_string());
+    }
+
     let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let authority = env::current_exe().map_err(|error| {
+        format!("failed to resolve source deployment authority executable: {error}")
+    })?;
 
     println!(
-        "Deploying Vapor Client {}/{} {} locally...",
+        "Deploying Vapor Client {}/{} {} locally under source authority...",
         workspace.manifest.workspace.organization,
         workspace.manifest.workspace.name,
         workspace.manifest.workspace.version,
     );
 
-    let report = deploy_workspace(&workspace).map_err(|error| error.to_string())?;
+    let report = deploy_workspace_from_authority(&workspace, &authority)
+        .map_err(|error| error.to_string())?;
 
     let bootstrap = crate::install_ecosystem_bootstrap(&installation, &workspace.root)
         .map_err(|error| error.to_string())?;
