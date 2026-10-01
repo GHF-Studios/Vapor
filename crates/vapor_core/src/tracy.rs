@@ -20,17 +20,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const TRACY_PROFILER_VERSION: &str = "0.14.1";
+pub const TRACY_PROFILER_VERSION: &str = "0.14.0";
 
-const TRACY_UPSTREAM_COMMIT: &str = "30997d5ca6bb632cc10807a1da8a6d3de0aeeb3c";
+const TRACY_UPSTREAM_COMMIT: &str = "099df3de3dc37eca4712c06b8320fb9c53596edd";
 const TRACY_SOURCE_ARCHIVE: &str =
-    "https://github.com/wolfpld/tracy/archive/30997d5ca6bb632cc10807a1da8a6d3de0aeeb3c.tar.gz";
+    "https://github.com/wolfpld/tracy/archive/099df3de3dc37eca4712c06b8320fb9c53596edd.tar.gz";
 
 const MANAGED_RELEASE_REPOSITORY: &str = "GHF-Studios/Vapor";
 const MANAGED_RELEASE_TAG_PREFIX: &str = "managed-tracy-v";
 
 const TRACY_ANALYSIS_DIR: &str = "tools/tracy-analysis";
-const TRACY_ANALYSIS_RECIPE: &str = "sequential-sort-v1";
 
 const TRACY_CSVEXPORT_NAMES: &[&str] = &[
     "tracy-csvexport",
@@ -234,34 +233,6 @@ fn install_managed_tracy_csvexport(
             .find(|path| path.join("csvexport/CMakeLists.txt").is_file())
             .ok_or_else(|| TracyError::message("downloaded Tracy source has no csvexport/CMakeLists.txt".to_owned()))?;
 
-        // Batch analysis favors deterministic stability over parallel load speed.
-        //
-        // Tracy 0.14.1 hardcodes ppqsort for native Worker file-load sorts.
-        // A real 210 MB capture crashed inside ppqsort during Worker
-        // construction in every csvexport mode. Tracy already carries the
-        // equivalent sequential pdqsort_branchless paths for Emscripten, so
-        // the managed analysis helper uses those same sort calls on native
-        // hosts without changing the trace format or Worker semantics.
-        let worker_source = source_root.join("server/TracyWorker.cpp");
-        let worker = fs::read_to_string(&worker_source)
-            .map_err(|source| TracyError::io(worker_source.clone(), source))?;
-
-        const PARALLEL_SORT_CALL: &str =
-            "ppqsort::sort( ppqsort::execution::par, ";
-        const SEQUENTIAL_SORT_CALL: &str = "pdqsort_branchless( ";
-
-        let parallel_sort_count = worker.matches(PARALLEL_SORT_CALL).count();
-        if parallel_sort_count == 0 {
-            return Err(TracyError::message(
-                "Tracy Worker no longer contains the expected ppqsort calls;                  review the managed analysis stability recipe before upgrading Tracy"
-                    .to_owned(),
-            ));
-        }
-
-        let worker = worker.replace(PARALLEL_SORT_CALL, SEQUENTIAL_SORT_CALL);
-        fs::write(&worker_source, worker.as_bytes())
-            .map_err(|source| TracyError::io(worker_source.clone(), source))?;
-
         run_command(
             Command::new("cmake")
                 .arg("-B")
@@ -321,7 +292,6 @@ fn tracy_analysis_root(
     user_data_root
         .join(TRACY_ANALYSIS_DIR)
         .join(TRACY_PROFILER_VERSION)
-        .join(TRACY_ANALYSIS_RECIPE)
         .join(environment.target.triple())
 }
 

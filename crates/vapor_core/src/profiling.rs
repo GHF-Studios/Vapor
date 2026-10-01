@@ -251,7 +251,7 @@ pub fn analyze_profile_trace(
     let tracy = ManagedTracyToolset::discover(&installation.user_data_root())?;
     let csvexport = tracy.csvexport_executable()?;
     let mut command = Command::new(csvexport);
-    command.arg("-u");
+    command.arg("-u").arg("-s").arg("\t");
     if options.self_time {
         command.arg("-e");
     }
@@ -275,7 +275,7 @@ pub fn analyze_profile_trace(
     let filter = options.name_filter.as_deref().map(str::to_lowercase);
 
     let mut reader = ReaderBuilder::new()
-        .delimiter(b',')
+        .delimiter(b'\t')
         .has_headers(true)
         .flexible(true)
         .from_reader(output.stdout.as_slice());
