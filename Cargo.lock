@@ -3909,11 +3909,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vapor_macros"
-version = "0.5.0"
-
-[[package]]
-name = "vapor_profile"
+name = "vapor_devtools"
 version = "0.5.0"
 dependencies = [
  "clap",
@@ -3923,6 +3919,10 @@ dependencies = [
  "vapor_core",
  "vapor_telemetry",
 ]
+
+[[package]]
+name = "vapor_macros"
+version = "0.5.0"
 
 [[package]]
 name = "vapor_telemetry"

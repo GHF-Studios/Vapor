@@ -16,7 +16,7 @@ pub struct SessionInfo {
 }
 
 #[derive(Debug)]
-pub enum ProfileMessage {
+pub enum DevtoolsMessage {
     Waiting(String),
     Connected(Option<SessionInfo>),
     Event(TelemetryEvent),
@@ -55,7 +55,7 @@ pub struct SnapshotRecord {
     pub value: Value,
 }
 
-pub struct ProfileState {
+pub struct DevtoolsState {
     pub status: String,
     pub session: Option<SessionInfo>,
     pub metrics: BTreeMap<String, MetricSeries>,
@@ -64,7 +64,7 @@ pub struct ProfileState {
     pub lifecycle: BTreeMap<String, String>,
 }
 
-impl Default for ProfileState {
+impl Default for DevtoolsState {
     fn default() -> Self {
         Self {
             status: "Starting…".to_owned(),
@@ -77,16 +77,16 @@ impl Default for ProfileState {
     }
 }
 
-impl ProfileState {
-    pub fn ingest(&mut self, message: ProfileMessage) {
+impl DevtoolsState {
+    pub fn ingest(&mut self, message: DevtoolsMessage) {
         match message {
-            ProfileMessage::Waiting(status) => self.status = status,
-            ProfileMessage::Connected(session) => {
+            DevtoolsMessage::Waiting(status) => self.status = status,
+            DevtoolsMessage::Connected(session) => {
                 self.status = "Live".to_owned();
                 self.session = session;
             }
-            ProfileMessage::Disconnected(status) => self.status = status,
-            ProfileMessage::Event(event) => self.ingest_event(event),
+            DevtoolsMessage::Disconnected(status) => self.status = status,
+            DevtoolsMessage::Event(event) => self.ingest_event(event),
         }
     }
 

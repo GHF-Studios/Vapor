@@ -8,8 +8,12 @@
 //! invoke the same underlying operations as part of broad diagnosis, repair,
 //! source opening, and ecosystem deployment.
 
+use crate::developer_environment::{
+    DeveloperEnvironment, DeveloperEnvironmentError, DeveloperEnvironmentStatus,
+};
 use crate::ide::{IdeError, IdeStatus, inspect_ide, repair_ide};
 use crate::installation::{InstallationError, InstallationRootSource, VaporInstallation};
+use crate::role::{VaporRole, installed_role};
 use crate::source::{SourceContextSource, SourceError, resolve_source_context};
 use crate::superworkspace::{
     SuperworkspaceError, SuperworkspaceRepositoryKind, VaporSuperworkspace,
@@ -31,6 +35,8 @@ pub struct MaintenanceStatus {
 
     pub toolchain_version: String,
     pub toolchain_installed: bool,
+    pub installed_role: VaporRole,
+    pub developer_environment: Option<DeveloperEnvironmentStatus>,
 
     pub source_root: PathBuf,
     pub source_context_source: SourceContextSource,
@@ -47,7 +53,13 @@ pub struct MaintenanceStatus {
 
 impl MaintenanceStatus {
     pub fn is_healthy(&self) -> bool {
-        if !self.toolchain_installed {
+        if let Some(environment) = &self.developer_environment
+            && !environment.is_ready()
+        {
+            return false;
+        }
+
+        if self.installed_role >= VaporRole::ContentDeveloper && !self.toolchain_installed {
             return false;
         }
 
@@ -61,7 +73,7 @@ impl MaintenanceStatus {
 
 #[derive(Debug, Clone)]
 pub struct MaintenanceRepairReport {
-    pub toolchain_installed: bool,
+    pub developer_environment_changed: bool,
     pub development_changes: Vec<PathBuf>,
     pub status: MaintenanceStatus,
 }
@@ -75,6 +87,16 @@ pub fn diagnose_managed_state() -> Result<MaintenanceStatus, MaintenanceError> {
     let installation = VaporInstallation::discover().map_err(MaintenanceError::Installation)?;
 
     let toolchain = ManagedToolchain::discover().map_err(MaintenanceError::Toolchain)?;
+    let role = installed_role(&installation).map_err(MaintenanceError::Role)?;
+    let developer_environment = if role >= VaporRole::ContentDeveloper {
+        Some(
+            DeveloperEnvironment::discover()
+                .map_err(MaintenanceError::DeveloperEnvironment)?
+                .status(),
+        )
+    } else {
+        None
+    };
 
     let source_context =
         resolve_source_context(&installation, None).map_err(MaintenanceError::Source)?;
@@ -129,6 +151,8 @@ pub fn diagnose_managed_state() -> Result<MaintenanceStatus, MaintenanceError> {
 
         toolchain_version: toolchain.pin.version.clone(),
         toolchain_installed: toolchain.is_installed(),
+        installed_role: role,
+        developer_environment,
 
         source_root: source_context.root,
         source_context_source: source_context.source,
@@ -154,17 +178,18 @@ pub fn diagnose_managed_state() -> Result<MaintenanceStatus, MaintenanceError> {
 /// It deliberately does not modify authored source merely because diagnosis
 /// found legacy or incompatible repositories.
 pub fn repair_managed_state() -> Result<MaintenanceRepairReport, MaintenanceError> {
-    let toolchain = ManagedToolchain::discover().map_err(MaintenanceError::Toolchain)?;
-
-    let mut toolchain_installed = false;
-
-    if !toolchain.is_installed() {
-        toolchain.install().map_err(MaintenanceError::Toolchain)?;
-
-        toolchain_installed = true;
-    }
-
     let installation = VaporInstallation::discover().map_err(MaintenanceError::Installation)?;
+    let role = installed_role(&installation).map_err(MaintenanceError::Role)?;
+    let mut developer_environment_changed = false;
+
+    if role >= VaporRole::ContentDeveloper {
+        let mut environment =
+            DeveloperEnvironment::discover().map_err(MaintenanceError::DeveloperEnvironment)?;
+        let report = environment
+            .reconcile()
+            .map_err(MaintenanceError::DeveloperEnvironment)?;
+        developer_environment_changed = report.changed();
+    }
 
     let source_context =
         resolve_source_context(&installation, None).map_err(MaintenanceError::Source)?;
@@ -174,7 +199,7 @@ pub fn repair_managed_state() -> Result<MaintenanceRepairReport, MaintenanceErro
     let status = diagnose_managed_state()?;
 
     Ok(MaintenanceRepairReport {
-        toolchain_installed,
+        developer_environment_changed,
         development_changes,
         status,
     })
@@ -224,6 +249,8 @@ pub enum MaintenanceError {
     Installation(InstallationError),
 
     Toolchain(ToolchainError),
+    Role(crate::RoleError),
+    DeveloperEnvironment(DeveloperEnvironmentError),
 
     Source(SourceError),
 
@@ -238,6 +265,8 @@ impl fmt::Display for MaintenanceError {
             Self::Installation(error) => error.fmt(formatter),
 
             Self::Toolchain(error) => error.fmt(formatter),
+            Self::Role(error) => error.fmt(formatter),
+            Self::DeveloperEnvironment(error) => error.fmt(formatter),
 
             Self::Source(error) => error.fmt(formatter),
 
@@ -254,6 +283,8 @@ impl std::error::Error for MaintenanceError {
             Self::Installation(error) => Some(error),
 
             Self::Toolchain(error) => Some(error),
+            Self::Role(error) => Some(error),
+            Self::DeveloperEnvironment(error) => Some(error),
 
             Self::Source(error) => Some(error),
 

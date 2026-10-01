@@ -4,8 +4,7 @@
 //! library of user-saved traces, source-layout context and repeatable reports.
 
 use crate::{
-    TracyError, VaporInstallation, active_development_session,
-    resolve_tracy_csvexport, resolve_tracy_profiler,
+    ManagedTracyToolset, TracyError, VaporInstallation, active_development_session,
 };
 use csv::ReaderBuilder;
 use serde::{Deserialize, Serialize};
@@ -14,7 +13,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 const PROFILE_DIR: &str = "profiling";
 const LIBRARY_FILE: &str = "trace-library.json";
@@ -232,28 +231,9 @@ pub fn resolve_profile_trace(selector: Option<&str>) -> Result<ProfileTraceRecor
         .find(ProfileTraceRecord::exists)
         .ok_or_else(|| {
             ProfileError::message(
-                "trace library is empty; drag a .tracy file into `vapor profile` or run `vapor profile import PATH`".to_owned(),
+                "trace library is empty; drag a .tracy file into `vapor devtools` or run `vapor devtools trace import PATH`".to_owned(),
             )
         })
-}
-
-pub fn launch_tracy(trace: Option<&Path>) -> Result<(), ProfileError> {
-    let installation = VaporInstallation::discover()?;
-    let profiler = resolve_tracy_profiler(None, &installation.user_data_root())?;
-    let mut command = Command::new(&profiler.executable);
-    if let Some(trace) = trace {
-        command.arg(trace);
-    }
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|source| ProfileError::Process {
-            operation: "launch Tracy",
-            source,
-        })?;
-    Ok(())
 }
 
 pub fn analyze_profile_trace(
@@ -268,7 +248,8 @@ pub fn analyze_profile_trace(
     }
 
     let installation = VaporInstallation::discover()?;
-    let csvexport = resolve_tracy_csvexport(&installation.user_data_root())?;
+    let tracy = ManagedTracyToolset::discover(&installation.user_data_root())?;
+    let csvexport = tracy.csvexport_executable()?;
     let mut command = Command::new(csvexport);
     command.arg("-u").arg("-s").arg("\t");
     if options.self_time {

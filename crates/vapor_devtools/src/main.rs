@@ -9,8 +9,8 @@ use std::sync::mpsc;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "vapor-profile",
-    about = "Vapor live telemetry and saved Tracy analysis workspace"
+    name = "vapor-devtools",
+    about = "Vapor runtime debugging, observability and performance-analysis workspace"
 )]
 struct Cli {
     #[arg(long)]
@@ -24,20 +24,20 @@ fn main() -> ExitCode {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Vapor Profile")
+            .with_title("Vapor Devtools")
             .with_inner_size([1480.0, 900.0])
             .with_min_inner_size([980.0, 620.0]),
         ..Default::default()
     };
 
     match eframe::run_native(
-        "Vapor Profile",
+        "Vapor Devtools",
         options,
-        Box::new(move |_creation| Ok(Box::new(app::ProfileApp::new(receiver)))),
+        Box::new(move |_creation| Ok(Box::new(app::DevtoolsApp::new(receiver)))),
     ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("Vapor Profile: {error}");
+            eprintln!("Vapor Devtools: {error}");
             ExitCode::FAILURE
         }
     }

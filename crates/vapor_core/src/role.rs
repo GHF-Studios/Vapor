@@ -6,7 +6,7 @@
 //! Role is deliberately distinct from external authorization and from USF
 //! Capabilities.
 
-use crate::{ManagedToolchain, ToolchainError, VaporInstallation};
+use crate::{DeveloperEnvironment, DeveloperEnvironmentError, VaporInstallation};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fmt;
@@ -80,7 +80,7 @@ pub struct RoleStatus {
 pub struct RoleTransitionReport {
     pub previous_role: VaporRole,
     pub installed_role: VaporRole,
-    pub toolchain_installed: bool,
+    pub developer_environment_changed: bool,
 }
 
 pub fn role_status(installation: &VaporInstallation) -> Result<RoleStatus, RoleError> {
@@ -146,15 +146,15 @@ pub fn promote_role(
         return Err(RoleError::GitUnavailable);
     }
 
-    let mut toolchain_installed = false;
+    let mut developer_environment_changed = false;
 
     if target >= VaporRole::ContentDeveloper {
-        let toolchain = ManagedToolchain::discover().map_err(RoleError::Toolchain)?;
-
-        if !toolchain.is_installed() {
-            toolchain.install().map_err(RoleError::Toolchain)?;
-            toolchain_installed = true;
-        }
+        let mut environment =
+            DeveloperEnvironment::discover().map_err(RoleError::DeveloperEnvironment)?;
+        let report = environment
+            .reconcile()
+            .map_err(RoleError::DeveloperEnvironment)?;
+        developer_environment_changed = report.changed();
     }
 
     persist_role(installation, target)?;
@@ -162,7 +162,7 @@ pub fn promote_role(
     Ok(RoleTransitionReport {
         previous_role: current,
         installed_role: target,
-        toolchain_installed,
+        developer_environment_changed,
     })
 }
 
@@ -190,7 +190,7 @@ pub fn demote_role(
     Ok(RoleTransitionReport {
         previous_role: current,
         installed_role: target,
-        toolchain_installed: false,
+        developer_environment_changed: false,
     })
 }
 
@@ -261,7 +261,7 @@ impl std::error::Error for ParseVaporRoleError {}
 pub enum RoleError {
     Installation(crate::InstallationError),
 
-    Toolchain(ToolchainError),
+    DeveloperEnvironment(DeveloperEnvironmentError),
 
     Io {
         path: PathBuf,
@@ -297,7 +297,7 @@ impl fmt::Display for RoleError {
         match self {
             Self::Installation(error) => error.fmt(formatter),
 
-            Self::Toolchain(error) => error.fmt(formatter),
+            Self::DeveloperEnvironment(error) => error.fmt(formatter),
 
             Self::Io { path, source } => {
                 write!(
@@ -355,7 +355,7 @@ impl std::error::Error for RoleError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Installation(error) => Some(error),
-            Self::Toolchain(error) => Some(error),
+            Self::DeveloperEnvironment(error) => Some(error),
             Self::Io { source, .. } => Some(source),
             _ => None,
         }

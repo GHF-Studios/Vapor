@@ -18,7 +18,7 @@ const DEV_PROFILE_DIR: &str = "debug";
 const BIN_DIR: &str = "bin";
 const CLIENT_DISTRIBUTION_MANIFEST_FILE_NAME: &str = "Vapor-Client.vapor.toml";
 
-const DISTRIBUTION_BINARIES: &[&str] = &["vapor", "vapor-profile", "vapor-installer", "vapor-entrypoint"];
+const DISTRIBUTION_BINARIES: &[&str] = &["vapor", "vapor-devtools", "vapor-installer", "vapor-entrypoint"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevelopmentOperation {
@@ -183,14 +183,13 @@ pub fn deploy_workspace(
         });
     }
 
-    // Remove the legacy monitor executable so the old product surface really
-    // disappears from installed Vapor environments after deployment.
-    let legacy_monitor = bin_root.join(executable_name("vapor-monitor"));
-    if legacy_monitor.is_file() {
-        fs::remove_file(&legacy_monitor).map_err(|source| DevelopmentError::Io {
-            path: legacy_monitor,
-            source,
-        })?;
+    // Remove superseded observability binaries so deployment cannot leave an
+    // old product surface shadowing the current Vapor Devtools executable.
+    for legacy in ["vapor-monitor", "vapor-profile"] {
+        let path = bin_root.join(executable_name(legacy));
+        if path.is_file() {
+            fs::remove_file(&path).map_err(|source| DevelopmentError::Io { path, source })?;
+        }
     }
 
     let launch_script = build.installation_root.join(BIN_DIR).join(

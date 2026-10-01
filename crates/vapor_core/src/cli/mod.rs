@@ -18,7 +18,7 @@ use crate::{
     git_available, inspect_local_cargo_package, install_installation, promote_role,
     reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
     repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
-    resolve_source_context, role_status, run_cargo_realization, run_workspace_configuration,
+    resolve_source_context, role_status, run_cargo_realization,
     run_workspace_operation, source_state, uninstall_installation, verify_local_library_cargo_dependencies,
 };
 use crate::install::ensure_canonical_superworkspace;
@@ -95,7 +95,7 @@ fn execute_vapor(command: VaporCommand) -> Result<(), String> {
 
         VaporCommand::Run(args) => execute_run(args),
 
-        VaporCommand::Profile(args) => execute_profile(args),
+        VaporCommand::Devtools(args) => execute_devtools(args),
 
         VaporCommand::Source { command } => execute_source(command),
 
@@ -307,9 +307,11 @@ fn execute_toolchain(command: ToolchainCommand) -> Result<(), String> {
 
         ToolchainCommand::Install => toolchain_install(),
 
-        ToolchainCommand::Diagnose => not_implemented("toolchain", "diagnose"),
+        ToolchainCommand::Diagnose => toolchain_diagnose(),
 
-        ToolchainCommand::Repair => not_implemented("toolchain", "repair"),
+        ToolchainCommand::Repair => toolchain_repair(),
+
+        ToolchainCommand::Tracy => toolchain_tracy(),
 
         ToolchainCommand::Cargo { project, args } => toolchain_cargo(project, args),
     }
@@ -367,54 +369,38 @@ fn execute_run(args: RunArgs) -> Result<(), String> {
     .map_err(|error| error.to_string())
 }
 
-fn execute_profile(args: ProfileArgs) -> Result<(), String> {
+fn execute_devtools(args: DevtoolsArgs) -> Result<(), String> {
     match args.command {
-        None => launch_profile_app(None),
-        Some(ProfileCommand::Open(args)) => launch_profile_app(args.address.as_deref()),
-        Some(ProfileCommand::Tracy(args)) => {
-            let trace = match args.trace.as_deref() {
-                Some(selector) => Some(
-                    crate::resolve_profile_trace(Some(selector))
-                        .map_err(|error| error.to_string())?,
-                ),
-                None => None,
-            };
-            crate::launch_tracy(trace.as_ref().map(|record| record.path.as_path()))
-                .map_err(|error| error.to_string())
-        }
-        Some(ProfileCommand::Import(args)) => {
-            let record = crate::import_profile_trace(&args.trace)
-                .map_err(|error| error.to_string())?;
-            println!("Added {} -> {}", record.id, record.path.display());
-            Ok(())
-        }
-        Some(ProfileCommand::List) => {
-            let records = crate::list_profile_traces().map_err(|error| error.to_string())?;
-            println!("{:<28}  {:<8}  {:<20}  {}", "TRACE", "STATUS", "CONFIGURATION", "PATH");
-            for record in records {
-                println!(
-                    "{:<28}  {:<8}  {:<20}  {}",
-                    record.id,
-                    if record.exists() { "ready" } else { "missing" },
-                    record.configuration.as_deref().unwrap_or("—"),
-                    record.path.display(),
-                );
+        None => launch_devtools_app(None),
+        Some(DevtoolsCommand::Open(args)) => launch_devtools_app(args.address.as_deref()),
+        Some(DevtoolsCommand::Trace { command }) => match command {
+            TraceCommand::Import(args) => {
+                let record = crate::import_profile_trace(&args.trace)
+                    .map_err(|error| error.to_string())?;
+                println!("Added {} -> {}", record.id, record.path.display());
+                Ok(())
             }
-            Ok(())
-        }
-        Some(ProfileCommand::Report(args)) => profile_report(args),
-        Some(ProfileCommand::Setup) => {
-            let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
-            let path = crate::install_tracy_csvexport(&installation.user_data_root())
-                .map_err(|error| error.to_string())?;
-            println!("Tracy analysis helper: {}", path.display());
-            Ok(())
-        }
+            TraceCommand::List => {
+                let records = crate::list_profile_traces().map_err(|error| error.to_string())?;
+                println!("{:<28}  {:<8}  {:<20}  {}", "TRACE", "STATUS", "CONFIGURATION", "PATH");
+                for record in records {
+                    println!(
+                        "{:<28}  {:<8}  {:<20}  {}",
+                        record.id,
+                        if record.exists() { "ready" } else { "missing" },
+                        record.configuration.as_deref().unwrap_or("—"),
+                        record.path.display(),
+                    );
+                }
+                Ok(())
+            }
+            TraceCommand::Report(args) => trace_report(args),
+        },
     }
 }
 
-fn launch_profile_app(address: Option<&str>) -> Result<(), String> {
-    let executable_name = if cfg!(windows) { "vapor-profile.exe" } else { "vapor-profile" };
+fn launch_devtools_app(address: Option<&str>) -> Result<(), String> {
+    let executable_name = if cfg!(windows) { "vapor-devtools.exe" } else { "vapor-devtools" };
     let sibling = env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(|parent| parent.join(executable_name)))
@@ -426,18 +412,14 @@ fn launch_profile_app(address: Option<&str>) -> Result<(), String> {
     if let Some(address) = address {
         command.arg("--address").arg(address);
     }
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
         .map_err(|error| format!(
-            "failed to launch Vapor Profile (`{executable_name}`): {error}; deploy current Vapor source first"
+            "failed to launch Vapor Devtools (`{executable_name}`): {error}; deploy current Vapor source with `vapor client deploy local`"
         ))?;
     Ok(())
 }
 
-fn profile_report(args: ProfileReportArgs) -> Result<(), String> {
+fn trace_report(args: TraceReportArgs) -> Result<(), String> {
     let record = crate::resolve_profile_trace(args.trace.as_deref())
         .map_err(|error| error.to_string())?;
     let options = crate::ProfileReportOptions {
@@ -460,31 +442,19 @@ fn profile_report(args: ProfileReportArgs) -> Result<(), String> {
     };
     let report = crate::analyze_profile_trace(&record, &options)
         .map_err(|error| error.to_string())?;
-
     match args.format {
         ProfileOutputFormat::Table => {
             println!("trace: {}", report.trace.display());
-            println!(
-                "{} occurrences · {} zones · {} timing",
-                report.occurrence_count,
-                report.zone_count,
-                if report.self_time { "self" } else { "inclusive" },
-            );
+            println!("{} occurrences · {} zones · {} timing", report.occurrence_count, report.zone_count, if report.self_time { "self" } else { "inclusive" });
             println!();
             println!("{:<4} {:>7} {:>10} {:>10} {:>10} {:>10} {:>10}  {}", "#", "calls", "total", "median", "p95", "p99", "max", "zone");
             for (index, zone) in report.zones.iter().enumerate() {
                 println!(
                     "{:<4} {:>7} {:>10} {:>10} {:>10} {:>10} {:>10}  {}  [{}:{}]",
-                    index + 1,
-                    zone.count,
-                    format_profile_ns(zone.total_ns),
-                    format_profile_ns(zone.median_ns),
-                    format_profile_ns(zone.p95_ns),
-                    format_profile_ns(zone.p99_ns),
-                    format_profile_ns(zone.max_ns),
-                    zone.name,
-                    zone.source,
-                    zone.line,
+                    index + 1, zone.count, format_profile_ns(zone.total_ns),
+                    format_profile_ns(zone.median_ns), format_profile_ns(zone.p95_ns),
+                    format_profile_ns(zone.p99_ns), format_profile_ns(zone.max_ns),
+                    zone.name, zone.source, zone.line,
                 );
             }
         }
@@ -494,19 +464,9 @@ fn profile_report(args: ProfileReportArgs) -> Result<(), String> {
                 let threads = zone.threads.iter().map(u64::to_string).collect::<Vec<_>>().join("|");
                 println!(
                     "{},{:?},{:?},{},{:?},{},{},{},{},{},{},{},{}",
-                    index + 1,
-                    zone.name,
-                    zone.source,
-                    zone.line,
-                    threads,
-                    zone.count,
-                    zone.total_ns,
-                    zone.mean_ns,
-                    zone.median_ns,
-                    zone.p90_ns,
-                    zone.p95_ns,
-                    zone.p99_ns,
-                    zone.max_ns,
+                    index + 1, zone.name, zone.source, zone.line, threads, zone.count,
+                    zone.total_ns, zone.mean_ns, zone.median_ns, zone.p90_ns,
+                    zone.p95_ns, zone.p99_ns, zone.max_ns,
                 );
             }
         }
@@ -518,15 +478,10 @@ fn profile_report(args: ProfileReportArgs) -> Result<(), String> {
 }
 
 fn format_profile_ns(ns: u64) -> String {
-    if ns >= 1_000_000_000 {
-        format!("{:.2}s", ns as f64 / 1_000_000_000.0)
-    } else if ns >= 1_000_000 {
-        format!("{:.2}ms", ns as f64 / 1_000_000.0)
-    } else if ns >= 1_000 {
-        format!("{:.1}µs", ns as f64 / 1_000.0)
-    } else {
-        format!("{ns}ns")
-    }
+    if ns >= 1_000_000_000 { format!("{:.2}s", ns as f64 / 1_000_000_000.0) }
+    else if ns >= 1_000_000 { format!("{:.2}ms", ns as f64 / 1_000_000.0) }
+    else if ns >= 1_000 { format!("{:.1}µs", ns as f64 / 1_000.0) }
+    else { format!("{ns}ns") }
 }
 
 fn toolchain_cargo(explicit_project: Option<String>, args: Vec<OsString>) -> Result<(), String> {
@@ -1287,8 +1242,8 @@ fn installation_diagnose() -> Result<(), String> {
 fn installation_repair() -> Result<(), String> {
     let report = repair_managed_state().map_err(|error| error.to_string())?;
 
-    if report.toolchain_installed {
-        println!("Installed the pinned Vapor-managed Rust toolchain.");
+    if report.developer_environment_changed {
+        println!("Reconciled the Vapor developer toolset.");
     }
 
     if report.development_changes.is_empty() {
@@ -1316,14 +1271,14 @@ fn print_managed_state(status: &crate::MaintenanceStatus) {
     println!("  installation: {}", status.installation_root.display());
     println!("  source: {}", status.source_root.display());
     println!(
-        "  toolchain: {} ({})",
+        "  Rust toolchain: {} ({})",
         status.toolchain_version,
-        if status.toolchain_installed {
-            "installed"
-        } else {
-            "missing"
-        },
+        if status.toolchain_installed { "installed" } else { "missing" },
     );
+    if let Some(environment) = &status.developer_environment {
+        println!("  Tracy profiler: {}", if environment.tracy_profiler_installed { "installed" } else { "missing" });
+        println!("  Tracy analysis: {}", if environment.tracy_analysis_installed { "installed" } else { "missing" });
+    }
 
     match &status.superworkspace_root {
         Some(root) => println!("  Superworkspace: {}", root.display()),
@@ -1400,23 +1355,15 @@ fn installer_role_status() -> Result<(), String> {
     }
 
     if status.installed_role >= VaporRole::ContentDeveloper {
-        match ManagedToolchain::discover() {
-            Ok(toolchain) => {
-                println!(
-                    "  Content Developer: {}",
-                    if toolchain.is_installed() {
-                        "ready"
-                    } else {
-                        "degraded: toolchain missing"
-                    }
-                );
-
-                println!("    Rust: {}", toolchain.pin.version);
+        match crate::DeveloperEnvironment::discover() {
+            Ok(environment) => {
+                let tools = environment.status();
+                println!("  Content Developer: {}", if tools.is_ready() { "ready" } else { "degraded: developer toolset incomplete" });
+                println!("    Rust: {}", if tools.rust_installed { "ready" } else { "missing" });
+                println!("    Tracy profiler: {}", if tools.tracy_profiler_installed { "ready" } else { "missing" });
+                println!("    Tracy analysis: {}", if tools.tracy_analysis_installed { "ready" } else { "missing" });
             }
-
-            Err(error) => {
-                println!("  Content Developer: degraded: {error}");
-            }
+            Err(error) => println!("  Content Developer: degraded: {error}"),
         }
     } else {
         println!("  Content Developer: not installed");
@@ -1443,8 +1390,8 @@ fn installer_role_promote(target: VaporRole) -> Result<(), String> {
 
     let report = promote_role(&installation, target).map_err(|error| error.to_string())?;
 
-    if report.toolchain_installed {
-        println!("Installed the Vapor-managed Content Developer toolchain.");
+    if report.developer_environment_changed {
+        println!("Reconciled the Vapor-managed developer toolset.");
     }
 
     println!("Installed Role: {}", report.installed_role);
@@ -1478,49 +1425,55 @@ fn authority_status() -> Result<(), String> {
     Ok(())
 }
 
+fn require_developer_role() -> Result<(), String> {
+    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let role = role_status(&installation).map_err(|error| error.to_string())?.installed_role;
+    if role < VaporRole::ContentDeveloper {
+        return Err("developer tooling belongs to the Content Developer role or higher; promote the Vapor role before using developer toolchain operations".to_owned());
+    }
+    Ok(())
+}
+
 fn toolchain_status() -> Result<(), String> {
-    let toolchain = ManagedToolchain::discover().map_err(|error| error.to_string())?;
-
-    println!("Vapor-managed Rust toolchain:");
-    println!(
-        "  pin: {} {} ({})",
-        toolchain.pin.channel, toolchain.pin.version, toolchain.pin.date,
-    );
-    println!("  installation: {}", toolchain.vapor_home.display());
-    println!("  user data: {}", toolchain.user_data_root.display());
-    println!("  installation source: {}", toolchain.installation_source);
-    println!("  cargo: {}", toolchain.cargo_path.display());
-    println!("  rustc: {}", toolchain.rustc_path.display());
-    println!(
-        "  rust-analyzer: {}",
-        toolchain.rust_analyzer_path.display()
-    );
-    println!(
-        "  state: {}",
-        if toolchain.is_installed() {
-            "installed"
-        } else {
-            "missing"
-        }
-    );
-
+    let environment = crate::DeveloperEnvironment::discover().map_err(|error| error.to_string())?;
+    let status = environment.status();
+    println!("Vapor developer toolset:");
+    println!("  Rust {}: {}", environment.rust.pin.version, if status.rust_installed { "installed" } else { "missing" });
+    println!("    Cargo: {}", environment.rust.cargo_path.display());
+    println!("    Rust Analyzer: {}", environment.rust.rust_analyzer_path.display());
+    println!("  Tracy {}: {}", crate::TRACY_PROFILER_VERSION, if status.tracy_profiler_installed { "installed" } else { "missing" });
+    println!("    profiler: {}", environment.tracy.profiler.display());
+    println!("  Tracy analysis: {}", if status.tracy_analysis_installed { "installed" } else { "missing" });
+    println!("    csvexport: {}", environment.tracy.csvexport.display());
+    println!("  state: {}", if status.is_ready() { "ready" } else { "repair required" });
     Ok(())
 }
 
 fn toolchain_install() -> Result<(), String> {
-    let toolchain = ManagedToolchain::discover().map_err(|error| error.to_string())?;
+    require_developer_role()?;
+    let mut environment = crate::DeveloperEnvironment::discover().map_err(|error| error.to_string())?;
+    println!("Reconciling Vapor developer toolset...");
+    let report = environment.reconcile().map_err(|error| error.to_string())?;
+    println!("{}", if report.changed() { "Developer toolset reconciled." } else { "Developer toolset was already current." });
+    toolchain_status()
+}
 
-    println!("Installing Vapor-managed Rust {}...", toolchain.pin.version);
+fn toolchain_diagnose() -> Result<(), String> {
+    require_developer_role()?;
+    let environment = crate::DeveloperEnvironment::discover().map_err(|error| error.to_string())?;
+    let status = environment.status();
+    toolchain_status()?;
+    if status.is_ready() { Ok(()) } else { Err("Vapor developer toolset requires repair".to_owned()) }
+}
 
-    toolchain.install().map_err(|error| error.to_string())?;
+fn toolchain_repair() -> Result<(), String> {
+    toolchain_install()
+}
 
-    println!(
-        "Installed Vapor-managed Rust {} at {}",
-        toolchain.pin.version,
-        toolchain.user_data_root.display()
-    );
-
-    Ok(())
+fn toolchain_tracy() -> Result<(), String> {
+    require_developer_role()?;
+    let environment = crate::DeveloperEnvironment::discover().map_err(|error| error.to_string())?;
+    environment.launch_tracy().map_err(|error| error.to_string())
 }
 
 const CLIENT_WORKSPACE_REPOSITORY: &str = "Vapor-Client/Vapor";

@@ -7,6 +7,7 @@ pub mod cargo_reconciliation;
 pub mod cli;
 pub mod content;
 pub mod development;
+pub mod developer_environment;
 pub mod ecosystem;
 pub mod host;
 pub mod ide;
@@ -50,6 +51,11 @@ pub use development::{
     BuiltBinary, DeployedBinary, DevelopmentError, DevelopmentOperation, EcosystemBuildReport,
     EcosystemDeploymentReport, build_workspace_deployment_inputs, deploy_workspace,
     development_target_dir, run_workspace_operation,
+};
+
+pub use developer_environment::{
+    DeveloperEnvironment, DeveloperEnvironmentError, DeveloperEnvironmentRepair,
+    DeveloperEnvironmentStatus,
 };
 
 pub use ecosystem::{
@@ -108,7 +114,7 @@ pub use run::{
 
 pub use profiling::{
     ProfileError, ProfileReport, ProfileReportOptions, ProfileSort, ProfileTraceRecord,
-    ProfileZoneSummary, analyze_profile_trace, import_profile_trace, launch_tracy,
+    ProfileZoneSummary, analyze_profile_trace, import_profile_trace,
     list_profile_traces, profile_library_path, resolve_profile_trace,
 };
 
@@ -135,9 +141,7 @@ pub use superworkspace::{
 pub use toolchain::{ManagedToolchain, ToolchainError};
 
 pub use tracy::{
-    ResolvedTracyProfiler, TRACY_PROFILER_VERSION, TracyError, TracyProfilerOrigin,
-    install_tracy_csvexport, remember_tracy_profiler, resolve_tracy_csvexport,
-    resolve_tracy_profiler,
+    ManagedTracyRepair, ManagedTracyToolset, TRACY_PROFILER_VERSION, TracyError,
 };
 
 pub use uninstall::{UninstallError, UninstallOptions, UninstallReport, uninstall_installation};

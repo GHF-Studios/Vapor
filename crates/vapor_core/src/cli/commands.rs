@@ -64,8 +64,8 @@ pub(super) enum VaporCommand {
 
     Run(RunArgs),
 
-    /// Unified local performance-analysis suite.
-    Profile(ProfileArgs),
+    /// Unified runtime debugging, observability and profiling workspace.
+    Devtools(DevtoolsArgs),
 
     Source {
         #[command(subcommand)]
@@ -149,41 +149,38 @@ pub(super) struct RunArgs {
 }
 
 #[derive(Debug, Args)]
-pub(super) struct ProfileArgs {
+pub(super) struct DevtoolsArgs {
     #[command(subcommand)]
-    pub(super) command: Option<ProfileCommand>,
+    pub(super) command: Option<DevtoolsCommand>,
 }
 
 #[derive(Debug, Subcommand)]
-pub(super) enum ProfileCommand {
-    /// Launch the Vapor Profile application.
-    Open(ProfileOpenArgs),
-    /// Launch Tracy as the native collector/viewer.
-    Tracy(ProfileTracyArgs),
-    /// Register a manually saved .tracy capture in the Vapor trace library.
-    Import(ProfileImportArgs),
-    /// List saved trace-library entries.
-    List,
-    /// Analyze a saved capture without opening the GUI.
-    Report(ProfileReportArgs),
-    /// Explicitly install the optional tracy-csvexport analysis helper.
-    Setup,
+pub(super) enum DevtoolsCommand {
+    /// Launch the Vapor Devtools application.
+    Open(DevtoolsOpenArgs),
+
+    /// Work with manually saved Tracy captures.
+    Trace {
+        #[command(subcommand)]
+        command: TraceCommand,
+    },
 }
 
 #[derive(Debug, Args)]
-pub(super) struct ProfileOpenArgs {
+pub(super) struct DevtoolsOpenArgs {
     #[arg(long)]
     pub(super) address: Option<String>,
 }
 
-#[derive(Debug, Args)]
-pub(super) struct ProfileTracyArgs {
-    #[arg(value_name = "TRACE")]
-    pub(super) trace: Option<String>,
+#[derive(Debug, Subcommand)]
+pub(super) enum TraceCommand {
+    Import(TraceImportArgs),
+    List,
+    Report(TraceReportArgs),
 }
 
 #[derive(Debug, Args)]
-pub(super) struct ProfileImportArgs {
+pub(super) struct TraceImportArgs {
     #[arg(value_name = "TRACE")]
     pub(super) trace: PathBuf,
 }
@@ -208,7 +205,7 @@ pub(super) enum ProfileOutputFormat {
 }
 
 #[derive(Debug, Args)]
-pub(super) struct ProfileReportArgs {
+pub(super) struct TraceReportArgs {
     #[arg(value_name = "TRACE")]
     pub(super) trace: Option<String>,
     #[arg(long, default_value_t = 50)]
@@ -313,6 +310,9 @@ pub(super) enum ToolchainCommand {
     Install,
     Diagnose,
     Repair,
+
+    /// Launch the managed Tracy profiler.
+    Tracy,
 
     /// Run Cargo from the active Vapor Installation's managed Rust toolchain.
     ///

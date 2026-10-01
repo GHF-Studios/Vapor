@@ -4,15 +4,16 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
 use vapor_core::{
-    ProfileReport, ProfileReportOptions, ProfileSort, ProfileTraceRecord,
-    analyze_profile_trace, import_profile_trace, launch_tracy, list_profile_traces,
+    DeveloperEnvironment, ProfileReport, ProfileReportOptions, ProfileSort,
+    ProfileTraceRecord, analyze_profile_trace, import_profile_trace,
+    list_profile_traces,
 };
 
-use crate::model::{MetricSeries, ProfileMessage, ProfileState, format_metric, metric_label};
+use crate::model::{MetricSeries, DevtoolsMessage, DevtoolsState, format_metric, metric_label};
 
-pub struct ProfileApp {
-    receiver: Receiver<ProfileMessage>,
-    state: ProfileState,
+pub struct DevtoolsApp {
+    receiver: Receiver<DevtoolsMessage>,
+    state: DevtoolsState,
     traces: Vec<ProfileTraceRecord>,
     trace_filter: String,
     selected_trace: Option<String>,
@@ -30,11 +31,11 @@ pub struct ProfileApp {
     configured_style: bool,
 }
 
-impl ProfileApp {
-    pub fn new(receiver: Receiver<ProfileMessage>) -> Self {
+impl DevtoolsApp {
+    pub fn new(receiver: Receiver<DevtoolsMessage>) -> Self {
         Self {
             receiver,
-            state: ProfileState::default(),
+            state: DevtoolsState::default(),
             traces: list_profile_traces().unwrap_or_default(),
             trace_filter: String::new(),
             selected_trace: None,
@@ -107,7 +108,7 @@ impl ProfileApp {
 
     fn draw_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.heading("Vapor Profile");
+            ui.heading("Vapor Devtools");
             ui.separator();
             ui.strong(&self.state.status);
             if let Some(session) = &self.state.session {
@@ -119,7 +120,7 @@ impl ProfileApp {
             }
             ui.separator();
             if ui.button("Open Tracy").clicked() {
-                match launch_tracy(None) {
+                match DeveloperEnvironment::discover().and_then(|environment| environment.launch_tracy()) {
                     Ok(()) => self.status = "Opened Tracy collector.".to_owned(),
                     Err(error) => self.status = error.to_string(),
                 }
@@ -138,8 +139,8 @@ impl ProfileApp {
     }
 
     fn draw_left(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Trace library");
-        ui.small("Manually saved Tracy captures");
+        ui.heading("Artifacts");
+        ui.small("Saved Tracy captures and runtime evidence");
         ui.text_edit_singleline(&mut self.trace_filter);
         let filter = self.trace_filter.to_lowercase();
         egui::ScrollArea::vertical().id_salt("trace-library").show(ui, |ui| {
@@ -212,12 +213,6 @@ impl ProfileApp {
         ui.horizontal_wrapped(|ui| {
             ui.heading(trace.display_name());
             ui.weak(trace.path.display().to_string());
-            if ui.button("Open in Tracy").clicked() {
-                match launch_tracy(Some(&trace.path)) {
-                    Ok(()) => self.status = "Opened trace in Tracy.".to_owned(),
-                    Err(error) => self.status = error.to_string(),
-                }
-            }
         });
 
         ui.horizontal_wrapped(|ui| {
@@ -242,7 +237,7 @@ impl ProfileApp {
 
         let Some(report) = &self.report else {
             ui.add_space(30.0);
-            ui.weak("Analyze this capture to aggregate count, total, mean, median, p90, p95, p99 and max. If the CSV exporter is missing, run `vapor profile setup` once.");
+            ui.weak("Analyze this capture to aggregate count, total, mean, median, p90, p95, p99 and max. If the CSV exporter is missing, repair the developer environment with `vapor toolchain repair`.");
             return;
         };
 
@@ -340,7 +335,7 @@ impl ProfileApp {
     }
 }
 
-impl eframe::App for ProfileApp {
+impl eframe::App for DevtoolsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.configure_style(ui.ctx());
         self.drain();

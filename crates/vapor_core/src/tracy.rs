@@ -10,11 +10,10 @@
 use crate::{
     DisplayServer, HostCapability, HostEnvironment, HostOperatingSystem, HostTarget,
     ManagedToolError, ManagedToolRequest, ReleaseAssetStatus,
-    download_verified_github_release_asset, find_executable, find_executable_on_path,
+    download_verified_github_release_asset,
     github_release_client,
 };
 use reqwest::blocking::Client;
-use std::env;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -30,10 +29,6 @@ const TRACY_SOURCE_ARCHIVE: &str =
 const MANAGED_RELEASE_REPOSITORY: &str = "GHF-Studios/Vapor";
 const MANAGED_RELEASE_TAG_PREFIX: &str = "managed-tracy-v";
 
-const TRACY_PATH_ENV: &str = "VAPOR_TRACY_PATH";
-const TRACY_PATH_FILE: &str = "tracy-profiler-path";
-
-const TRACY_CSVEXPORT_PATH_ENV: &str = "VAPOR_TRACY_CSVEXPORT_PATH";
 const TRACY_ANALYSIS_DIR: &str = "tools/tracy-analysis";
 
 const TRACY_CSVEXPORT_NAMES: &[&str] = &[
@@ -51,190 +46,147 @@ const TRACY_EXECUTABLE_NAMES: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TracyProfilerOrigin {
-    ExplicitOverride,
-    EnvironmentOverride,
-    RememberedOverride,
+enum TracyProfilerOrigin {
     ManagedCache,
-    SystemPath,
     ManagedDownload,
     ManagedSourceBuild,
 }
 
-impl fmt::Display for TracyProfilerOrigin {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::ExplicitOverride => "explicit override",
-            Self::EnvironmentOverride => "environment override",
-            Self::RememberedOverride => "remembered override",
-            Self::ManagedCache => "managed cache",
-            Self::SystemPath => "system PATH",
-            Self::ManagedDownload => "managed download",
-            Self::ManagedSourceBuild => "managed source build",
-        })
-    }
+#[derive(Debug, Clone)]
+struct ResolvedTracyProfiler {
+    executable: PathBuf,
+    version: &'static str,
+    origin: TracyProfilerOrigin,
 }
 
 #[derive(Debug, Clone)]
-pub struct ResolvedTracyProfiler {
-    pub executable: PathBuf,
-    pub version: &'static str,
-    pub origin: TracyProfilerOrigin,
+pub struct ManagedTracyToolset {
+    user_data_root: PathBuf,
+    environment: HostEnvironment,
+    request: ManagedToolRequest,
+    pub profiler: PathBuf,
+    pub csvexport: PathBuf,
 }
 
-pub fn resolve_tracy_profiler(
-    explicit: Option<&Path>,
-    user_data_root: &Path,
-) -> Result<ResolvedTracyProfiler, TracyError> {
-    let executable_names = tracy_executable_names();
-
-    if let Some(path) = explicit {
-        let executable = find_executable(path, &executable_names).ok_or_else(|| {
-            TracyError::message(format!(
-                "no Tracy profiler executable found at `{}`",
-                path.display()
-            ))
-        })?;
-
-        return Ok(resolved(executable, TracyProfilerOrigin::ExplicitOverride));
-    }
-
-    if let Some(path) = env::var_os(TRACY_PATH_ENV) {
-        let path = PathBuf::from(path);
-        if let Some(executable) = find_executable(&path, &executable_names) {
-            return Ok(resolved(
-                executable,
-                TracyProfilerOrigin::EnvironmentOverride,
-            ));
-        }
-    }
-
-    let remembered = user_data_root
-        .join("development")
-        .join(TRACY_PATH_FILE);
-
-    if let Ok(path) = fs::read_to_string(&remembered) {
-        let path = PathBuf::from(path.trim());
-        if let Some(executable) = find_executable(&path, &executable_names) {
-            return Ok(resolved(
-                executable,
-                TracyProfilerOrigin::RememberedOverride,
-            ));
-        }
-    }
-
-    let environment = HostEnvironment::current();
-
-    if let Ok(environment) = &environment {
-        if let Ok(request) = tracy_request(environment) {
-            let root = request.install_root(user_data_root, environment);
-            if root.join("LICENSE.tracy").is_file() {
-                if let Some(executable) = request.installed_executable(&root) {
-                    return Ok(resolved(executable, TracyProfilerOrigin::ManagedCache));
-                }
-            }
-        }
-    }
-
-    if let Some(executable) = find_executable_on_path(&executable_names) {
-        return Ok(resolved(executable, TracyProfilerOrigin::SystemPath));
-    }
-
-    let environment = environment.map_err(|error| TracyError::message(error.to_string()))?;
-    let request = tracy_request(&environment)?;
-
-    acquire_managed_tracy(user_data_root, &environment, &request)
+#[derive(Debug, Clone)]
+pub struct ManagedTracyRepair {
+    pub profiler_installed: bool,
+    pub analysis_installed: bool,
 }
 
-/// Resolve Tracy's CSV exporter without acquiring or building anything.
-///
-/// Game launch must never trigger profiler-tool construction. Saved-trace
-/// analysis is a separate explicit workflow.
-pub fn resolve_tracy_csvexport(
-    user_data_root: &Path,
-) -> Result<PathBuf, TracyError> {
-    if let Some(path) = env::var_os(TRACY_CSVEXPORT_PATH_ENV) {
-        let path = PathBuf::from(path);
-        if let Some(executable) = find_executable(&path, &tracy_csvexport_names()) {
-            return Ok(executable);
-        }
-    }
-
-    if let Some(path) = env::var_os(TRACY_PATH_ENV) {
-        let path = PathBuf::from(path);
-        if let Some(parent) = profiler_parent_candidate(&path)
-            && let Some(executable) = find_executable(&parent, &tracy_csvexport_names())
-        {
-            return Ok(executable);
-        }
-    }
-
-    let remembered = user_data_root.join("development").join(TRACY_PATH_FILE);
-    if let Ok(path) = fs::read_to_string(&remembered) {
-        let path = PathBuf::from(path.trim());
-        if let Some(parent) = profiler_parent_candidate(&path)
-            && let Some(executable) = find_executable(&parent, &tracy_csvexport_names())
-        {
-            return Ok(executable);
-        }
-    }
-
-    if let Some(executable) = find_executable_on_path(&tracy_csvexport_names()) {
-        return Ok(executable);
-    }
-
-    if let Ok(environment) = HostEnvironment::current() {
-        let managed = tracy_analysis_root(user_data_root, &environment)
+impl ManagedTracyToolset {
+    pub fn discover(user_data_root: &Path) -> Result<Self, TracyError> {
+        let environment = HostEnvironment::current()
+            .map_err(|error| TracyError::message(error.to_string()))?;
+        let request = tracy_request(&environment)?;
+        let root = request.install_root(user_data_root, &environment);
+        let profiler = request
+            .installed_executable(&root)
+            .unwrap_or_else(|| root.join(profiler_executable_name(&environment)));
+        let csvexport = tracy_analysis_root(user_data_root, &environment)
             .join(csvexport_executable_name());
-        if managed.is_file() {
-            return Ok(managed);
+        Ok(Self {
+            user_data_root: user_data_root.to_path_buf(),
+            environment,
+            request,
+            profiler,
+            csvexport,
+        })
+    }
+
+    pub fn profiler_installed(&self) -> bool {
+        self.profiler.is_file()
+            && self.request
+                .install_root(&self.user_data_root, &self.environment)
+                .join("LICENSE.tracy")
+                .is_file()
+    }
+
+    pub fn analysis_installed(&self) -> bool {
+        self.csvexport.is_file()
+    }
+
+    pub fn is_installed(&self) -> bool {
+        self.profiler_installed() && self.analysis_installed()
+    }
+
+    pub fn install_missing(&mut self) -> Result<ManagedTracyRepair, TracyError> {
+        let mut profiler_installed = false;
+        let mut analysis_installed = false;
+
+        if !self.profiler_installed() {
+            let resolved = acquire_managed_tracy(
+                &self.user_data_root,
+                &self.environment,
+                &self.request,
+            )?;
+            self.profiler = resolved.executable;
+            profiler_installed = true;
+        }
+
+        if !self.analysis_installed() {
+            self.csvexport = install_managed_tracy_csvexport(
+                &self.user_data_root,
+                &self.environment,
+            )?;
+            analysis_installed = true;
+        }
+
+        Ok(ManagedTracyRepair {
+            profiler_installed,
+            analysis_installed,
+        })
+    }
+
+    pub fn launch(&self) -> Result<(), TracyError> {
+        if !self.profiler_installed() {
+            return Err(TracyError::message(
+                "Vapor's managed Tracy profiler is missing; repair the developer environment with `vapor toolchain repair`"
+                    .to_owned(),
+            ));
+        }
+
+        Command::new(&self.profiler)
+            .spawn()
+            .map_err(|source| TracyError::io(self.profiler.clone(), source))?;
+        Ok(())
+    }
+
+    pub fn csvexport_executable(&self) -> Result<&Path, TracyError> {
+        if self.analysis_installed() {
+            Ok(&self.csvexport)
+        } else {
+            Err(TracyError::message(
+                "Vapor's managed Tracy analysis tooling is missing; repair the developer environment with `vapor toolchain repair`"
+                    .to_owned(),
+            ))
         }
     }
-
-    Err(TracyError::message(
-        "Tracy saved-trace analysis needs `tracy-csvexport`, but Vapor did not find it. \
-         This does not affect `vapor run --profiling`. Install the analysis helper \
-         explicitly with `vapor profile setup`."
-            .to_owned(),
-    ))
 }
 
-/// Explicitly install only the saved-trace analysis helper.
-///
-/// This function is intentionally never called from `vapor run`.
-pub fn install_tracy_csvexport(
+fn install_managed_tracy_csvexport(
     user_data_root: &Path,
+    environment: &HostEnvironment,
 ) -> Result<PathBuf, TracyError> {
-    if let Ok(existing) = resolve_tracy_csvexport(user_data_root) {
-        return Ok(existing);
-    }
-
-    let environment =
-        HostEnvironment::current().map_err(|error| TracyError::message(error.to_string()))?;
-
-    if environment.target != HostTarget::LINUX_X86_64_GNU {
-        return Err(TracyError::message(format!(
-            "automatic tracy-csvexport installation is not yet implemented for {}; \
-             install Tracy {} csvexport and put it on PATH or set {}",
-            environment.target.triple(),
-            TRACY_PROFILER_VERSION,
-            TRACY_CSVEXPORT_PATH_ENV,
-        )));
-    }
-
-    let destination_root = tracy_analysis_root(user_data_root, &environment);
+    let destination_root = tracy_analysis_root(user_data_root, environment);
     fs::create_dir_all(&destination_root)
         .map_err(|source| TracyError::io(destination_root.clone(), source))?;
     let destination = destination_root.join(csvexport_executable_name());
+    if destination.is_file() {
+        return Ok(destination);
+    }
+
+    if environment.target != HostTarget::LINUX_X86_64_GNU {
+        return Err(TracyError::message(format!(
+            "no managed Tracy analysis artifact is available for {}; Vapor developer-environment provisioning for this target is incomplete",
+            environment.target.triple(),
+        )));
+    }
 
     let staging_root = user_data_root
         .join("tools")
         .join(".staging")
-        .join(format!(
-            "tracy-csvexport-{}-{}",
-            TRACY_PROFILER_VERSION,
-            std::process::id()
-        ));
+        .join(format!("tracy-csvexport-{}-{}", TRACY_PROFILER_VERSION, std::process::id()));
 
     if staging_root.exists() {
         fs::remove_dir_all(&staging_root)
@@ -279,11 +231,7 @@ pub fn install_tracy_csvexport(
             .flatten()
             .map(|entry| entry.path())
             .find(|path| path.join("csvexport/CMakeLists.txt").is_file())
-            .ok_or_else(|| {
-                TracyError::message(
-                    "downloaded Tracy source has no csvexport/CMakeLists.txt".to_owned(),
-                )
-            })?;
+            .ok_or_else(|| TracyError::message("downloaded Tracy source has no csvexport/CMakeLists.txt".to_owned()))?;
 
         run_command(
             Command::new("cmake")
@@ -295,7 +243,6 @@ pub fn install_tracy_csvexport(
                 .arg(format!("-DGIT_REV={TRACY_UPSTREAM_COMMIT}")),
             "configure Tracy csvexport",
         )?;
-
         run_command(
             Command::new("cmake")
                 .arg("--build")
@@ -304,17 +251,11 @@ pub fn install_tracy_csvexport(
             "build Tracy csvexport",
         )?;
 
-        let built = find_named_executable_recursive(
-            &build_root,
-            TRACY_CSVEXPORT_NAMES,
-            0,
-        )
-        .ok_or_else(|| {
-            TracyError::message(format!(
+        let built = find_named_executable_recursive(&build_root, TRACY_CSVEXPORT_NAMES, 0)
+            .ok_or_else(|| TracyError::message(format!(
                 "Tracy csvexport build completed but no executable was found under `{}`",
                 build_root.display()
-            ))
-        })?;
+            )))?;
 
         let temporary = destination.with_extension("partial");
         fs::copy(&built, &temporary)
@@ -337,27 +278,11 @@ pub fn install_tracy_csvexport(
         }
         fs::rename(&temporary, &destination)
             .map_err(|source| TracyError::io(destination.clone(), source))?;
-
         Ok(destination.clone())
     })();
 
     let _ = fs::remove_dir_all(&staging_root);
     result
-}
-
-fn profiler_parent_candidate(path: &Path) -> Option<PathBuf> {
-    if path.is_dir() {
-        Some(path.to_path_buf())
-    } else {
-        path.parent().map(Path::to_path_buf)
-    }
-}
-
-fn tracy_csvexport_names() -> Vec<String> {
-    TRACY_CSVEXPORT_NAMES
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect()
 }
 
 fn tracy_analysis_root(
@@ -395,7 +320,8 @@ fn find_named_executable_recursive(
                 return Some(path);
             }
         } else if path.is_dir()
-            && let Some(found) = find_named_executable_recursive(&path, names, depth + 1)
+            && let Some(found) =
+                find_named_executable_recursive(&path, names, depth + 1)
         {
             return Some(found);
         }
@@ -404,16 +330,11 @@ fn find_named_executable_recursive(
     None
 }
 
-pub fn remember_tracy_profiler(
-    user_data_root: &Path,
-    tracy: &Path,
-) -> Result<(), TracyError> {
-    let directory = user_data_root.join("development");
-    fs::create_dir_all(&directory).map_err(|source| TracyError::io(directory.clone(), source))?;
-
-    let path = directory.join(TRACY_PATH_FILE);
-    fs::write(&path, tracy.to_string_lossy().as_bytes())
-        .map_err(|source| TracyError::io(path, source))
+fn profiler_executable_name(environment: &HostEnvironment) -> &'static str {
+    match environment.target.operating_system {
+        HostOperatingSystem::Windows => "tracy-profiler.exe",
+        HostOperatingSystem::Linux => "tracy-profiler",
+    }
 }
 
 fn resolved(
@@ -535,7 +456,7 @@ fn acquire_managed_tracy(
     if environment.target != HostTarget::LINUX_X86_64_GNU {
         return Err(TracyError::message(format!(
             "no managed Tracy {} artifact is published for {} / {}; \
-             open Tracy explicitly from `vapor profile` with an explicit profiler override until that target has a proven artifact",
+             Vapor developer-environment provisioning for this target is incomplete",
             TRACY_PROFILER_VERSION,
             environment.target.triple(),
             variant

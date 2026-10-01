@@ -5,9 +5,9 @@ use std::time::Duration;
 use vapor_core::active_development_session;
 use vapor_telemetry::TelemetryConsumer;
 
-use crate::model::{ProfileMessage, SessionInfo};
+use crate::model::{DevtoolsMessage, SessionInfo};
 
-pub fn spawn_connection_worker(explicit_address: Option<String>, sender: Sender<ProfileMessage>) {
+pub fn spawn_connection_worker(explicit_address: Option<String>, sender: Sender<DevtoolsMessage>) {
     thread::spawn(move || {
         let mut last_waiting = String::new();
         loop {
@@ -38,19 +38,19 @@ pub fn spawn_connection_worker(explicit_address: Option<String>, sender: Sender<
             match TelemetryConsumer::connect(&address) {
                 Ok(mut consumer) => {
                     last_waiting.clear();
-                    if sender.send(ProfileMessage::Connected(session)).is_err() {
+                    if sender.send(DevtoolsMessage::Connected(session)).is_err() {
                         return;
                     }
                     loop {
                         match consumer.recv() {
                             Ok(Some(event)) => {
-                                if sender.send(ProfileMessage::Event(event)).is_err() {
+                                if sender.send(DevtoolsMessage::Event(event)).is_err() {
                                     return;
                                 }
                             }
                             Ok(None) => break,
                             Err(error) => {
-                                let _ = sender.send(ProfileMessage::Disconnected(format!("Telemetry disconnected: {error}")));
+                                let _ = sender.send(DevtoolsMessage::Disconnected(format!("Telemetry disconnected: {error}")));
                                 break;
                             }
                         }
@@ -65,9 +65,9 @@ pub fn spawn_connection_worker(explicit_address: Option<String>, sender: Sender<
     });
 }
 
-fn wait(sender: &Sender<ProfileMessage>, last_waiting: &mut String, message: String, duration: Duration) {
+fn wait(sender: &Sender<DevtoolsMessage>, last_waiting: &mut String, message: String, duration: Duration) {
     if message != *last_waiting {
-        let _ = sender.send(ProfileMessage::Waiting(message.clone()));
+        let _ = sender.send(DevtoolsMessage::Waiting(message.clone()));
         *last_waiting = message;
     }
     thread::sleep(duration);

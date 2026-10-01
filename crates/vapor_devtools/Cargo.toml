@@ -1,10 +1,10 @@
 [package]
-name = "vapor_profile"
+name = "vapor_devtools"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "vapor-profile"
+name = "vapor-devtools"
 path = "src/main.rs"
 
 [dependencies]
