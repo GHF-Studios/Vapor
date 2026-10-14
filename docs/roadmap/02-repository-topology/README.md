@@ -13,8 +13,11 @@ Make the active repo split explicit enough that code, docs, packaging, and relea
 ## Exists Now
 
 - `Vapor`
-- `Vapor-SDK`
-- `Vapor-Launcher`
+- `Vapor-CLI`
+- `Vapor-GUI`
+- `Vapor-Studio`
+- `Vapor-Installer`
+- `Vapor-Steam-Entrypoint`
 - `Vapor-Examples`
 - `Vapor-Registry`
 

@@ -433,9 +433,9 @@ fn launch_devtools_app(address: Option<&str>) -> Result<(), String> {
 
 fn launch_studio_app(workspace: Option<&std::path::Path>) -> Result<(), String> {
     let executable_name = if cfg!(windows) {
-        "vapor-studio.exe"
+        "vapor-gui.exe"
     } else {
-        "vapor-studio"
+        "vapor-gui"
     };
     let sibling = env::current_exe()
         .ok()

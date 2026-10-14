@@ -34,8 +34,12 @@ Vapor <- Spacetime-Engine <- Loo-Cast-Game
 
 Satellite repos:
 
-- `Vapor-SDK`: authoring, project/template/toolchain, validation, publishing, and distribution workflows.
-- `Vapor-Launcher`: install, select, validate, compose, and launch workflows for players and modpack authors.
+- `Vapor`: shared operations, providers, and reusable content/workspace capabilities.
+- `Vapor-CLI`: terminal command presentation and interactive shell.
+- `Vapor-GUI`: GUI lifecycle and mode dispatch.
+- `Vapor-Studio`: creator-facing library, composition, workspace, and publishing UI.
+- `Vapor-Installer`: bootstrap and recovery installer.
+- `Vapor-Steam-Entrypoint`: Steam-facing app-root dispatcher.
 - `Vapor-Examples`: official example/test content consuming the stack like an external project.
 
 ## Dependency Rules

@@ -24,7 +24,8 @@ const DISTRIBUTION_BINARIES: &[&str] = &[
     "vapor-devtools",
     "vapor-installer",
     "vapor-entrypoint",
-    "vapor-studio",
+    "vapor-gui",
+    "vapor-ide-host",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

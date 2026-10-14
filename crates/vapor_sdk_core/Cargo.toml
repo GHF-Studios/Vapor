@@ -1,0 +1,9 @@
+[package]
+name = "vapor_sdk_core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+vapor_core = { path = "../vapor_core" }

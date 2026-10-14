@@ -5,5 +5,5 @@ language = "en"
 src = "src"
 
 [output.html]
-git-repository-url = "https://github.com/GHF-Studios/Vapor-Launcher"
+git-repository-url = "https://github.com/GHF-Studios/Vapor-Studio"
 

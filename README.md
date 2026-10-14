@@ -3,12 +3,16 @@
 Vapor is the root ecosystem layer for generic Engines, Games, Mods, packs, capability/Rhai authoring, validation,
 launching protocol, and distribution.
 
-The SDK and launcher live in separate repositories:
+The user-facing applications live in separate repositories:
 
-- `Vapor-SDK`
-- `Vapor-Launcher`
+- `Vapor-CLI`
+- `Vapor-GUI`
+- `Vapor-Studio`
+- `Vapor-Installer`
+- `Vapor-Steam-Entrypoint`
 
 Current contents:
 
 - `vapor_core`
+- `vapor_sdk_core`
 - `vapor_macros`

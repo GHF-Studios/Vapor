@@ -5,8 +5,12 @@ Status: exists now.
 ## Exists Now
 
 - `Vapor` owns root ecosystem concepts and the `vapor_core` / `vapor_macros` crates.
-- `Vapor-SDK` owns `vapor_sdk_core` and `vapor_sdk_cli`.
-- `Vapor-Launcher` owns `vapor_launcher_core` and `vapor_launcher_cli`.
+- `Vapor` owns shared operations and `vapor_sdk_core`.
+- `Vapor-CLI` owns terminal command presentation.
+- `Vapor-GUI` owns GUI startup and mode dispatch.
+- `Vapor-Studio` owns the creator-facing Studio product UI.
+- `Vapor-Installer` owns the early bootstrap executable.
+- `Vapor-Steam-Entrypoint` owns Steam-facing launch dispatch.
 - `Vapor-Examples` is a custom-content example workspace with engine, game, and packagepack entries.
 - `Vapor-Registry` has a registry manifest and describes GitHub-hosted identity/release authority.
 
