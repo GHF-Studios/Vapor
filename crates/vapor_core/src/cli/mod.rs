@@ -14,14 +14,14 @@ use crate::{
     ResolvedComposition, ResolvedContentGraph, SUPERWORKSPACE_MANIFEST_FILE_NAME,
     SteamDeploymentOptions, UninstallOptions, VaporId, VaporInstallation, VaporProject, VaporRole,
     VaporSuperworkspace, VaporWorkspace, acquire_ecosystem_repositories, build_cargo_realization,
-    build_workspace_deployment_authority, demote_role, deploy_ecosystem_to_steam,
-    deploy_workspace_from_authority, development_target_dir, diagnose_managed_state,
+    LocalClientDeploymentOutcome, demote_role, deploy_client_locally, deploy_ecosystem_to_steam,
+    development_target_dir, diagnose_managed_state,
     discover_local_content, forget_source, generate_local_cargo_realization, git_available,
-    inspect_local_cargo_package, install_installation, local_deployment_authority_active,
+    inspect_local_cargo_package, install_installation,
     promote_role, reconcile_existing_development_environment,
     repair_local_library_cargo_dependencies, repair_managed_state, resolve_local_content_kind,
     resolve_local_packagepack, resolve_source_context, role_status, run_cargo_realization,
-    run_workspace_deployment_authority, run_workspace_operation_at, source_state,
+    run_workspace_operation_at, source_state,
     uninstall_installation, verify_local_library_cargo_dependencies,
 };
 use clap::Parser;
@@ -2101,63 +2101,34 @@ fn platform_server_deploy() -> Result<(), String> {
 }
 
 fn client_deploy_local() -> Result<(), String> {
-    let workspace = client_workspace()?;
-
-    if !local_deployment_authority_active().map_err(|error| error.to_string())? {
-        println!(
-            "Preparing source-authoritative local deployment for {}/{} {}...",
-            workspace.manifest.workspace.organization,
-            workspace.manifest.workspace.name,
-            workspace.manifest.workspace.version,
-        );
-
-        let authority =
-            build_workspace_deployment_authority(&workspace).map_err(|error| error.to_string())?;
-
-        println!(
-            "Transferring deployment authority to newly-built source CLI: {}",
-            authority.executable.display(),
-        );
-
-        return run_workspace_deployment_authority(&workspace, &authority)
-            .map_err(|error| error.to_string());
-    }
-
-    let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
-    let authority = env::current_exe().map_err(|error| {
-        format!("failed to resolve source deployment authority executable: {error}")
-    })?;
-
-    println!(
-        "Deploying Vapor Client {}/{} {} locally under source authority...",
-        workspace.manifest.workspace.organization,
-        workspace.manifest.workspace.name,
-        workspace.manifest.workspace.version,
-    );
-
-    let report = deploy_workspace_from_authority(&workspace, &authority)
-        .map_err(|error| error.to_string())?;
-
-    let bootstrap = crate::install_ecosystem_bootstrap(&installation, &workspace.root)
-        .map_err(|error| error.to_string())?;
-
-    println!();
-    println!("Vapor Installation: {}", report.installation_root.display());
-
-    println!("Deployed binaries:");
-
-    for binary in &report.binaries {
-        println!("  {} -> {}", binary.name, binary.destination.display());
-    }
-
-    println!("Launch wrapper: {}", report.launch_script.display());
-    println!("Shell activation: {}", report.activation_script.display());
-    println!("Source bootstrap: {}", bootstrap.display());
-
-    if let Err(error) = synchronize_existing_development_environment(&workspace.root) {
-        eprintln!(
-            "warning: local Client deployment succeeded, but the existing development environment could not be synchronized: {error}"
-        );
+    match deploy_client_locally().map_err(|error| error.to_string())? {
+        LocalClientDeploymentOutcome::AuthorityDelegated {
+            executable,
+            installation_root,
+        } => {
+            println!("Transferring deployment authority to source-built CLI:");
+            println!("  executable: {}", executable.display());
+            println!("  installation: {}", installation_root.display());
+        }
+        LocalClientDeploymentOutcome::Deployed {
+            report,
+            source_bootstrap,
+            synchronization_warning,
+        } => {
+            println!("Vapor Installation: {}", report.installation_root.display());
+            println!("Deployed binaries:");
+            for binary in &report.binaries {
+                println!("  {} -> {}", binary.name, binary.destination.display());
+            }
+            println!("Launch wrapper: {}", report.launch_script.display());
+            println!("Shell activation: {}", report.activation_script.display());
+            println!("Source bootstrap: {}", source_bootstrap.display());
+            if let Some(error) = synchronization_warning {
+                eprintln!(
+                    "warning: local Client deployment succeeded, but the existing development environment could not be synchronized: {error}"
+                );
+            }
+        }
     }
 
     Ok(())

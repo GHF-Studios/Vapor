@@ -48,7 +48,7 @@ For that one crossing, run the current source CLI through the existing managed
 Cargo environment:
 
 ```text
-vapor toolchain cargo --project Vapor -- run --package vapor_core --bin vapor -- client deploy local
+vapor toolchain cargo --project Vapor-Client/Vapor-CLI/vapor-shell -- run --package vapor_shell --bin vapor -- client deploy local
 ```
 
 That installs a Vapor version supporting source-authoritative local deployment.

@@ -53,8 +53,9 @@ pub use content::{
 
 pub use development::{
     BuiltBinary, DeployedBinary, DevelopmentError, DevelopmentOperation, EcosystemBuildReport,
-    EcosystemDeploymentReport, LocalDeploymentAuthority, build_workspace_deployment_authority,
-    build_workspace_deployment_inputs, deploy_workspace, deploy_workspace_from_authority,
+    EcosystemDeploymentReport, LocalClientDeploymentOutcome, LocalDeploymentAuthority,
+    build_workspace_deployment_authority, build_workspace_deployment_inputs,
+    deploy_client_locally, deploy_workspace, deploy_workspace_from_authority,
     development_target_dir, local_deployment_authority_active, run_workspace_deployment_authority,
     run_workspace_operation, run_workspace_operation_at,
 };

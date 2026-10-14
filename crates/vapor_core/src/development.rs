@@ -3,7 +3,11 @@
 //! Development happens against external authored source while build outputs
 //! and managed tooling belong operationally to the active Vapor Installation.
 
-use crate::{ManagedToolchain, ToolchainError, VaporProject, VaporSuperworkspace, VaporWorkspace};
+use crate::{
+    ManagedToolchain, ToolchainError, VaporInstallation, VaporProject, VaporSuperworkspace,
+    VaporWorkspace, install_ecosystem_bootstrap, reconcile_existing_development_environment,
+    resolve_source_context,
+};
 use serde::Deserialize;
 use std::env;
 use std::fmt;
@@ -17,6 +21,9 @@ const TARGET_DIR: &str = "target";
 const DEV_PROFILE_DIR: &str = "debug";
 const BIN_DIR: &str = "bin";
 const CLIENT_DISTRIBUTION_MANIFEST_FILE_NAME: &str = "Vapor-Client.vapor.toml";
+const CLIENT_WORKSPACE_REPOSITORY: &str = "Vapor-Client/Vapor";
+const CLIENT_WORKSPACE_ORGANIZATION: &str = "ghf-studios";
+const CLIENT_WORKSPACE_NAME: &str = "vapor";
 const LOCAL_DEPLOYMENT_AUTHORITY_ENV: &str = "VAPOR_LOCAL_DEPLOYMENT_AUTHORITY";
 
 const DISTRIBUTION_BINARIES: &[&str] = &[
@@ -90,6 +97,102 @@ pub struct EcosystemDeploymentReport {
 pub struct LocalDeploymentAuthority {
     pub executable: PathBuf,
     pub installation_root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub enum LocalClientDeploymentOutcome {
+    AuthorityDelegated {
+        executable: PathBuf,
+        installation_root: PathBuf,
+    },
+    Deployed {
+        report: EcosystemDeploymentReport,
+        source_bootstrap: PathBuf,
+        synchronization_warning: Option<String>,
+    },
+}
+
+/// Deploy the active Vapor Client workspace into the local Vapor App Instance.
+///
+/// The first invocation builds and transfers authority to the source-built CLI;
+/// that CLI re-enters this operation and performs the promotion. This keeps
+/// the deployed source, rather than the currently installed binary, in charge.
+pub fn deploy_client_locally() -> Result<LocalClientDeploymentOutcome, DevelopmentError> {
+    let workspace = client_workspace()?;
+
+    if !local_deployment_authority_active()? {
+        let authority = build_workspace_deployment_authority(&workspace)?;
+        run_workspace_deployment_authority(&workspace, &authority)?;
+        return Ok(LocalClientDeploymentOutcome::AuthorityDelegated {
+            executable: authority.executable,
+            installation_root: authority.installation_root,
+        });
+    }
+
+    let installation = VaporInstallation::discover()
+        .map_err(|error| DevelopmentError::Workspace(error.to_string()))?;
+    let authority_executable = env::current_exe().map_err(DevelopmentError::CurrentExecutable)?;
+    let report = deploy_workspace_from_authority(&workspace, &authority_executable)?;
+    let source_bootstrap = install_ecosystem_bootstrap(&installation, &workspace.root)
+        .map_err(|error| DevelopmentError::Workspace(error.to_string()))?;
+    let synchronization_warning = reconcile_existing_development_environment(&workspace.root)
+        .err()
+        .map(|error| error.to_string());
+
+    Ok(LocalClientDeploymentOutcome::Deployed {
+        report,
+        source_bootstrap,
+        synchronization_warning,
+    })
+}
+
+fn client_workspace() -> Result<VaporWorkspace, DevelopmentError> {
+    if let Ok(workspace) = VaporWorkspace::discover()
+        && workspace.manifest.workspace.organization == CLIENT_WORKSPACE_ORGANIZATION
+        && workspace.manifest.workspace.name == CLIENT_WORKSPACE_NAME
+    {
+        return Ok(workspace);
+    }
+
+    let superworkspace = first_party_superworkspace()?;
+    let root = superworkspace
+        .repositories
+        .iter()
+        .find(|repository| repository.name == CLIENT_WORKSPACE_REPOSITORY)
+        .map(|repository| repository.root.clone())
+        .ok_or_else(|| {
+            DevelopmentError::Workspace(format!(
+                "first-party Vapor source `{CLIENT_WORKSPACE_REPOSITORY}` is not present in Superworkspace `{}`",
+                superworkspace.root.display()
+            ))
+        })?;
+
+    VaporWorkspace::load(&root).map_err(|error| {
+        DevelopmentError::Workspace(format!(
+            "failed to load first-party Vapor Client Workspace `{}`: {error}",
+            root.display()
+        ))
+    })
+}
+
+fn first_party_superworkspace() -> Result<VaporSuperworkspace, DevelopmentError> {
+    if let Ok(current_directory) = env::current_dir()
+        && let Ok(superworkspace) = VaporSuperworkspace::discover_from(&current_directory)
+    {
+        return Ok(superworkspace);
+    }
+
+    let installation = VaporInstallation::discover()
+        .map_err(|error| DevelopmentError::Workspace(error.to_string()))?;
+    let source = resolve_source_context(&installation, None)
+        .map_err(|error| DevelopmentError::Workspace(error.to_string()))?;
+
+    VaporSuperworkspace::discover_from(&source.root).map_err(|error| {
+        DevelopmentError::Workspace(format!(
+            "failed to resolve Vapor Superworkspace from source `{}`: {error}",
+            source.root.display()
+        ))
+    })
 }
 
 pub fn run_workspace_operation(
