@@ -328,8 +328,7 @@ fn legacy_anchor_file() -> Option<PathBuf> {
         env::var_os("APPDATA")
             .map(PathBuf::from)
             .or_else(|| {
-                env::var_os("USERPROFILE")
-                    .map(|home| PathBuf::from(home).join("AppData/Roaming"))
+                env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("AppData/Roaming"))
             })
             .map(|root| root.join("loo_cast/app_root.path"))
     } else {
@@ -535,10 +534,7 @@ fn ensure_superworkspace_purge_safe(root: &Path) -> Result<(), UninstallError> {
 
 fn ensure_expected_origin(name: &str, root: &Path) -> Result<(), UninstallError> {
     let origin = git_output(root, &["remote", "get-url", "origin"])?;
-    let normalized = origin
-        .trim()
-        .trim_end_matches('/')
-        .trim_end_matches(".git");
+    let normalized = origin.trim().trim_end_matches('/').trim_end_matches(".git");
     let expected = format!("GHF-Studios/{name}");
 
     if !normalized.ends_with(&expected) {
@@ -593,7 +589,10 @@ fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallErro
     let inside = git_output(root, &["rev-parse", "--is-inside-work-tree"])?;
     if inside != "true" {
         return Err(UninstallError::UnsafeSource {
-            message: format!("source `{name}` is not a Git work tree: `{}`", root.display()),
+            message: format!(
+                "source `{name}` is not a Git work tree: `{}`",
+                root.display()
+            ),
         });
     }
 
@@ -616,7 +615,10 @@ fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallErro
 
     git_output(root, &["fetch", "--quiet", "--prune", "origin"])?;
 
-    let local_only = git_output(root, &["rev-list", "--branches", "--not", "--remotes=origin"])?;
+    let local_only = git_output(
+        root,
+        &["rev-list", "--branches", "--not", "--remotes=origin"],
+    )?;
     if !local_only.is_empty() {
         return Err(UninstallError::UnsafeSource {
             message: format!(
@@ -745,11 +747,9 @@ impl fmt::Display for UninstallError {
                 "--purge-superworkspace could not resolve the canonical Superworkspace (source state: `{}`)",
                 state_path.display(),
             ),
-            Self::UnsafePurgeRoot { path } => write!(
-                formatter,
-                "refusing unsafe purge root `{}`",
-                path.display()
-            ),
+            Self::UnsafePurgeRoot { path } => {
+                write!(formatter, "refusing unsafe purge root `{}`", path.display())
+            }
             Self::UnsafeSuperworkspaceEntry { path } => write!(
                 formatter,
                 "refusing to purge Superworkspace because it contains unrecognized entry `{}`",

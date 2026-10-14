@@ -5,7 +5,7 @@
 
 use crate::{
     ContentKind, ContentVersionId, LocalCatalog, LocalContent, ManagedToolchain,
-    ResolvedComposition, ToolchainError,
+    ResolvedComposition, ToolchainError, VaporWorkspace,
 };
 use semver::Version;
 use serde::Deserialize;
@@ -98,7 +98,9 @@ pub fn inspect_local_cargo_package(
             source,
         })?;
 
-    let toolchain = ManagedToolchain::discover()?;
+    let workspace =
+        VaporWorkspace::discover_from(&content.root).map_err(ToolchainError::Workspace)?;
+    let toolchain = ManagedToolchain::for_workspace(&workspace)?;
 
     let output = toolchain
         .cargo_command()?
@@ -350,10 +352,12 @@ impl std::error::Error for CargoInspectionError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct CargoRealization {
     pub root: PathBuf,
     pub manifest_path: PathBuf,
+    pub target_dir: PathBuf,
+    toolchain: ManagedToolchain,
 }
 
 pub fn generate_local_cargo_realization(
@@ -361,12 +365,16 @@ pub fn generate_local_cargo_realization(
     catalog: &LocalCatalog,
     composition: &ResolvedComposition,
 ) -> Result<CargoRealization, CargoRealizationError> {
+    let source_root = source_root.as_ref();
+    let workspace =
+        VaporWorkspace::discover_from(source_root).map_err(ToolchainError::Workspace)?;
+    let toolchain = ManagedToolchain::for_workspace(&workspace)?;
     let packages = AppPackages::from_composition(catalog, composition)?;
 
     let root = source_root
-        .as_ref()
         .join(".vapor/build")
         .join(filesystem_name(&composition.root));
+    let target_dir = cargo_realization_target_dir(&toolchain.user_data_root, &composition.root);
 
     let source = root.join("src");
 
@@ -385,6 +393,8 @@ pub fn generate_local_cargo_realization(
     Ok(CargoRealization {
         root,
         manifest_path,
+        target_dir,
+        toolchain,
     })
 }
 
@@ -403,14 +413,14 @@ fn run_cargo(
     operation: &'static str,
     arguments: &[&str],
 ) -> Result<(), CargoRealizationError> {
-    let toolchain = ManagedToolchain::discover()?;
-
-    let status = toolchain
+    let status = realization
+        .toolchain
         .cargo_command()?
         .arg(operation)
         .args(arguments)
         .arg("--manifest-path")
         .arg("Cargo.toml")
+        .env("CARGO_TARGET_DIR", &realization.target_dir)
         .current_dir(&realization.root)
         .status()
         .map_err(|error| io_error(&realization.manifest_path, error))?;
@@ -420,6 +430,13 @@ fn run_cargo(
     } else {
         Err(CargoRealizationError::CargoFailed { operation, status })
     }
+}
+
+fn cargo_realization_target_dir(user_data_root: &Path, identity: &ContentVersionId) -> PathBuf {
+    user_data_root
+        .join("development/compositions")
+        .join(filesystem_name(identity))
+        .join("target")
 }
 
 struct AppPackages {
@@ -496,8 +513,7 @@ game = {game}
 
         let destination = realization_root.join("Cargo.lock");
 
-        fs::copy(&source, &destination)
-            .map_err(|error| io_error(&destination, error))?;
+        fs::copy(&source, &destination).map_err(|error| io_error(&destination, error))?;
 
         Ok(())
     }
@@ -692,6 +708,22 @@ mod tests {
         assert_eq!(
             filesystem_name(&identity),
             "ghf-studios-example-packagepack-1.2.3"
+        );
+    }
+
+    #[test]
+    fn cargo_realization_target_uses_vapor_managed_cache() {
+        let identity = ContentVersionId {
+            id: "ghf-studios/example/packagepack".parse().unwrap(),
+            version: Version::parse("1.2.3").unwrap(),
+        };
+        let managed_state = Path::new("/vapor-user-data");
+
+        assert_eq!(
+            cargo_realization_target_dir(managed_state, &identity),
+            Path::new(
+                "/vapor-user-data/development/compositions/ghf-studios-example-packagepack-1.2.3/target"
+            )
         );
     }
 }

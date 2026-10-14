@@ -41,10 +41,7 @@ impl ManagedToolRequest {
         Self {
             name: name.into(),
             version: version.into(),
-            executable_names: executable_names
-                .into_iter()
-                .map(Into::into)
-                .collect(),
+            executable_names: executable_names.into_iter().map(Into::into).collect(),
             required_capabilities: required_capabilities.into_iter().collect(),
         }
     }
@@ -67,11 +64,7 @@ impl ManagedToolRequest {
             .join("+")
     }
 
-    pub fn install_root(
-        &self,
-        user_data_root: &Path,
-        environment: &HostEnvironment,
-    ) -> PathBuf {
+    pub fn install_root(&self, user_data_root: &Path, environment: &HostEnvironment) -> PathBuf {
         user_data_root
             .join("tools")
             .join(&self.name)
@@ -107,8 +100,7 @@ pub fn find_executable(path: &Path, executable_names: &[String]) -> Option<PathB
 pub fn find_executable_on_path(executable_names: &[String]) -> Option<PathBuf> {
     let path = env::var_os("PATH")?;
 
-    env::split_paths(&path)
-        .find_map(|directory| find_executable(&directory, executable_names))
+    env::split_paths(&path).find_map(|directory| find_executable(&directory, executable_names))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,8 +130,7 @@ pub fn download_verified_github_release_asset(
     destination: &Path,
     executable: bool,
 ) -> Result<ReleaseAssetStatus, ManagedToolError> {
-    let release_url =
-        format!("https://api.github.com/repos/{repository}/releases/tags/{tag}");
+    let release_url = format!("https://api.github.com/repos/{repository}/releases/tags/{tag}");
 
     let response = client
         .get(&release_url)
@@ -152,12 +143,17 @@ pub fn download_verified_github_release_asset(
         return Ok(ReleaseAssetStatus::Missing);
     }
 
-    let response = response.error_for_status().map_err(ManagedToolError::Http)?;
+    let response = response
+        .error_for_status()
+        .map_err(ManagedToolError::Http)?;
     let body = response.text().map_err(ManagedToolError::Http)?;
-    let release: GitHubRelease =
-        serde_json::from_str(&body).map_err(ManagedToolError::Json)?;
+    let release: GitHubRelease = serde_json::from_str(&body).map_err(ManagedToolError::Json)?;
 
-    let Some(asset) = release.assets.into_iter().find(|asset| asset.name == asset_name) else {
+    let Some(asset) = release
+        .assets
+        .into_iter()
+        .find(|asset| asset.name == asset_name)
+    else {
         return Ok(ReleaseAssetStatus::Missing);
     };
 
@@ -276,9 +272,7 @@ fn sha256_file(path: &Path) -> Result<String, ManagedToolError> {
                 line.len() == 64 && line.chars().all(|character| character.is_ascii_hexdigit())
             })
             .map(str::to_owned)
-            .ok_or(ManagedToolError::DigestOutput {
-                tool: "certutil",
-            });
+            .ok_or(ManagedToolError::DigestOutput { tool: "certutil" });
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -304,12 +298,12 @@ fn sha256_file(path: &Path) -> Result<String, ManagedToolError> {
             .next()
             .filter(|digest| {
                 digest.len() == 64
-                    && digest.chars().all(|character| character.is_ascii_hexdigit())
+                    && digest
+                        .chars()
+                        .all(|character| character.is_ascii_hexdigit())
             })
             .map(str::to_owned)
-            .ok_or(ManagedToolError::DigestOutput {
-                tool: "sha256sum",
-            });
+            .ok_or(ManagedToolError::DigestOutput { tool: "sha256sum" });
     }
 }
 
@@ -369,7 +363,11 @@ impl fmt::Display for ManagedToolError {
                 write!(formatter, "failed to access `{}`: {source}", path.display())
             }
             Self::InvalidDestination(path) => {
-                write!(formatter, "managed-tool destination `{}` has no parent", path.display())
+                write!(
+                    formatter,
+                    "managed-tool destination `{}` has no parent",
+                    path.display()
+                )
             }
             Self::MissingDigest {
                 repository,
@@ -380,13 +378,22 @@ impl fmt::Display for ManagedToolError {
                 "release asset `{repository}` / `{tag}` / `{asset}` has no SHA-256 digest"
             ),
             Self::DigestTool { tool, source } => {
-                write!(formatter, "failed to start `{tool}` for artifact verification: {source}")
+                write!(
+                    formatter,
+                    "failed to start `{tool}` for artifact verification: {source}"
+                )
             }
             Self::DigestToolFailed { tool, status } => {
-                write!(formatter, "`{tool}` failed while verifying an artifact ({status})")
+                write!(
+                    formatter,
+                    "`{tool}` failed while verifying an artifact ({status})"
+                )
             }
             Self::DigestOutput { tool } => {
-                write!(formatter, "`{tool}` returned no recognizable SHA-256 digest")
+                write!(
+                    formatter,
+                    "`{tool}` returned no recognizable SHA-256 digest"
+                )
             }
             Self::DigestMismatch {
                 asset,

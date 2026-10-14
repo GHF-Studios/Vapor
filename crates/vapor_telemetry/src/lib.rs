@@ -214,10 +214,7 @@ impl TelemetryEmitter {
         Self::connect(address, source).ok()
     }
 
-    pub fn connect(
-        address: impl ToSocketAddrs,
-        source: impl Into<String>,
-    ) -> io::Result<Self> {
+    pub fn connect(address: impl ToSocketAddrs, source: impl Into<String>) -> io::Result<Self> {
         let mut stream = TcpStream::connect(address)?;
         stream.set_nodelay(true)?;
         write_json_line(

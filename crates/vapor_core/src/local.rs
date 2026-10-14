@@ -163,8 +163,9 @@ fn discover_directory(
         }
 
         if file_type.is_file() && entry.file_name() == OsStr::new(CONTENT_MANIFEST_FILE_NAME) {
-            let content = load_local_content(&path)?;
-            catalog.insert(content)?;
+            if let Some(content) = load_local_content(&path)? {
+                catalog.insert(content)?;
+            }
         }
     }
 
@@ -175,28 +176,43 @@ fn should_skip_directory(name: &OsStr) -> bool {
     matches!(name.to_str(), Some(".git" | ".vapor" | "target"))
 }
 
-fn load_local_content(manifest_path: &Path) -> Result<LocalContent, LocalDiscoveryError> {
+fn load_local_content(manifest_path: &Path) -> Result<Option<LocalContent>, LocalDiscoveryError> {
     let source = fs::read_to_string(manifest_path).map_err(|source| LocalDiscoveryError::Io {
         path: manifest_path.to_path_buf(),
         source,
     })?;
 
-    let manifest =
-        parse_content_manifest(&source).map_err(|source| LocalDiscoveryError::Manifest {
-            path: manifest_path.to_path_buf(),
-            source,
-        })?;
+    // Workspace roots and content projects intentionally share `Vapor.toml`.
+    // A valid workspace manifest is an organizational node, not content.
+    let manifest = match parse_content_manifest(&source) {
+        Ok(manifest) => manifest,
+        Err(manifest_error) => {
+            let is_workspace =
+                toml::from_str::<toml::Value>(&source)
+                    .ok()
+                    .is_some_and(|document| {
+                        document.get("content").is_none() && document.get("workspace").is_some()
+                    });
+            if is_workspace {
+                return Ok(None);
+            }
+            return Err(LocalDiscoveryError::Manifest {
+                path: manifest_path.to_path_buf(),
+                source: manifest_error,
+            });
+        }
+    };
 
     let root = manifest_path
         .parent()
         .unwrap_or(Path::new(""))
         .to_path_buf();
 
-    Ok(LocalContent {
+    Ok(Some(LocalContent {
         root,
         manifest_path: manifest_path.to_path_buf(),
         manifest,
-    })
+    }))
 }
 
 #[derive(Debug)]

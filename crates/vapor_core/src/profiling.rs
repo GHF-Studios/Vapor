@@ -3,9 +3,7 @@
 //! Tracy remains the collector and native deep viewer. Vapor owns an indexed
 //! library of user-saved traces, source-layout context and repeatable reports.
 
-use crate::{
-    ManagedTracyToolset, TracyError, VaporInstallation, active_development_session,
-};
+use crate::{ManagedTracyToolset, TracyError, VaporInstallation, active_development_session};
 use csv::ReaderBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -130,17 +128,23 @@ struct Aggregate {
 
 pub fn profile_library_path() -> Result<PathBuf, ProfileError> {
     let installation = VaporInstallation::discover()?;
-    Ok(installation.user_data_root().join(PROFILE_DIR).join(LIBRARY_FILE))
+    Ok(installation
+        .user_data_root()
+        .join(PROFILE_DIR)
+        .join(LIBRARY_FILE))
 }
 
 pub fn list_profile_traces() -> Result<Vec<ProfileTraceRecord>, ProfileError> {
     let path = profile_library_path()?;
     let mut records = match fs::read_to_string(&path) {
-        Ok(source) => serde_json::from_str::<Vec<ProfileTraceRecord>>(&source)
-            .map_err(|source| ProfileError::LibraryMetadata {
-                path: path.clone(),
-                source,
-            })?,
+        Ok(source) => {
+            serde_json::from_str::<Vec<ProfileTraceRecord>>(&source).map_err(|source| {
+                ProfileError::LibraryMetadata {
+                    path: path.clone(),
+                    source,
+                }
+            })?
+        }
         Err(source) if source.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(source) => return Err(ProfileError::Io { path, source }),
     };
@@ -202,7 +206,11 @@ pub fn resolve_profile_trace(selector: Option<&str>) -> Result<ProfileTraceRecor
         let path = PathBuf::from(selector);
         if path.is_file() {
             return Ok(ProfileTraceRecord {
-                id: path.file_stem().and_then(|name| name.to_str()).unwrap_or("trace").to_owned(),
+                id: path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("trace")
+                    .to_owned(),
                 path,
                 added_unix_ms: 0,
                 workspace: None,
@@ -221,8 +229,12 @@ pub fn resolve_profile_trace(selector: Option<&str>) -> Result<ProfileTraceRecor
             .collect::<Vec<_>>();
         return match matches.as_slice() {
             [record] => Ok(record.clone()),
-            [] => Err(ProfileError::message(format!("no saved trace matches `{selector}`"))),
-            _ => Err(ProfileError::message(format!("saved trace selector `{selector}` is ambiguous"))),
+            [] => Err(ProfileError::message(format!(
+                "no saved trace matches `{selector}`"
+            ))),
+            _ => Err(ProfileError::message(format!(
+                "saved trace selector `{selector}` is ambiguous"
+            ))),
         };
     }
 
@@ -298,7 +310,10 @@ pub fn analyze_profile_trace(
         if !threads.is_empty() && !threads.contains(&row.thread) {
             continue;
         }
-        if filter.as_ref().is_some_and(|value| !row.name.to_lowercase().contains(value)) {
+        if filter
+            .as_ref()
+            .is_some_and(|value| !row.name.to_lowercase().contains(value))
+        {
             continue;
         }
 
@@ -314,7 +329,12 @@ pub fn analyze_profile_trace(
         .map(|((name, source, line), mut aggregate)| {
             aggregate.durations.sort_unstable();
             let count = aggregate.durations.len();
-            let total = aggregate.durations.iter().copied().map(u128::from).sum::<u128>();
+            let total = aggregate
+                .durations
+                .iter()
+                .copied()
+                .map(u128::from)
+                .sum::<u128>();
             ProfileZoneSummary {
                 name,
                 source,
@@ -322,7 +342,11 @@ pub fn analyze_profile_trace(
                 threads: aggregate.threads.into_iter().collect(),
                 count,
                 total_ns: total.min(u128::from(u64::MAX)) as u64,
-                mean_ns: if count == 0 { 0 } else { (total / count as u128).min(u128::from(u64::MAX)) as u64 },
+                mean_ns: if count == 0 {
+                    0
+                } else {
+                    (total / count as u128).min(u128::from(u64::MAX)) as u64
+                },
                 median_ns: percentile(&aggregate.durations, 0.50),
                 p90_ns: percentile(&aggregate.durations, 0.90),
                 p95_ns: percentile(&aggregate.durations, 0.95),
@@ -397,7 +421,9 @@ fn percentile(sorted: &[u64], fraction: f64) -> u64 {
 }
 
 fn ms_to_ns(value: f64) -> i64 {
-    (value.max(0.0) * 1_000_000.0).round().clamp(0.0, i64::MAX as f64) as i64
+    (value.max(0.0) * 1_000_000.0)
+        .round()
+        .clamp(0.0, i64::MAX as f64) as i64
 }
 
 fn normalize_source(source: &str, workspace: Option<&Path>) -> String {
@@ -418,9 +444,18 @@ pub enum ProfileError {
     Tracy(TracyError),
     Csv(csv::Error),
     Serialize(serde_json::Error),
-    LibraryMetadata { path: PathBuf, source: serde_json::Error },
-    Io { path: PathBuf, source: io::Error },
-    Process { operation: &'static str, source: io::Error },
+    LibraryMetadata {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
+    Process {
+        operation: &'static str,
+        source: io::Error,
+    },
 }
 
 impl ProfileError {
@@ -430,13 +465,19 @@ impl ProfileError {
 }
 
 impl From<crate::InstallationError> for ProfileError {
-    fn from(value: crate::InstallationError) -> Self { Self::Installation(value) }
+    fn from(value: crate::InstallationError) -> Self {
+        Self::Installation(value)
+    }
 }
 impl From<crate::DevelopmentRunError> for ProfileError {
-    fn from(value: crate::DevelopmentRunError) -> Self { Self::Development(value) }
+    fn from(value: crate::DevelopmentRunError) -> Self {
+        Self::Development(value)
+    }
 }
 impl From<TracyError> for ProfileError {
-    fn from(value: TracyError) -> Self { Self::Tracy(value) }
+    fn from(value: TracyError) -> Self {
+        Self::Tracy(value)
+    }
 }
 
 impl fmt::Display for ProfileError {
@@ -447,10 +488,20 @@ impl fmt::Display for ProfileError {
             Self::Development(error) => error.fmt(formatter),
             Self::Tracy(error) => error.fmt(formatter),
             Self::Csv(error) => write!(formatter, "failed to parse Tracy export: {error}"),
-            Self::Serialize(error) => write!(formatter, "failed to serialize profile library: {error}"),
-            Self::LibraryMetadata { path, source } => write!(formatter, "invalid profile library `{}`: {source}", path.display()),
-            Self::Io { path, source } => write!(formatter, "failed to access `{}`: {source}", path.display()),
-            Self::Process { operation, source } => write!(formatter, "failed to {operation}: {source}"),
+            Self::Serialize(error) => {
+                write!(formatter, "failed to serialize profile library: {error}")
+            }
+            Self::LibraryMetadata { path, source } => write!(
+                formatter,
+                "invalid profile library `{}`: {source}",
+                path.display()
+            ),
+            Self::Io { path, source } => {
+                write!(formatter, "failed to access `{}`: {source}", path.display())
+            }
+            Self::Process { operation, source } => {
+                write!(formatter, "failed to {operation}: {source}")
+            }
         }
     }
 }

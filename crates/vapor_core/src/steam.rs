@@ -10,9 +10,7 @@
 //! Steam remains authoritative for authentication, authorization, depot
 //! manifests, chunking, upload, Build IDs, and branch delivery.
 
-use crate::{
-    DevelopmentError, VaporWorkspace, build_workspace_deployment_inputs,
-};
+use crate::{DevelopmentError, VaporWorkspace, build_workspace_deployment_inputs};
 use serde::Deserialize;
 use std::env;
 use std::ffi::OsString;
@@ -251,9 +249,7 @@ fn stage_distribution(
         &common_metadata_root.join(INSTALLED_ECOSYSTEM_METADATA_FILE_NAME),
     )?;
 
-    let platform_bin_root = platform_root
-        .join(BIN_DIR)
-        .join(current_host_target()?);
+    let platform_bin_root = platform_root.join(BIN_DIR).join(current_host_target()?);
 
     fs::create_dir_all(&platform_bin_root).map_err(|source| SteamDeploymentError::Io {
         path: platform_bin_root.clone(),

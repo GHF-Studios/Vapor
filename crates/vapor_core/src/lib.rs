@@ -6,11 +6,12 @@ pub mod cargo;
 pub mod cargo_reconciliation;
 pub mod cli;
 pub mod content;
-pub mod development;
 pub mod developer_environment;
+pub mod development;
 pub mod ecosystem;
 pub mod host;
 pub mod ide;
+pub mod ide_host;
 pub mod identity;
 pub mod install;
 pub mod installation;
@@ -18,11 +19,11 @@ pub mod local;
 pub mod maintenance;
 pub mod managed_tool;
 pub mod manifest;
+pub mod profiling;
 pub mod registry;
 pub mod resolution;
-pub mod run;
-pub mod profiling;
 pub mod role;
+pub mod run;
 pub mod source;
 pub mod steam;
 pub mod superworkspace;
@@ -45,15 +46,17 @@ pub use cargo_reconciliation::{
 
 pub use cli::{CliSurface, run_cli};
 
-pub use content::{ContentKind, DependencySpec};
+pub use content::{
+    ChildContentRef, ContentKind, ContentSource, ContentType, DependencySpec,
+    ParseContentSourceError, allowed_pack_children,
+};
 
 pub use development::{
     BuiltBinary, DeployedBinary, DevelopmentError, DevelopmentOperation, EcosystemBuildReport,
-    EcosystemDeploymentReport, LocalDeploymentAuthority,
-    build_workspace_deployment_authority, build_workspace_deployment_inputs, deploy_workspace,
-    deploy_workspace_from_authority, development_target_dir,
-    local_deployment_authority_active, run_workspace_deployment_authority,
-    run_workspace_operation,
+    EcosystemDeploymentReport, LocalDeploymentAuthority, build_workspace_deployment_authority,
+    build_workspace_deployment_inputs, deploy_workspace, deploy_workspace_from_authority,
+    development_target_dir, local_deployment_authority_active, run_workspace_deployment_authority,
+    run_workspace_operation, run_workspace_operation_at,
 };
 
 pub use developer_environment::{
@@ -117,8 +120,8 @@ pub use run::{
 
 pub use profiling::{
     ProfileError, ProfileReport, ProfileReportOptions, ProfileSort, ProfileTraceRecord,
-    ProfileZoneSummary, analyze_profile_trace, import_profile_trace,
-    list_profile_traces, profile_library_path, resolve_profile_trace,
+    ProfileZoneSummary, analyze_profile_trace, import_profile_trace, list_profile_traces,
+    profile_library_path, resolve_profile_trace,
 };
 
 pub use role::{
@@ -143,9 +146,7 @@ pub use superworkspace::{
 
 pub use toolchain::{ManagedToolchain, ToolchainError};
 
-pub use tracy::{
-    ManagedTracyRepair, ManagedTracyToolset, TRACY_PROFILER_VERSION, TracyError,
-};
+pub use tracy::{ManagedTracyRepair, ManagedTracyToolset, TRACY_PROFILER_VERSION, TracyError};
 
 pub use uninstall::{UninstallError, UninstallOptions, UninstallReport, uninstall_installation};
 

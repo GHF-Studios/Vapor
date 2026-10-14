@@ -271,8 +271,7 @@ fn build_plan(
 
     let idea_root = superworkspace.root.join(IDEA_DIR);
 
-    let run_configurations =
-        run_configurations::build(&superworkspace.root, &toolchain.vapor_home);
+    let run_configurations = run_configurations::build(&superworkspace.root, &toolchain.vapor_home);
 
     let mut legacy_paths = vec![
         idea_root.join(LEGACY_CARGO_PROJECTS_FILE),

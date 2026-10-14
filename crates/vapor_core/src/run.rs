@@ -136,10 +136,9 @@ impl DevelopmentSession {
     }
 }
 
-pub fn active_development_session(
-) -> Result<Option<ActiveDevelopmentSession>, DevelopmentRunError> {
-    let installation =
-        VaporInstallation::discover().map_err(DevelopmentRunError::Installation)?;
+pub fn active_development_session() -> Result<Option<ActiveDevelopmentSession>, DevelopmentRunError>
+{
+    let installation = VaporInstallation::discover().map_err(DevelopmentRunError::Installation)?;
     let path = installation
         .user_data_root()
         .join(SESSION_ROOT)
@@ -160,8 +159,7 @@ pub fn active_development_session(
 
 /// Persistent Development Session history, newest first.
 pub fn development_sessions() -> Result<Vec<ActiveDevelopmentSession>, DevelopmentRunError> {
-    let installation =
-        VaporInstallation::discover().map_err(DevelopmentRunError::Installation)?;
+    let installation = VaporInstallation::discover().map_err(DevelopmentRunError::Installation)?;
     let root = installation.user_data_root().join(SESSION_ROOT);
 
     let entries = match fs::read_dir(&root) {
@@ -216,7 +214,10 @@ pub fn run_workspace_configuration_with_profile_hint(
     command
         .arg("run")
         .args(["--manifest-path", "Cargo.toml"])
-        .env("CARGO_TARGET_DIR", development_target_dir(&toolchain, project))
+        .env(
+            "CARGO_TARGET_DIR",
+            development_target_dir(&toolchain, project),
+        )
         .current_dir(&project.root)
         .envs(&configuration.environment);
 
@@ -248,8 +249,7 @@ pub fn run_workspace_configuration_with_profile_hint(
         return cargo_result(name, status);
     }
 
-    let mut session =
-        DevelopmentSession::start(&toolchain, workspace, name, profiling)?;
+    let mut session = DevelopmentSession::start(&toolchain, workspace, name, profiling)?;
     println!(
         "Development Session {} · telemetry {} · {}",
         session.info.id,
@@ -319,7 +319,10 @@ fn select_project<'a>(
         [project] => Ok(project),
         projects => Err(DevelopmentRunError::AmbiguousProject {
             configuration: configuration.name.clone(),
-            projects: projects.iter().map(|project| project.name.clone()).collect(),
+            projects: projects
+                .iter()
+                .map(|project| project.name.clone())
+                .collect(),
         }),
     }
 }
@@ -359,12 +362,8 @@ fn cargo_result(name: &str, status: ExitStatus) -> Result<(), DevelopmentRunErro
     }
 }
 
-fn write_json(
-    path: &Path,
-    value: &impl Serialize,
-) -> Result<(), DevelopmentRunError> {
-    let source =
-        serde_json::to_vec_pretty(value).map_err(DevelopmentRunError::SerializeSession)?;
+fn write_json(path: &Path, value: &impl Serialize) -> Result<(), DevelopmentRunError> {
+    let source = serde_json::to_vec_pretty(value).map_err(DevelopmentRunError::SerializeSession)?;
     fs::write(path, source).map_err(|source| DevelopmentRunError::Io {
         path: path.to_path_buf(),
         source,
@@ -441,12 +440,17 @@ impl fmt::Display for DevelopmentRunError {
                 formatter,
                 "Run Configuration `{configuration}` exited with {status}"
             ),
-            Self::Telemetry(error) => write!(formatter, "failed to start telemetry broker: {error}"),
+            Self::Telemetry(error) => {
+                write!(formatter, "failed to start telemetry broker: {error}")
+            }
             Self::Io { path, source } => {
                 write!(formatter, "failed to access `{}`: {source}", path.display())
             }
             Self::SerializeSession(error) => {
-                write!(formatter, "failed to serialize Development Session metadata: {error}")
+                write!(
+                    formatter,
+                    "failed to serialize Development Session metadata: {error}"
+                )
             }
             Self::SessionMetadata { path, source } => write!(
                 formatter,

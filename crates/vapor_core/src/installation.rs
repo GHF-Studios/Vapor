@@ -165,8 +165,7 @@ fn platform_user_data_root() -> Option<PathBuf> {
         "windows" => env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .or_else(|| {
-                env::var_os("USERPROFILE")
-                    .map(|home| PathBuf::from(home).join("AppData/Local"))
+                env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("AppData/Local"))
             })
             .map(|root| root.join("Vapor")),
 
@@ -198,10 +197,12 @@ fn copy_missing_tree(source: &Path, destination: &Path) -> Result<(), Installati
         })?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
-        let file_type = entry.file_type().map_err(|source_error| InstallationError::Io {
-            path: source_path.clone(),
-            source: source_error,
-        })?;
+        let file_type = entry
+            .file_type()
+            .map_err(|source_error| InstallationError::Io {
+                path: source_path.clone(),
+                source: source_error,
+            })?;
 
         if file_type.is_dir() {
             copy_missing_tree(&source_path, &destination_path)?;

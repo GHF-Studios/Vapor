@@ -66,8 +66,7 @@ pub fn ensure_canonical_superworkspace(
         });
     }
 
-    let superworkspace =
-        VaporSuperworkspace::setup(&root).map_err(InstallError::Superworkspace)?;
+    let superworkspace = VaporSuperworkspace::setup(&root).map_err(InstallError::Superworkspace)?;
     open_source(installation, &superworkspace.root).map_err(InstallError::Source)?;
 
     Ok(superworkspace)
@@ -112,7 +111,10 @@ fn install_machine_integration(
 
     for (path, create) in shell_profiles() {
         if upsert_profile_block(&path, &block, create)? {
-            changed.push(format!("updated managed Vapor PATH block in {}", path.display()));
+            changed.push(format!(
+                "updated managed Vapor PATH block in {}",
+                path.display()
+            ));
         }
     }
 
@@ -146,7 +148,11 @@ fn shell_profiles() -> Vec<(PathBuf, bool)> {
     let bashrc = home.join(".bashrc");
     let zshrc = home.join(".zshrc");
 
-    vec![(profile, true), (bashrc.clone(), bashrc.is_file()), (zshrc.clone(), zshrc.is_file())]
+    vec![
+        (profile, true),
+        (bashrc.clone(), bashrc.is_file()),
+        (zshrc.clone(), zshrc.is_file()),
+    ]
 }
 
 fn upsert_profile_block(path: &Path, block: &str, create: bool) -> Result<bool, InstallError> {
@@ -263,11 +269,24 @@ pub enum InstallError {
         installation: PathBuf,
         user_data: PathBuf,
     },
-    MissingBinaryDirectory { path: PathBuf },
-    MalformedProfileBlock { path: PathBuf },
-    CommandStart { command: String, source: io::Error },
-    CommandFailed { command: String, status: String },
-    Io { path: PathBuf, source: io::Error },
+    MissingBinaryDirectory {
+        path: PathBuf,
+    },
+    MalformedProfileBlock {
+        path: PathBuf,
+    },
+    CommandStart {
+        command: String,
+        source: io::Error,
+    },
+    CommandFailed {
+        command: String,
+        status: String,
+    },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
 }
 
 impl fmt::Display for InstallError {
@@ -276,9 +295,8 @@ impl fmt::Display for InstallError {
             Self::Installation(error) => error.fmt(formatter),
             Self::Source(error) => error.fmt(formatter),
             Self::Superworkspace(error) => error.fmt(formatter),
-            Self::UnsupportedHost => formatter.write_str(
-                "this host is not yet supported by Vapor Installation integration",
-            ),
+            Self::UnsupportedHost => formatter
+                .write_str("this host is not yet supported by Vapor Installation integration"),
             Self::HomeUnavailable => {
                 formatter.write_str("cannot determine the current user's home directory")
             }

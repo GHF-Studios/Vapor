@@ -67,6 +67,9 @@ pub(super) enum VaporCommand {
     /// Unified runtime debugging, observability and profiling workspace.
     Devtools(DevtoolsArgs),
 
+    /// Open the graphical Vapor Studio workspace.
+    Studio(StudioArgs),
+
     Source {
         #[command(subcommand)]
         command: SourceCommand,
@@ -152,6 +155,13 @@ pub(super) struct RunArgs {
 pub(super) struct DevtoolsArgs {
     #[command(subcommand)]
     pub(super) command: Option<DevtoolsCommand>,
+}
+
+#[derive(Debug, Args)]
+pub(super) struct StudioArgs {
+    /// Workspace directory to open.
+    #[arg(long)]
+    pub(super) workspace: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]

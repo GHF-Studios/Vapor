@@ -63,21 +63,13 @@ impl HostTarget {
     }
 
     pub const fn triple(self) -> &'static str {
-        match (
-            self.operating_system,
-            self.architecture,
-            self.abi,
-        ) {
-            (
-                HostOperatingSystem::Linux,
-                HostArchitecture::X86_64,
-                HostAbi::Gnu,
-            ) => "x86_64-unknown-linux-gnu",
-            (
-                HostOperatingSystem::Windows,
-                HostArchitecture::X86_64,
-                HostAbi::Msvc,
-            ) => "x86_64-pc-windows-msvc",
+        match (self.operating_system, self.architecture, self.abi) {
+            (HostOperatingSystem::Linux, HostArchitecture::X86_64, HostAbi::Gnu) => {
+                "x86_64-unknown-linux-gnu"
+            }
+            (HostOperatingSystem::Windows, HostArchitecture::X86_64, HostAbi::Msvc) => {
+                "x86_64-pc-windows-msvc"
+            }
             _ => "unsupported",
         }
     }
@@ -144,9 +136,11 @@ impl HostEnvironment {
     }
 
     pub fn display_server(&self) -> Option<DisplayServer> {
-        self.capabilities.iter().find_map(|capability| match capability {
-            HostCapability::Display(display) => Some(*display),
-        })
+        self.capabilities
+            .iter()
+            .find_map(|capability| match capability {
+                HostCapability::Display(display) => Some(*display),
+            })
     }
 }
 

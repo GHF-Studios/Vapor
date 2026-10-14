@@ -25,11 +25,21 @@ pub fn spawn_connection_worker(explicit_address: Option<String>, sender: Sender<
                         (session.address, Some(info))
                     }
                     Ok(None) => {
-                        wait(&sender, &mut last_waiting, "No active Vapor run".to_owned(), Duration::from_millis(500));
+                        wait(
+                            &sender,
+                            &mut last_waiting,
+                            "No active Vapor run".to_owned(),
+                            Duration::from_millis(500),
+                        );
                         continue;
                     }
                     Err(error) => {
-                        wait(&sender, &mut last_waiting, format!("Waiting for session state: {error}"), Duration::from_secs(1));
+                        wait(
+                            &sender,
+                            &mut last_waiting,
+                            format!("Waiting for session state: {error}"),
+                            Duration::from_secs(1),
+                        );
                         continue;
                     }
                 },
@@ -50,14 +60,21 @@ pub fn spawn_connection_worker(explicit_address: Option<String>, sender: Sender<
                             }
                             Ok(None) => break,
                             Err(error) => {
-                                let _ = sender.send(DevtoolsMessage::Disconnected(format!("Telemetry disconnected: {error}")));
+                                let _ = sender.send(DevtoolsMessage::Disconnected(format!(
+                                    "Telemetry disconnected: {error}"
+                                )));
                                 break;
                             }
                         }
                     }
                 }
                 Err(error) => {
-                    wait(&sender, &mut last_waiting, format!("Waiting for telemetry at {address}: {error}"), Duration::from_millis(500));
+                    wait(
+                        &sender,
+                        &mut last_waiting,
+                        format!("Waiting for telemetry at {address}: {error}"),
+                        Duration::from_millis(500),
+                    );
                 }
             }
             thread::sleep(Duration::from_millis(500));
@@ -65,7 +82,12 @@ pub fn spawn_connection_worker(explicit_address: Option<String>, sender: Sender<
     });
 }
 
-fn wait(sender: &Sender<DevtoolsMessage>, last_waiting: &mut String, message: String, duration: Duration) {
+fn wait(
+    sender: &Sender<DevtoolsMessage>,
+    last_waiting: &mut String,
+    message: String,
+    duration: Duration,
+) {
     if message != *last_waiting {
         let _ = sender.send(DevtoolsMessage::Waiting(message.clone()));
         *last_waiting = message;

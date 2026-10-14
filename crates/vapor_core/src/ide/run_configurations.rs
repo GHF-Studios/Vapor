@@ -1,14 +1,11 @@
-use crate::VaporWorkspace;
 use super::xml_escape;
+use crate::VaporWorkspace;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub(super) fn build(
-    project_root: &Path,
-    installation_root: &Path,
-) -> Vec<(PathBuf, String)> {
+pub(super) fn build(project_root: &Path, installation_root: &Path) -> Vec<(PathBuf, String)> {
     #[cfg(windows)]
     {
         let _ = (project_root, installation_root);
@@ -121,18 +118,15 @@ pub(super) fn build(
         ] {
             configurations.push((
                 run_root.join(directory).join(filename),
-                shell_configuration_at(
-                    name,
-                    folder,
-                    &vapor,
-                    arguments,
-                    "$PROJECT_DIR$",
-                    terminal,
-                ),
+                shell_configuration_at(name, folder, &vapor, arguments, "$PROJECT_DIR$", terminal),
             ));
         }
 
-        configurations.extend(workspace_run_configurations(project_root, &run_root, &vapor));
+        configurations.extend(workspace_run_configurations(
+            project_root,
+            &run_root,
+            &vapor,
+        ));
 
         if let Some(loo_cast_root) = child_named(project_root, "Loo-Cast") {
             let working_directory = project_path(project_root, &loo_cast_root);
@@ -369,7 +363,13 @@ fn cargo_binaries(vapor: &Path, root: &Path) -> Vec<(PathBuf, String)> {
     let manifest = root.join("Cargo.toml");
     let Ok(output) = Command::new(vapor)
         .args([
-            "toolchain", "cargo", "--", "metadata", "--format-version", "1", "--no-deps",
+            "toolchain",
+            "cargo",
+            "--",
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
             "--manifest-path",
         ])
         .arg(&manifest)
@@ -479,7 +479,12 @@ fn child_named(root: &Path, name: &str) -> Option<PathBuf> {
     fs::read_dir(root)
         .ok()?
         .flatten()
-        .find(|entry| entry.file_name().to_string_lossy().eq_ignore_ascii_case(name))
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(name)
+        })
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
 }

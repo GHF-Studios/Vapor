@@ -231,10 +231,7 @@ impl VaporWorkspace {
         self.projects.iter().find(|project| project.name == name)
     }
 
-    pub fn run_configuration(
-        &self,
-        name: &str,
-    ) -> Result<RunConfiguration, RunConfigurationError> {
+    pub fn run_configuration(&self, name: &str) -> Result<RunConfiguration, RunConfigurationError> {
         self.resolve_run_configuration(name, &mut BTreeSet::new())
     }
 

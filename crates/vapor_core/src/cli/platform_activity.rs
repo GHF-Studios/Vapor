@@ -1,7 +1,5 @@
 use super::commands::{PlatformServerRunKind, PlatformServerRunsArgs};
-use super::{
-    PLATFORM_SERVER_DEPLOY_WORKFLOW, PLATFORM_SERVER_GITHUB_REPOSITORY, command_output,
-};
+use super::{PLATFORM_SERVER_DEPLOY_WORKFLOW, PLATFORM_SERVER_GITHUB_REPOSITORY, command_output};
 use serde::Deserialize;
 use std::process::Command;
 

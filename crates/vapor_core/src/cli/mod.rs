@@ -7,23 +7,23 @@ mod commands;
 mod interactive_terminal;
 mod platform_activity;
 
+use crate::install::ensure_canonical_superworkspace;
 use crate::{
     CargoDependencyState, CargoPackageInspection, ContentKind, ContentVersionId,
     DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalContent, ManagedToolchain,
-    ResolvedComposition, ResolvedContentGraph, SteamDeploymentOptions, UninstallOptions, VaporId,
-    VaporInstallation, VaporProject, VaporRole, VaporSuperworkspace, VaporWorkspace,
-    SUPERWORKSPACE_MANIFEST_FILE_NAME, acquire_ecosystem_repositories, build_cargo_realization,
+    ResolvedComposition, ResolvedContentGraph, SUPERWORKSPACE_MANIFEST_FILE_NAME,
+    SteamDeploymentOptions, UninstallOptions, VaporId, VaporInstallation, VaporProject, VaporRole,
+    VaporSuperworkspace, VaporWorkspace, acquire_ecosystem_repositories, build_cargo_realization,
     build_workspace_deployment_authority, demote_role, deploy_ecosystem_to_steam,
-    deploy_workspace_from_authority, development_target_dir,
-    diagnose_managed_state, discover_local_content, forget_source, generate_local_cargo_realization,
-    git_available, inspect_local_cargo_package, install_installation, promote_role,
-    reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
-    repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
-    local_deployment_authority_active, resolve_source_context, role_status,
-    run_cargo_realization, run_workspace_deployment_authority, run_workspace_operation,
-    source_state, uninstall_installation, verify_local_library_cargo_dependencies,
+    deploy_workspace_from_authority, development_target_dir, diagnose_managed_state,
+    discover_local_content, forget_source, generate_local_cargo_realization, git_available,
+    inspect_local_cargo_package, install_installation, local_deployment_authority_active,
+    promote_role, reconcile_existing_development_environment,
+    repair_local_library_cargo_dependencies, repair_managed_state, resolve_local_content_kind,
+    resolve_local_packagepack, resolve_source_context, role_status, run_cargo_realization,
+    run_workspace_deployment_authority, run_workspace_operation_at, source_state,
+    uninstall_installation, verify_local_library_cargo_dependencies,
 };
-use crate::install::ensure_canonical_superworkspace;
 use clap::Parser;
 use commands::*;
 use platform_activity::*;
@@ -98,6 +98,8 @@ fn execute_vapor(command: VaporCommand) -> Result<(), String> {
         VaporCommand::Run(args) => execute_run(args),
 
         VaporCommand::Devtools(args) => execute_devtools(args),
+
+        VaporCommand::Studio(args) => launch_studio_app(args.workspace.as_deref()),
 
         VaporCommand::Source { command } => execute_source(command),
 
@@ -174,17 +176,16 @@ fn installer_install() -> Result<(), String> {
     println!("  vapor role promote ecosystem-developer");
     println!("  vapor source acquire first-party-all");
     println!("  vapor installation repair");
-    println!("  note: `vapor source setup` is idempotent and install already established the canonical Superworkspace");
+    println!(
+        "  note: `vapor source setup` is idempotent and install already established the canonical Superworkspace"
+    );
     Ok(())
 }
 
 fn installer_uninstall(args: UninstallArgs) -> Result<(), String> {
     let destructive = args.purge_app_external || args.purge_superworkspace;
 
-    if destructive
-        && !args.yes
-        && interactive_terminal::delegate_if_needed("Vapor · Uninstall")?
-    {
+    if destructive && !args.yes && interactive_terminal::delegate_if_needed("Vapor · Uninstall")? {
         return Ok(());
     }
     if destructive && !args.yes && !confirm_uninstall_purge(&args)? {
@@ -320,7 +321,9 @@ fn execute_toolchain(command: ToolchainCommand) -> Result<(), String> {
 }
 
 fn execute_workspace_operation(operation: DevelopmentOperation) -> Result<(), String> {
-    let workspace = VaporWorkspace::discover().map_err(|error| error.to_string())?;
+    let current = env::current_dir().map_err(|error| error.to_string())?;
+    let workspace =
+        run_workspace_operation_at(&current, operation).map_err(|error| error.to_string())?;
     println!(
         "{} {}/{}...",
         match operation {
@@ -333,7 +336,7 @@ fn execute_workspace_operation(operation: DevelopmentOperation) -> Result<(), St
         workspace.manifest.workspace.organization,
         workspace.manifest.workspace.name,
     );
-    run_workspace_operation(&workspace, operation).map_err(|error| error.to_string())
+    Ok(())
 }
 
 fn execute_run(args: RunArgs) -> Result<(), String> {
@@ -377,14 +380,17 @@ fn execute_devtools(args: DevtoolsArgs) -> Result<(), String> {
         Some(DevtoolsCommand::Open(args)) => launch_devtools_app(args.address.as_deref()),
         Some(DevtoolsCommand::Trace { command }) => match command {
             TraceCommand::Import(args) => {
-                let record = crate::import_profile_trace(&args.trace)
-                    .map_err(|error| error.to_string())?;
+                let record =
+                    crate::import_profile_trace(&args.trace).map_err(|error| error.to_string())?;
                 println!("Added {} -> {}", record.id, record.path.display());
                 Ok(())
             }
             TraceCommand::List => {
                 let records = crate::list_profile_traces().map_err(|error| error.to_string())?;
-                println!("{:<28}  {:<8}  {:<20}  {}", "TRACE", "STATUS", "CONFIGURATION", "PATH");
+                println!(
+                    "{:<28}  {:<8}  {:<20}  {}",
+                    "TRACE", "STATUS", "CONFIGURATION", "PATH"
+                );
                 for record in records {
                     println!(
                         "{:<28}  {:<8}  {:<20}  {}",
@@ -402,7 +408,11 @@ fn execute_devtools(args: DevtoolsArgs) -> Result<(), String> {
 }
 
 fn launch_devtools_app(address: Option<&str>) -> Result<(), String> {
-    let executable_name = if cfg!(windows) { "vapor-devtools.exe" } else { "vapor-devtools" };
+    let executable_name = if cfg!(windows) {
+        "vapor-devtools.exe"
+    } else {
+        "vapor-devtools"
+    };
     let sibling = env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(|parent| parent.join(executable_name)))
@@ -421,9 +431,33 @@ fn launch_devtools_app(address: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+fn launch_studio_app(workspace: Option<&std::path::Path>) -> Result<(), String> {
+    let executable_name = if cfg!(windows) {
+        "vapor-studio.exe"
+    } else {
+        "vapor-studio"
+    };
+    let sibling = env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.join(executable_name)))
+        .filter(|path| path.is_file());
+    let mut command = match sibling {
+        Some(path) => Command::new(path),
+        None => Command::new(executable_name),
+    };
+    if let Some(workspace) = workspace {
+        command.arg("--workspace").arg(workspace);
+    }
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+        .map_err(|error| format!(
+            "failed to launch Vapor Studio (`{executable_name}`): {error}; build the Vapor Client workspace with `vapor build`"
+        ))?;
+    Ok(())
+}
+
 fn trace_report(args: TraceReportArgs) -> Result<(), String> {
-    let record = crate::resolve_profile_trace(args.trace.as_deref())
-        .map_err(|error| error.to_string())?;
+    let record =
+        crate::resolve_profile_trace(args.trace.as_deref()).map_err(|error| error.to_string())?;
     let options = crate::ProfileReportOptions {
         top: args.top,
         sort: match args.sort {
@@ -442,48 +476,91 @@ fn trace_report(args: TraceReportArgs) -> Result<(), String> {
         name_filter: args.filter,
         self_time: args.self_time,
     };
-    let report = crate::analyze_profile_trace(&record, &options)
-        .map_err(|error| error.to_string())?;
+    let report =
+        crate::analyze_profile_trace(&record, &options).map_err(|error| error.to_string())?;
     match args.format {
         ProfileOutputFormat::Table => {
             println!("trace: {}", report.trace.display());
-            println!("{} occurrences · {} zones · {} timing", report.occurrence_count, report.zone_count, if report.self_time { "self" } else { "inclusive" });
+            println!(
+                "{} occurrences · {} zones · {} timing",
+                report.occurrence_count,
+                report.zone_count,
+                if report.self_time {
+                    "self"
+                } else {
+                    "inclusive"
+                }
+            );
             println!();
-            println!("{:<4} {:>7} {:>10} {:>10} {:>10} {:>10} {:>10}  {}", "#", "calls", "total", "median", "p95", "p99", "max", "zone");
+            println!(
+                "{:<4} {:>7} {:>10} {:>10} {:>10} {:>10} {:>10}  {}",
+                "#", "calls", "total", "median", "p95", "p99", "max", "zone"
+            );
             for (index, zone) in report.zones.iter().enumerate() {
                 println!(
                     "{:<4} {:>7} {:>10} {:>10} {:>10} {:>10} {:>10}  {}  [{}:{}]",
-                    index + 1, zone.count, format_profile_ns(zone.total_ns),
-                    format_profile_ns(zone.median_ns), format_profile_ns(zone.p95_ns),
-                    format_profile_ns(zone.p99_ns), format_profile_ns(zone.max_ns),
-                    zone.name, zone.source, zone.line,
+                    index + 1,
+                    zone.count,
+                    format_profile_ns(zone.total_ns),
+                    format_profile_ns(zone.median_ns),
+                    format_profile_ns(zone.p95_ns),
+                    format_profile_ns(zone.p99_ns),
+                    format_profile_ns(zone.max_ns),
+                    zone.name,
+                    zone.source,
+                    zone.line,
                 );
             }
         }
         ProfileOutputFormat::Csv => {
-            println!("rank,name,source,line,threads,count,total_ns,mean_ns,median_ns,p90_ns,p95_ns,p99_ns,max_ns");
+            println!(
+                "rank,name,source,line,threads,count,total_ns,mean_ns,median_ns,p90_ns,p95_ns,p99_ns,max_ns"
+            );
             for (index, zone) in report.zones.iter().enumerate() {
-                let threads = zone.threads.iter().map(u64::to_string).collect::<Vec<_>>().join("|");
+                let threads = zone
+                    .threads
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join("|");
                 println!(
                     "{},{:?},{:?},{},{:?},{},{},{},{},{},{},{},{}",
-                    index + 1, zone.name, zone.source, zone.line, threads, zone.count,
-                    zone.total_ns, zone.mean_ns, zone.median_ns, zone.p90_ns,
-                    zone.p95_ns, zone.p99_ns, zone.max_ns,
+                    index + 1,
+                    zone.name,
+                    zone.source,
+                    zone.line,
+                    threads,
+                    zone.count,
+                    zone.total_ns,
+                    zone.mean_ns,
+                    zone.median_ns,
+                    zone.p90_ns,
+                    zone.p95_ns,
+                    zone.p99_ns,
+                    zone.max_ns,
                 );
             }
         }
         ProfileOutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
+            );
         }
     }
     Ok(())
 }
 
 fn format_profile_ns(ns: u64) -> String {
-    if ns >= 1_000_000_000 { format!("{:.2}s", ns as f64 / 1_000_000_000.0) }
-    else if ns >= 1_000_000 { format!("{:.2}ms", ns as f64 / 1_000_000.0) }
-    else if ns >= 1_000 { format!("{:.1}µs", ns as f64 / 1_000.0) }
-    else { format!("{ns}ns") }
+    if ns >= 1_000_000_000 {
+        format!("{:.2}s", ns as f64 / 1_000_000_000.0)
+    } else if ns >= 1_000_000 {
+        format!("{:.2}ms", ns as f64 / 1_000_000.0)
+    } else if ns >= 1_000 {
+        format!("{:.1}µs", ns as f64 / 1_000.0)
+    } else {
+        format!("{ns}ns")
+    }
 }
 
 fn toolchain_cargo(explicit_project: Option<String>, args: Vec<OsString>) -> Result<(), String> {
@@ -498,9 +575,10 @@ fn toolchain_cargo(explicit_project: Option<String>, args: Vec<OsString>) -> Res
     command.args(&args);
 
     if let Some(project) = &project {
-        command
-            .current_dir(&project.root)
-            .env("CARGO_TARGET_DIR", development_target_dir(&toolchain, project));
+        command.current_dir(&project.root).env(
+            "CARGO_TARGET_DIR",
+            development_target_dir(&toolchain, project),
+        );
     }
 
     let status = command.status().map_err(|error| {
@@ -526,8 +604,7 @@ fn resolve_toolchain_cargo_project(
     let explicit_manifest = cargo_has_manifest_path(args);
 
     let needs_project = explicit_project.is_some()
-        || (!explicit_manifest
-            && (!package_hints.is_empty() || cargo_needs_project_context(args)));
+        || (!explicit_manifest && (!package_hints.is_empty() || cargo_needs_project_context(args)));
 
     if !needs_project {
         return Ok(None);
@@ -809,7 +886,9 @@ fn source_setup() -> Result<(), String> {
     println!("  source state: {}", state.state_path.display());
 
     if let Err(error) = synchronize_existing_development_environment(&superworkspace.root) {
-        eprintln!("warning: Superworkspace was created, but development-state synchronization failed: {error}");
+        eprintln!(
+            "warning: Superworkspace was created, but development-state synchronization failed: {error}"
+        );
     }
 
     Ok(())
@@ -860,7 +939,10 @@ fn source_selection(selector: &str) -> Result<Vec<&'static str>, String> {
         "loo-cast" => Ok(vec![LOO_CAST_REPOSITORY]),
         "vapor-client" => Ok(vec![VAPOR_CLIENT_REPOSITORY]),
         "vapor-platform-server" => Ok(vec![VAPOR_PLATFORM_SERVER_REPOSITORY]),
-        "vapor-all" => Ok(vec![VAPOR_CLIENT_REPOSITORY, VAPOR_PLATFORM_SERVER_REPOSITORY]),
+        "vapor-all" => Ok(vec![
+            VAPOR_CLIENT_REPOSITORY,
+            VAPOR_PLATFORM_SERVER_REPOSITORY,
+        ]),
         "first-party-all" => Ok(vec![
             LOO_CAST_REPOSITORY,
             VAPOR_CLIENT_REPOSITORY,
@@ -872,7 +954,9 @@ fn source_selection(selector: &str) -> Result<Vec<&'static str>, String> {
     }
 }
 
-fn configured_superworkspace(installation: &VaporInstallation) -> Result<VaporSuperworkspace, String> {
+fn configured_superworkspace(
+    installation: &VaporInstallation,
+) -> Result<VaporSuperworkspace, String> {
     ensure_canonical_superworkspace(installation).map_err(|error| error.to_string())
 }
 
@@ -881,12 +965,8 @@ fn source_acquire(selector: &str) -> Result<(), String> {
     let superworkspace = configured_superworkspace(&installation)?;
     let selection = source_selection(selector)?;
 
-    let report = acquire_ecosystem_repositories(
-        &installation,
-        &superworkspace.root,
-        &selection,
-    )
-    .map_err(|error| error.to_string())?;
+    let report = acquire_ecosystem_repositories(&installation, &superworkspace.root, &selection)
+        .map_err(|error| error.to_string())?;
 
     println!("Acquired Vapor source:");
     println!("  selector: {selector}");
@@ -932,7 +1012,10 @@ fn source_remove(selector: &str, yes: bool) -> Result<(), String> {
 
     for (name, path) in &targets {
         fs::remove_dir_all(path).map_err(|error| {
-            format!("failed to remove source `{name}` at `{}`: {error}", path.display())
+            format!(
+                "failed to remove source `{name}` at `{}`: {error}",
+                path.display()
+            )
         })?;
         println!("Removed {name}: {}", path.display());
     }
@@ -945,7 +1028,8 @@ fn ensure_source_checkout_safe(name: &str, root: &Path) -> Result<(), String> {
 
     let submodules = git_output(root, &["submodule", "status"])?;
     for line in submodules.lines() {
-        let trimmed = line.trim_start_matches(|character| matches!(character, ' ' | '-' | '+' | 'U'));
+        let trimmed =
+            line.trim_start_matches(|character| matches!(character, ' ' | '-' | '+' | 'U'));
         let mut fields = trimmed.split_whitespace();
         let _commit = fields.next();
         let Some(path) = fields.next() else {
@@ -963,7 +1047,10 @@ fn ensure_source_checkout_safe(name: &str, root: &Path) -> Result<(), String> {
 fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), String> {
     let inside = git_output(root, &["rev-parse", "--is-inside-work-tree"])?;
     if inside != "true" {
-        return Err(format!("source `{name}` is not a Git work tree: `{}`", root.display()));
+        return Err(format!(
+            "source `{name}` is not a Git work tree: `{}`",
+            root.display()
+        ));
     }
 
     let dirty = git_output(
@@ -983,7 +1070,10 @@ fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), String> {
 
     git_output(root, &["fetch", "--quiet", "--prune", "origin"])?;
 
-    let local_only = git_output(root, &["rev-list", "--branches", "--not", "--remotes=origin"])?;
+    let local_only = git_output(
+        root,
+        &["rev-list", "--branches", "--not", "--remotes=origin"],
+    )?;
     if !local_only.is_empty() {
         return Err(format!(
             "refusing to remove source `{name}` because local branches contain commits not present on origin"
@@ -1034,10 +1124,7 @@ fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn confirm_source_removal(
-    selector: &str,
-    targets: &[(String, PathBuf)],
-) -> Result<bool, String> {
+fn confirm_source_removal(selector: &str, targets: &[(String, PathBuf)]) -> Result<bool, String> {
     eprintln!("WARNING: source removal permanently deletes selected checkouts for `{selector}`.");
     for (_, path) in targets {
         eprintln!("  - {}", path.display());
@@ -1097,7 +1184,10 @@ fn source_teardown(yes: bool) -> Result<(), String> {
     forget_source(&installation, &superworkspace.root).map_err(|error| error.to_string())?;
 
     match fs::remove_dir(&superworkspace.root) {
-        Ok(()) => println!("Removed empty Superworkspace directory: {}", superworkspace.root.display()),
+        Ok(()) => println!(
+            "Removed empty Superworkspace directory: {}",
+            superworkspace.root.display()
+        ),
         Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => println!(
             "Superworkspace configuration removed; retained non-empty directory: {}",
             superworkspace.root.display()
@@ -1275,11 +1365,29 @@ fn print_managed_state(status: &crate::MaintenanceStatus) {
     println!(
         "  Rust toolchain: {} ({})",
         status.toolchain_version,
-        if status.toolchain_installed { "installed" } else { "missing" },
+        if status.toolchain_installed {
+            "installed"
+        } else {
+            "missing"
+        },
     );
     if let Some(environment) = &status.developer_environment {
-        println!("  Tracy profiler: {}", if environment.tracy_profiler_installed { "installed" } else { "missing" });
-        println!("  Tracy analysis: {}", if environment.tracy_analysis_installed { "installed" } else { "missing" });
+        println!(
+            "  Tracy profiler: {}",
+            if environment.tracy_profiler_installed {
+                "installed"
+            } else {
+                "missing"
+            }
+        );
+        println!(
+            "  Tracy analysis: {}",
+            if environment.tracy_analysis_installed {
+                "installed"
+            } else {
+                "missing"
+            }
+        );
     }
 
     match &status.superworkspace_root {
@@ -1360,10 +1468,38 @@ fn installer_role_status() -> Result<(), String> {
         match crate::DeveloperEnvironment::discover() {
             Ok(environment) => {
                 let tools = environment.status();
-                println!("  Content Developer: {}", if tools.is_ready() { "ready" } else { "degraded: developer toolset incomplete" });
-                println!("    Rust: {}", if tools.rust_installed { "ready" } else { "missing" });
-                println!("    Tracy profiler: {}", if tools.tracy_profiler_installed { "ready" } else { "missing" });
-                println!("    Tracy analysis: {}", if tools.tracy_analysis_installed { "ready" } else { "missing" });
+                println!(
+                    "  Content Developer: {}",
+                    if tools.is_ready() {
+                        "ready"
+                    } else {
+                        "degraded: developer toolset incomplete"
+                    }
+                );
+                println!(
+                    "    Rust: {}",
+                    if tools.rust_installed {
+                        "ready"
+                    } else {
+                        "missing"
+                    }
+                );
+                println!(
+                    "    Tracy profiler: {}",
+                    if tools.tracy_profiler_installed {
+                        "ready"
+                    } else {
+                        "missing"
+                    }
+                );
+                println!(
+                    "    Tracy analysis: {}",
+                    if tools.tracy_analysis_installed {
+                        "ready"
+                    } else {
+                        "missing"
+                    }
+                );
             }
             Err(error) => println!("  Content Developer: degraded: {error}"),
         }
@@ -1429,7 +1565,9 @@ fn authority_status() -> Result<(), String> {
 
 fn require_developer_role() -> Result<(), String> {
     let installation = VaporInstallation::discover().map_err(|error| error.to_string())?;
-    let role = role_status(&installation).map_err(|error| error.to_string())?.installed_role;
+    let role = role_status(&installation)
+        .map_err(|error| error.to_string())?
+        .installed_role;
     if role < VaporRole::ContentDeveloper {
         return Err("developer tooling belongs to the Content Developer role or higher; promote the Vapor role before using developer toolchain operations".to_owned());
     }
@@ -1440,23 +1578,64 @@ fn toolchain_status() -> Result<(), String> {
     let environment = crate::DeveloperEnvironment::discover().map_err(|error| error.to_string())?;
     let status = environment.status();
     println!("Vapor developer toolset:");
-    println!("  Rust {}: {}", environment.rust.pin.version, if status.rust_installed { "installed" } else { "missing" });
+    println!(
+        "  Rust {}: {}",
+        environment.rust.pin.version,
+        if status.rust_installed {
+            "installed"
+        } else {
+            "missing"
+        }
+    );
     println!("    Cargo: {}", environment.rust.cargo_path.display());
-    println!("    Rust Analyzer: {}", environment.rust.rust_analyzer_path.display());
-    println!("  Tracy {}: {}", crate::TRACY_PROFILER_VERSION, if status.tracy_profiler_installed { "installed" } else { "missing" });
+    println!(
+        "    Rust Analyzer: {}",
+        environment.rust.rust_analyzer_path.display()
+    );
+    println!(
+        "  Tracy {}: {}",
+        crate::TRACY_PROFILER_VERSION,
+        if status.tracy_profiler_installed {
+            "installed"
+        } else {
+            "missing"
+        }
+    );
     println!("    profiler: {}", environment.tracy.profiler.display());
-    println!("  Tracy analysis: {}", if status.tracy_analysis_installed { "installed" } else { "missing" });
+    println!(
+        "  Tracy analysis: {}",
+        if status.tracy_analysis_installed {
+            "installed"
+        } else {
+            "missing"
+        }
+    );
     println!("    csvexport: {}", environment.tracy.csvexport.display());
-    println!("  state: {}", if status.is_ready() { "ready" } else { "repair required" });
+    println!(
+        "  state: {}",
+        if status.is_ready() {
+            "ready"
+        } else {
+            "repair required"
+        }
+    );
     Ok(())
 }
 
 fn toolchain_install() -> Result<(), String> {
     require_developer_role()?;
-    let mut environment = crate::DeveloperEnvironment::discover().map_err(|error| error.to_string())?;
+    let mut environment =
+        crate::DeveloperEnvironment::discover().map_err(|error| error.to_string())?;
     println!("Reconciling Vapor developer toolset...");
     let report = environment.reconcile().map_err(|error| error.to_string())?;
-    println!("{}", if report.changed() { "Developer toolset reconciled." } else { "Developer toolset was already current." });
+    println!(
+        "{}",
+        if report.changed() {
+            "Developer toolset reconciled."
+        } else {
+            "Developer toolset was already current."
+        }
+    );
     toolchain_status()
 }
 
@@ -1465,7 +1644,11 @@ fn toolchain_diagnose() -> Result<(), String> {
     let environment = crate::DeveloperEnvironment::discover().map_err(|error| error.to_string())?;
     let status = environment.status();
     toolchain_status()?;
-    if status.is_ready() { Ok(()) } else { Err("Vapor developer toolset requires repair".to_owned()) }
+    if status.is_ready() {
+        Ok(())
+    } else {
+        Err("Vapor developer toolset requires repair".to_owned())
+    }
 }
 
 fn toolchain_repair() -> Result<(), String> {
@@ -1475,7 +1658,9 @@ fn toolchain_repair() -> Result<(), String> {
 fn toolchain_tracy() -> Result<(), String> {
     require_developer_role()?;
     let environment = crate::DeveloperEnvironment::discover().map_err(|error| error.to_string())?;
-    environment.launch_tracy().map_err(|error| error.to_string())
+    environment
+        .launch_tracy()
+        .map_err(|error| error.to_string())
 }
 
 const CLIENT_WORKSPACE_REPOSITORY: &str = "Vapor-Client/Vapor";
@@ -1667,7 +1852,9 @@ fn platform_server_recipe(recipe: &str) -> Result<(), String> {
     }
 
     let toolchain = ManagedToolchain::discover().map_err(|error| error.to_string())?;
-    let mut command = toolchain.command("bash").map_err(|error| error.to_string())?;
+    let mut command = toolchain
+        .command("bash")
+        .map_err(|error| error.to_string())?;
 
     command
         .arg(&script)
@@ -1676,7 +1863,11 @@ fn platform_server_recipe(recipe: &str) -> Result<(), String> {
 
     println!(
         "{} Vapor Platform Server with repo-owned `{}`...",
-        if recipe == "build" { "Building" } else { "Testing" },
+        if recipe == "build" {
+            "Building"
+        } else {
+            "Testing"
+        },
         script.display(),
     );
 
@@ -1811,9 +2002,9 @@ fn platform_server_deploy() -> Result<(), String> {
     let mut auth = Command::new("gh");
     auth.args(["auth", "status"]);
 
-    let auth_status = auth
-        .status()
-        .map_err(|error| format!("GitHub CLI `gh` is required for Platform Server deployment: {error}"))?;
+    let auth_status = auth.status().map_err(|error| {
+        format!("GitHub CLI `gh` is required for Platform Server deployment: {error}")
+    })?;
 
     if !auth_status.success() {
         return Err(
@@ -1838,9 +2029,9 @@ fn platform_server_deploy() -> Result<(), String> {
         "main",
     ]);
 
-    let trigger_status = trigger
-        .status()
-        .map_err(|error| format!("failed to trigger Platform Server deployment workflow: {error}"))?;
+    let trigger_status = trigger.status().map_err(|error| {
+        format!("failed to trigger Platform Server deployment workflow: {error}")
+    })?;
 
     if !trigger_status.success() {
         return Err(format!(
@@ -2052,7 +2243,7 @@ fn run_client_operation(operation: DevelopmentOperation) -> Result<(), String> {
         workspace.manifest.workspace.version
     );
 
-    run_workspace_operation(&workspace, operation).map_err(|error| error.to_string())?;
+    run_workspace_operation_at(&workspace.root, operation).map_err(|error| error.to_string())?;
 
     println!(
         "{completed} Vapor Client {}/{}",

@@ -4,8 +4,8 @@
 //! those capabilities; they do not invent tool-specific setup flows.
 
 use crate::{
-    InstallationError, ManagedToolchain, ManagedTracyToolset, ToolchainError,
-    TracyError, VaporInstallation,
+    InstallationError, ManagedToolchain, ManagedTracyToolset, ToolchainError, TracyError,
+    VaporInstallation,
 };
 use std::fmt;
 
@@ -18,9 +18,7 @@ pub struct DeveloperEnvironmentStatus {
 
 impl DeveloperEnvironmentStatus {
     pub const fn is_ready(&self) -> bool {
-        self.rust_installed
-            && self.tracy_profiler_installed
-            && self.tracy_analysis_installed
+        self.rust_installed && self.tracy_profiler_installed && self.tracy_analysis_installed
     }
 }
 
@@ -34,9 +32,7 @@ pub struct DeveloperEnvironmentRepair {
 
 impl DeveloperEnvironmentRepair {
     pub const fn changed(&self) -> bool {
-        self.rust_installed
-            || self.tracy_profiler_installed
-            || self.tracy_analysis_installed
+        self.rust_installed || self.tracy_profiler_installed || self.tracy_analysis_installed
     }
 }
 
@@ -71,7 +67,9 @@ impl DeveloperEnvironment {
     pub fn reconcile(&mut self) -> Result<DeveloperEnvironmentRepair, DeveloperEnvironmentError> {
         let mut rust_installed = false;
         if !self.rust.is_installed() {
-            self.rust.install().map_err(DeveloperEnvironmentError::Toolchain)?;
+            self.rust
+                .install()
+                .map_err(DeveloperEnvironmentError::Toolchain)?;
             rust_installed = true;
         }
 
@@ -89,7 +87,9 @@ impl DeveloperEnvironment {
     }
 
     pub fn launch_tracy(&self) -> Result<(), DeveloperEnvironmentError> {
-        self.tracy.launch().map_err(DeveloperEnvironmentError::Tracy)
+        self.tracy
+            .launch()
+            .map_err(DeveloperEnvironmentError::Tracy)
     }
 }
 

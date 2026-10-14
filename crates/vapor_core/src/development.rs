@@ -19,7 +19,13 @@ const BIN_DIR: &str = "bin";
 const CLIENT_DISTRIBUTION_MANIFEST_FILE_NAME: &str = "Vapor-Client.vapor.toml";
 const LOCAL_DEPLOYMENT_AUTHORITY_ENV: &str = "VAPOR_LOCAL_DEPLOYMENT_AUTHORITY";
 
-const DISTRIBUTION_BINARIES: &[&str] = &["vapor", "vapor-devtools", "vapor-installer", "vapor-entrypoint"];
+const DISTRIBUTION_BINARIES: &[&str] = &[
+    "vapor",
+    "vapor-devtools",
+    "vapor-installer",
+    "vapor-entrypoint",
+    "vapor-studio",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevelopmentOperation {
@@ -97,6 +103,20 @@ pub fn run_workspace_operation(
     }
 
     Ok(())
+}
+
+/// Run one Vapor-managed development operation for the workspace containing
+/// `workspace_root`. GUI and CLI callers use the same implementation; callers
+/// that have an explicit project selection should pass that root instead of
+/// changing process-wide current-directory state.
+pub fn run_workspace_operation_at(
+    workspace_root: &Path,
+    operation: DevelopmentOperation,
+) -> Result<VaporWorkspace, DevelopmentError> {
+    let workspace = VaporWorkspace::discover_from(workspace_root)
+        .map_err(|error| DevelopmentError::Workspace(error.to_string()))?;
+    run_workspace_operation(&workspace, operation)?;
+    Ok(workspace)
 }
 
 /// Build the distributable Vapor command surfaces without choosing a
@@ -222,14 +242,15 @@ fn promote_workspace_build(
         }
     }
 
-    let launch_script = build.installation_root.join(BIN_DIR).join(
+    let launch_script =
         build
-            .launch_script
-            .file_name()
-            .ok_or_else(|| DevelopmentError::InvalidDeploymentPath {
-                path: build.launch_script.clone(),
-            })?,
-    );
+            .installation_root
+            .join(BIN_DIR)
+            .join(build.launch_script.file_name().ok_or_else(|| {
+                DevelopmentError::InvalidDeploymentPath {
+                    path: build.launch_script.clone(),
+                }
+            })?);
     promote_file(&build.launch_script, &launch_script)?;
 
     Ok(EcosystemDeploymentReport {
@@ -269,11 +290,16 @@ fn run_project_operation(
         };
     }
 
-    let status = toolchain
+    let mut command = toolchain
         .cargo_command()
-        .map_err(DevelopmentError::Toolchain)?
-        .arg(operation.cargo_subcommand())
-        .arg("--workspace")
+        .map_err(DevelopmentError::Toolchain)?;
+    command.arg(operation.cargo_subcommand());
+    if operation == DevelopmentOperation::Fmt {
+        command.arg("--all");
+    } else {
+        command.arg("--workspace");
+    }
+    let status = command
         .arg("--manifest-path")
         .arg("Cargo.toml")
         .env("CARGO_TARGET_DIR", target_dir)
@@ -426,25 +452,19 @@ pub fn local_deployment_authority_active() -> Result<bool, DevelopmentError> {
     };
 
     let expected_path = PathBuf::from(expected);
-    let expected =
-        fs::canonicalize(&expected_path).map_err(|source| DevelopmentError::Io {
-            path: expected_path,
-            source,
-        })?;
+    let expected = fs::canonicalize(&expected_path).map_err(|source| DevelopmentError::Io {
+        path: expected_path,
+        source,
+    })?;
 
-    let current_path =
-        env::current_exe().map_err(DevelopmentError::CurrentExecutable)?;
-    let current =
-        fs::canonicalize(&current_path).map_err(|source| DevelopmentError::Io {
-            path: current_path,
-            source,
-        })?;
+    let current_path = env::current_exe().map_err(DevelopmentError::CurrentExecutable)?;
+    let current = fs::canonicalize(&current_path).map_err(|source| DevelopmentError::Io {
+        path: current_path,
+        source,
+    })?;
 
     if current != expected {
-        return Err(DevelopmentError::DeploymentAuthorityMismatch {
-            expected,
-            current,
-        });
+        return Err(DevelopmentError::DeploymentAuthorityMismatch { expected, current });
     }
 
     Ok(true)
@@ -769,6 +789,8 @@ fn current_host_target() -> Result<&'static str, DevelopmentError> {
 pub enum DevelopmentError {
     Toolchain(ToolchainError),
 
+    Workspace(String),
+
     CurrentExecutable(io::Error),
 
     DeploymentAuthorityMismatch {
@@ -863,8 +885,13 @@ impl fmt::Display for DevelopmentError {
         match self {
             Self::Toolchain(error) => error.fmt(formatter),
 
+            Self::Workspace(error) => formatter.write_str(error),
+
             Self::CurrentExecutable(error) => {
-                write!(formatter, "failed to resolve the running Vapor executable: {error}")
+                write!(
+                    formatter,
+                    "failed to resolve the running Vapor executable: {error}"
+                )
             }
 
             Self::DeploymentAuthorityMismatch { expected, current } => {
@@ -892,9 +919,9 @@ impl fmt::Display for DevelopmentError {
                 )
             }
 
-            Self::UnsupportedHost => formatter.write_str(
-                "this host is not yet supported by Vapor Client deployment",
-            ),
+            Self::UnsupportedHost => {
+                formatter.write_str("this host is not yet supported by Vapor Client deployment")
+            }
 
             Self::BinaryTargetNotFound { binary } => {
                 write!(
@@ -1007,6 +1034,23 @@ impl fmt::Display for DevelopmentError {
                 write!(formatter, "failed to access `{}`: {source}", path.display())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod operation_tests {
+    use super::{DevelopmentError, DevelopmentOperation, run_workspace_operation_at};
+    use std::path::Path;
+
+    #[test]
+    fn explicit_workspace_root_is_used_for_discovery() {
+        let root = Path::new("/definitely-not-a-vapor-workspace");
+
+        let result = run_workspace_operation_at(root, DevelopmentOperation::Check);
+
+        assert!(
+            matches!(result, Err(DevelopmentError::Workspace(message)) if message.contains("workspace"))
+        );
     }
 }
 
