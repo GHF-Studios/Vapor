@@ -138,7 +138,7 @@ pub fn deploy_ecosystem_to_steam(
     let account = resolve_account(&distribution.manifest, options.account)?;
 
     let steamcmd = resolve_steamcmd(&build.installation_root, options.steamcmd.as_deref())
-        .ok_or_else(|| SteamDeploymentError::SteamCmdUnavailable)?;
+        .ok_or(SteamDeploymentError::SteamCmdUnavailable)?;
 
     let stage = stage_distribution(&distribution, &build, options.preview)?;
 

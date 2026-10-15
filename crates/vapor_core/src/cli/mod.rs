@@ -10,19 +10,18 @@ mod platform_activity;
 use crate::install::ensure_canonical_superworkspace;
 use crate::{
     CargoDependencyState, CargoPackageInspection, ContentKind, ContentVersionId,
-    DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalContent, ManagedToolchain,
-    ResolvedComposition, ResolvedContentGraph, SUPERWORKSPACE_MANIFEST_FILE_NAME,
-    SteamDeploymentOptions, UninstallOptions, VaporId, VaporInstallation, VaporProject, VaporRole,
-    VaporSuperworkspace, VaporWorkspace, acquire_ecosystem_repositories, build_cargo_realization,
-    LocalClientDeploymentOutcome, demote_role, deploy_client_locally, deploy_ecosystem_to_steam,
-    development_target_dir, diagnose_managed_state,
+    DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalClientDeploymentOutcome,
+    LocalContent, ManagedToolchain, ResolvedComposition, ResolvedContentGraph,
+    SUPERWORKSPACE_MANIFEST_FILE_NAME, SteamDeploymentOptions, UninstallOptions, VaporId,
+    VaporInstallation, VaporProject, VaporRole, VaporSuperworkspace, VaporWorkspace,
+    acquire_ecosystem_repositories, build_cargo_realization, demote_role, deploy_client_locally,
+    deploy_ecosystem_to_steam, development_target_dir, diagnose_managed_state,
     discover_local_content, forget_source, generate_local_cargo_realization, git_available,
-    inspect_local_cargo_package, install_installation,
-    promote_role, reconcile_existing_development_environment,
-    repair_local_library_cargo_dependencies, repair_managed_state, resolve_local_content_kind,
-    resolve_local_packagepack, resolve_source_context, role_status, run_cargo_realization,
-    run_workspace_operation_at, source_state,
-    uninstall_installation, verify_local_library_cargo_dependencies,
+    inspect_local_cargo_package, install_installation, promote_role,
+    reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
+    repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
+    resolve_source_context, role_status, run_cargo_realization, run_workspace_operation_at,
+    source_state, uninstall_installation, verify_local_library_cargo_dependencies,
 };
 use clap::Parser;
 use commands::*;
@@ -388,8 +387,8 @@ fn execute_devtools(args: DevtoolsArgs) -> Result<(), String> {
             TraceCommand::List => {
                 let records = crate::list_profile_traces().map_err(|error| error.to_string())?;
                 println!(
-                    "{:<28}  {:<8}  {:<20}  {}",
-                    "TRACE", "STATUS", "CONFIGURATION", "PATH"
+                    "{:<28}  {:<8}  {:<20}  PATH",
+                    "TRACE", "STATUS", "CONFIGURATION"
                 );
                 for record in records {
                     println!(
@@ -493,8 +492,8 @@ fn trace_report(args: TraceReportArgs) -> Result<(), String> {
             );
             println!();
             println!(
-                "{:<4} {:>7} {:>10} {:>10} {:>10} {:>10} {:>10}  {}",
-                "#", "calls", "total", "median", "p95", "p99", "max", "zone"
+                "{:<4} {:>7} {:>10} {:>10} {:>10} {:>10} {:>10}  zone",
+                "#", "calls", "total", "median", "p95", "p99", "max"
             );
             for (index, zone) in report.zones.iter().enumerate() {
                 println!(
@@ -720,13 +719,13 @@ fn cargo_package_hints(args: &[OsString]) -> Vec<String> {
             break;
         }
 
-        if argument == "-p" || argument == "--package" {
-            if let Some(value) = args.get(index + 1) {
-                hints.push(cargo_package_name(&value.to_string_lossy()).to_owned());
+        if (argument == "-p" || argument == "--package")
+            && let Some(value) = args.get(index + 1)
+        {
+            hints.push(cargo_package_name(&value.to_string_lossy()).to_owned());
 
-                index += 2;
-                continue;
-            }
+            index += 2;
+            continue;
         }
 
         if let Some(value) = argument.strip_prefix("--package=") {
@@ -1028,8 +1027,7 @@ fn ensure_source_checkout_safe(name: &str, root: &Path) -> Result<(), String> {
 
     let submodules = git_output(root, &["submodule", "status"])?;
     for line in submodules.lines() {
-        let trimmed =
-            line.trim_start_matches(|character| matches!(character, ' ' | '-' | '+' | 'U'));
+        let trimmed = line.trim_start_matches([' ', '-', '+', 'U']);
         let mut fields = trimmed.split_whitespace();
         let _commit = fields.next();
         let Some(path) = fields.next() else {

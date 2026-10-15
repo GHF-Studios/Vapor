@@ -105,8 +105,8 @@ impl LocalCatalog {
         if let Some(existing) = self.contents.get(&identity) {
             return Err(LocalDiscoveryError::DuplicateContentVersion {
                 identity,
-                first_manifest: existing.manifest_path.clone(),
-                second_manifest: content.manifest_path,
+                first_manifest: Box::new(existing.manifest_path.clone()),
+                second_manifest: Box::new(content.manifest_path),
             });
         }
 
@@ -162,10 +162,11 @@ fn discover_directory(
             continue;
         }
 
-        if file_type.is_file() && entry.file_name() == OsStr::new(CONTENT_MANIFEST_FILE_NAME) {
-            if let Some(content) = load_local_content(&path)? {
-                catalog.insert(content)?;
-            }
+        if file_type.is_file()
+            && entry.file_name() == OsStr::new(CONTENT_MANIFEST_FILE_NAME)
+            && let Some(content) = load_local_content(&path)?
+        {
+            catalog.insert(content)?;
         }
     }
 
@@ -197,8 +198,8 @@ fn load_local_content(manifest_path: &Path) -> Result<Option<LocalContent>, Loca
                 return Ok(None);
             }
             return Err(LocalDiscoveryError::Manifest {
-                path: manifest_path.to_path_buf(),
-                source: manifest_error,
+                path: Box::new(manifest_path.to_path_buf()),
+                source: Box::new(manifest_error),
             });
         }
     };
@@ -222,13 +223,13 @@ pub enum LocalDiscoveryError {
         source: io::Error,
     },
     Manifest {
-        path: PathBuf,
-        source: ManifestError,
+        path: Box<PathBuf>,
+        source: Box<ManifestError>,
     },
     DuplicateContentVersion {
         identity: ContentVersionId,
-        first_manifest: PathBuf,
-        second_manifest: PathBuf,
+        first_manifest: Box<PathBuf>,
+        second_manifest: Box<PathBuf>,
     },
 }
 

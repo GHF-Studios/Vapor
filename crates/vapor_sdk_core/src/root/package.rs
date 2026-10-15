@@ -255,14 +255,6 @@ fn vdf_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn alias_name(stem: &str) -> String {
-    if cfg!(windows) {
-        format!("{stem}.cmd")
-    } else {
-        stem.to_owned()
-    }
-}
-
 fn executable_name(stem: &str) -> String {
     format!("{stem}{}", std::env::consts::EXE_SUFFIX)
 }

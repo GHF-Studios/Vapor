@@ -41,18 +41,9 @@ const TRACY_EXECUTABLE_NAMES: &[&str] = &[
     "Tracy-release.exe",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TracyProfilerOrigin {
-    ManagedCache,
-    ManagedDownload,
-    ManagedSourceBuild,
-}
-
 #[derive(Debug, Clone)]
 struct ResolvedTracyProfiler {
     executable: PathBuf,
-    version: &'static str,
-    origin: TracyProfilerOrigin,
 }
 
 #[derive(Debug, Clone)]
@@ -327,12 +318,8 @@ fn profiler_executable_name(environment: &HostEnvironment) -> &'static str {
     }
 }
 
-fn resolved(executable: PathBuf, origin: TracyProfilerOrigin) -> ResolvedTracyProfiler {
-    ResolvedTracyProfiler {
-        executable,
-        version: TRACY_PROFILER_VERSION,
-        origin,
-    }
+fn resolved(executable: PathBuf) -> ResolvedTracyProfiler {
+    ResolvedTracyProfiler { executable }
 }
 
 fn tracy_executable_names() -> Vec<String> {
@@ -429,10 +416,7 @@ fn acquire_managed_tracy(
             .map_err(TracyError::managed)?
             {
                 ReleaseAssetStatus::Downloaded => {
-                    return Ok(resolved(
-                        executable_destination,
-                        TracyProfilerOrigin::ManagedDownload,
-                    ));
+                    return Ok(resolved(executable_destination));
                 }
                 ReleaseAssetStatus::Missing => {}
             }
@@ -459,10 +443,7 @@ fn acquire_managed_tracy(
         })?,
     )?;
 
-    Ok(resolved(
-        executable_destination,
-        TracyProfilerOrigin::ManagedSourceBuild,
-    ))
+    Ok(resolved(executable_destination))
 }
 
 fn tracy_variant(environment: &HostEnvironment) -> Result<&'static str, TracyError> {
@@ -668,10 +649,10 @@ fn find_built_profiler_recursive(root: &Path, depth: usize) -> Option<PathBuf> {
             if name == "tracy-profiler" || name == "tracy-profiler.exe" {
                 return Some(path);
             }
-        } else if path.is_dir() {
-            if let Some(found) = find_built_profiler_recursive(&path, depth + 1) {
-                return Some(found);
-            }
+        } else if path.is_dir()
+            && let Some(found) = find_built_profiler_recursive(&path, depth + 1)
+        {
+            return Some(found);
         }
     }
 

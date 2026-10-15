@@ -130,6 +130,9 @@ pub fn download_verified_github_release_asset(
     destination: &Path,
     executable: bool,
 ) -> Result<ReleaseAssetStatus, ManagedToolError> {
+    #[cfg(not(unix))]
+    let _ = executable;
+
     let release_url = format!("https://api.github.com/repos/{repository}/releases/tags/{tag}");
 
     let response = client
@@ -265,14 +268,14 @@ fn sha256_file(path: &Path) -> Result<String, ManagedToolError> {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        return stdout
+        stdout
             .lines()
             .map(str::trim)
             .find(|line| {
                 line.len() == 64 && line.chars().all(|character| character.is_ascii_hexdigit())
             })
             .map(str::to_owned)
-            .ok_or(ManagedToolError::DigestOutput { tool: "certutil" });
+            .ok_or(ManagedToolError::DigestOutput { tool: "certutil" })
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -293,7 +296,7 @@ fn sha256_file(path: &Path) -> Result<String, ManagedToolError> {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        return stdout
+        stdout
             .split_whitespace()
             .next()
             .filter(|digest| {
@@ -303,7 +306,7 @@ fn sha256_file(path: &Path) -> Result<String, ManagedToolError> {
                         .all(|character| character.is_ascii_hexdigit())
             })
             .map(str::to_owned)
-            .ok_or(ManagedToolError::DigestOutput { tool: "sha256sum" });
+            .ok_or(ManagedToolError::DigestOutput { tool: "sha256sum" })
     }
 }
 

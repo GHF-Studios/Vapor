@@ -1141,23 +1141,6 @@ impl fmt::Display for DevelopmentError {
     }
 }
 
-#[cfg(test)]
-mod operation_tests {
-    use super::{DevelopmentError, DevelopmentOperation, run_workspace_operation_at};
-    use std::path::Path;
-
-    #[test]
-    fn explicit_workspace_root_is_used_for_discovery() {
-        let root = Path::new("/definitely-not-a-vapor-workspace");
-
-        let result = run_workspace_operation_at(root, DevelopmentOperation::Check);
-
-        assert!(
-            matches!(result, Err(DevelopmentError::Workspace(message)) if message.contains("workspace"))
-        );
-    }
-}
-
 impl std::error::Error for DevelopmentError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -1179,5 +1162,22 @@ impl std::error::Error for DevelopmentError {
 
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod operation_tests {
+    use super::{DevelopmentError, DevelopmentOperation, run_workspace_operation_at};
+    use std::path::Path;
+
+    #[test]
+    fn explicit_workspace_root_is_used_for_discovery() {
+        let root = Path::new("/definitely-not-a-vapor-workspace");
+
+        let result = run_workspace_operation_at(root, DevelopmentOperation::Check);
+
+        assert!(
+            matches!(result, Err(DevelopmentError::Workspace(message)) if message.contains("workspace"))
+        );
     }
 }

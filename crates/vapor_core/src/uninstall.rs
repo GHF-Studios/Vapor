@@ -282,20 +282,20 @@ fn remove_machine_integration(
 ) -> Result<Vec<String>, UninstallError> {
     let mut removed = Vec::new();
 
-    if let Some(anchor) = legacy_anchor_file() {
-        if anchor.is_file() {
-            fs::remove_file(&anchor).map_err(|source| UninstallError::Io {
-                path: anchor.clone(),
-                source,
-            })?;
-            removed.push(format!(
-                "removed legacy app-root anchor {}",
-                anchor.display()
-            ));
+    if let Some(anchor) = legacy_anchor_file()
+        && anchor.is_file()
+    {
+        fs::remove_file(&anchor).map_err(|source| UninstallError::Io {
+            path: anchor.clone(),
+            source,
+        })?;
+        removed.push(format!(
+            "removed legacy app-root anchor {}",
+            anchor.display()
+        ));
 
-            if let Some(parent) = anchor.parent() {
-                let _ = fs::remove_dir(parent);
-            }
+        if let Some(parent) = anchor.parent() {
+            let _ = fs::remove_dir(parent);
         }
     }
 

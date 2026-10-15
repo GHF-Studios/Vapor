@@ -95,7 +95,7 @@ impl DevtoolsApp {
             if path.extension().and_then(|value| value.to_str()) != Some("tracy") {
                 continue;
             }
-            match import_profile_trace(&path) {
+            match import_profile_trace(path) {
                 Ok(record) => {
                     self.status = format!("Added {}", record.path.display());
                     self.traces = list_profile_traces().unwrap_or_default();
@@ -257,10 +257,17 @@ impl DevtoolsApp {
             ui,
             |ui| {
                 for snapshot in self.state.snapshots.values() {
+                    let value_preview = snapshot
+                        .value
+                        .to_string()
+                        .chars()
+                        .take(120)
+                        .collect::<String>();
                     ui.horizontal(|ui| {
                         ui.strong(&snapshot.topic);
                         ui.weak(&snapshot.source);
                         ui.monospace(format!("{:.3}", snapshot.timestamp));
+                        ui.monospace(value_preview);
                     });
                 }
             },
@@ -473,7 +480,7 @@ impl DevtoolsApp {
             .default_size(310.0)
             .min_size(240.0)
             .show(ui, |ui| self.draw_right(ui));
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             if let Some(trace) = self.selected_trace_record() {
                 self.draw_trace(ui, &trace);
             } else {

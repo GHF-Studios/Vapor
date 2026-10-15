@@ -100,7 +100,7 @@ pub fn resolve_source_context(
 
     let state = source_state(installation)?;
 
-    select_source_context(&state, &working_directory).ok_or_else(|| SourceError::NoContext {
+    select_source_context(&state, &working_directory).ok_or(SourceError::NoContext {
         working_directory,
         state_path: state.state_path,
     })

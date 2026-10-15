@@ -40,22 +40,17 @@ impl ProfileTraceRecord {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ProfileSort {
     Total,
     Count,
     Mean,
     Median,
     P90,
+    #[default]
     P95,
     P99,
     Max,
-}
-
-impl Default for ProfileSort {
-    fn default() -> Self {
-        Self::P95
-    }
 }
 
 #[derive(Debug, Clone)]

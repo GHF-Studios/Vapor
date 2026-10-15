@@ -115,10 +115,10 @@ impl HostEnvironment {
         let target = HostTarget::current()?;
         let mut capabilities = Vec::new();
 
-        if target.operating_system == HostOperatingSystem::Linux {
-            if let Some(display) = detect_linux_display_server() {
-                capabilities.push(HostCapability::Display(display));
-            }
+        if target.operating_system == HostOperatingSystem::Linux
+            && let Some(display) = detect_linux_display_server()
+        {
+            capabilities.push(HostCapability::Display(display));
         }
 
         Ok(Self {
@@ -138,9 +138,10 @@ impl HostEnvironment {
     pub fn display_server(&self) -> Option<DisplayServer> {
         self.capabilities
             .iter()
-            .find_map(|capability| match capability {
-                HostCapability::Display(display) => Some(*display),
+            .map(|capability| match capability {
+                HostCapability::Display(display) => *display,
             })
+            .next()
     }
 }
 

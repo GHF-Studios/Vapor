@@ -162,8 +162,7 @@ pub fn metric_label(name: &str) -> String {
     name.split('.')
         .collect::<Vec<_>>()
         .join(" / ")
-        .replace('-', " ")
-        .replace('_', " ")
+        .replace(['-', '_'], " ")
 }
 
 pub fn metric_unit(name: &str) -> &'static str {

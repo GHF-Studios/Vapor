@@ -1,15 +1,20 @@
-use super::xml_escape;
-use crate::VaporWorkspace;
-use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[cfg(not(windows))]
+use super::xml_escape;
+#[cfg(not(windows))]
+use crate::VaporWorkspace;
+#[cfg(not(windows))]
+use serde::Deserialize;
+#[cfg(not(windows))]
 use std::process::Command;
 
 pub(super) fn build(project_root: &Path, installation_root: &Path) -> Vec<(PathBuf, String)> {
     #[cfg(windows)]
     {
         let _ = (project_root, installation_root);
-        return Vec::new();
+        Vec::new()
     }
 
     #[cfg(not(windows))]

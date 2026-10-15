@@ -227,7 +227,7 @@ impl LocalResolver<'_> {
                     depender: identity.clone(),
                     binding: binding.clone(),
                     id: dependency.id.clone(),
-                    requirement: dependency.version.clone(),
+                    requirement: Box::new(dependency.version.clone()),
                 })?
                 .version_id();
 
@@ -448,7 +448,7 @@ pub enum ResolutionError {
         depender: ContentVersionId,
         binding: String,
         id: VaporId,
-        requirement: VersionReq,
+        requirement: Box<VersionReq>,
     },
 
     DependencyCycle {

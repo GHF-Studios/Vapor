@@ -168,10 +168,10 @@ fn select_content_package<'a>(
         return Ok(*package);
     }
 
-    if exact.is_empty() {
-        if let [package] = metadata.packages.as_slice() {
-            return Ok(package);
-        }
+    if exact.is_empty()
+        && let [package] = metadata.packages.as_slice()
+    {
+        return Ok(package);
     }
 
     Err(CargoInspectionError::AmbiguousCargoPackage {
@@ -563,10 +563,6 @@ fn local<'a>(
         .ok_or_else(|| CargoRealizationError::MissingLocalContent {
             identity: identity.clone(),
         })
-}
-
-fn read(path: &Path) -> Result<String, CargoRealizationError> {
-    fs::read_to_string(path).map_err(|error| io_error(path, error))
 }
 
 fn write(path: &Path, contents: &str) -> Result<(), CargoRealizationError> {

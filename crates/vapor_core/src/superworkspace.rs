@@ -551,7 +551,10 @@ mod tests {
     #[test]
     fn vapor_ignore_matches_repository_and_descendants() {
         let ignore = VaporIgnore {
-            entries: vec!["Loo-Cast".to_owned(), "Vapor-Client/Vapor-Studio".to_owned()],
+            entries: vec![
+                "Loo-Cast".to_owned(),
+                "Vapor-Client/Vapor-Studio".to_owned(),
+            ],
         };
 
         assert!(ignore.ignores("Loo-Cast",));
