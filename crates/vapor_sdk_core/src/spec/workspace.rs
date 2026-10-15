@@ -40,6 +40,13 @@ pub(super) fn describe(command: &WorkspaceCommand) -> CommandSpec {
             &["Vapor toolchain is installed"],
             &["write build artifacts under the Vapor output root"],
         ),
+        WorkspaceCommand::Test => spec(
+            "sdk test",
+            "Test the current workspace through the Vapor-managed Cargo binary.",
+            StateSurface::BuildArtifact,
+            &["Vapor toolchain is installed"],
+            &["run cargo test --workspace without falling back to system Cargo"],
+        ),
         WorkspaceCommand::Deploy => spec(
             "sdk deploy",
             "Build and promote the current first-party tool CLI into the executable-root bin directory.",

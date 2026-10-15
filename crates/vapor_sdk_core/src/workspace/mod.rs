@@ -26,6 +26,8 @@ pub enum WorkspaceCommand {
     Fmt,
     /// Run `cargo build --workspace` through the Vapor-managed Cargo binary.
     Build,
+    /// Run `cargo test --workspace` through the Vapor-managed Cargo binary.
+    Test,
     /// Build and promote the first-party SDK CLI into the executable-root `bin` directory.
     Deploy,
 }
@@ -63,6 +65,13 @@ pub fn workspace_build(
     globals: &GlobalOptions,
 ) -> Result<WorkspaceCargoReport, WorkspaceCommandError> {
     cargo::VaporCargo::new(globals)?.run(&["build", "--workspace"])
+}
+
+/// Run `cargo test --workspace` through Vapor-owned Rustup/Cargo state.
+pub fn workspace_test(
+    globals: &GlobalOptions,
+) -> Result<WorkspaceCargoReport, WorkspaceCommandError> {
+    cargo::VaporCargo::new(globals)?.run(&["test", "--workspace"])
 }
 
 /// Build and promote the unified `vapor` terminal facade into `$VAPOR_HOME/bin`.

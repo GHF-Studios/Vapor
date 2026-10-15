@@ -109,8 +109,9 @@ pub use registry::{RegisteredEcosystem, RegisteredRepository, RegistryClient, Re
 
 pub use resolution::{
     ResolutionError, ResolvedComposition, ResolvedContentGraph, ResolvedContentNode,
-    resolve_local_content, resolve_local_content_kind, resolve_local_pack,
-    resolve_local_packagepack, validate_resolved_content_graph,
+    resolve_local_content, resolve_local_content_exact, resolve_local_content_kind,
+    resolve_local_pack, resolve_local_packagepack, resolve_local_packagepack_exact,
+    validate_resolved_content_graph,
 };
 
 pub use run::{

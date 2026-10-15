@@ -91,20 +91,28 @@ pub fn resolve_local_content(
             id: content_id.clone(),
         })?;
 
-    let root = root_content.version_id();
+    resolve_local_content_exact(catalog, &root_content.version_id())
+}
 
+/// Resolve arbitrary Vapor Content from one exact root version.
+/// Dependencies still obey their declared version requirements and are
+/// selected by the local resolver. This keeps a profile's root stable while
+/// retaining the existing dependency selection policy.
+pub fn resolve_local_content_exact(
+    catalog: &LocalCatalog,
+    identity: &ContentVersionId,
+) -> Result<ResolvedContentGraph, ResolutionError> {
+    if catalog.get(identity).is_none() {
+        return Err(ResolutionError::RootNotFound { id: identity.id.clone() });
+    }
+    let root = identity.clone();
     let mut resolver = LocalResolver {
         catalog,
         nodes: BTreeMap::new(),
         stack: Vec::new(),
     };
-
     resolver.resolve_identity(root.clone())?;
-
-    Ok(ResolvedContentGraph {
-        root,
-        nodes: resolver.nodes,
-    })
+    Ok(ResolvedContentGraph { root, nodes: resolver.nodes })
 }
 
 /// Resolve arbitrary Vapor Content while requiring one expected root kind.
@@ -160,15 +168,25 @@ pub fn resolve_local_packagepack(
     packagepack_id: &VaporId,
 ) -> Result<ResolvedComposition, ResolutionError> {
     let graph = resolve_local_content(catalog, packagepack_id)?;
+    resolve_packagepack_graph(graph)
+}
+
+/// Resolve and validate an exact Packagepack version as a launch composition.
+pub fn resolve_local_packagepack_exact(
+    catalog: &LocalCatalog,
+    identity: &ContentVersionId,
+) -> Result<ResolvedComposition, ResolutionError> {
+    let graph = resolve_local_content_exact(catalog, identity)?;
+    resolve_packagepack_graph(graph)
+}
+
+fn resolve_packagepack_graph(
+    graph: ResolvedContentGraph,
+) -> Result<ResolvedComposition, ResolutionError> {
     let actual_kind = graph.root_node().kind;
-
     if actual_kind != ContentKind::Packagepack {
-        return Err(ResolutionError::RootNotPackagepack {
-            identity: graph.root,
-            actual_kind,
-        });
+        return Err(ResolutionError::RootNotPackagepack { identity: graph.root, actual_kind });
     }
-
     validate_resolved_content_graph(&graph)?;
     validate_pack_graph(&graph)?;
     composition_from_graph(graph)
