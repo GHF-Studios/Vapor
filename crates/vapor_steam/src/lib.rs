@@ -4,7 +4,7 @@
 //! owned data so a UI can safely keep them after Steam callbacks complete.
 
 use std::{sync::mpsc, thread, time::{Duration, Instant}};
-use steamworks::{AppId, AppIDs, Client, PublishedFileId, SteamError, UGCQueryType, UGCType};
+use steamworks::{AppId, AppIDs, Client, ItemState, PublishedFileId, SteamError, UGCQueryType, UGCType};
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const CALLBACK_POLL: Duration = Duration::from_millis(10);
@@ -29,6 +29,14 @@ pub struct WorkshopPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkshopSubscription {
     pub published_file_id: String,
+    pub title: String,
+    pub description: String,
+    pub preview_url: Option<String>,
+    pub updated_at_unix: u32,
+    pub installed: bool,
+    pub needs_update: bool,
+    pub downloading: bool,
+    pub download_progress: Option<(u64, u64)>,
 }
 
 /// Search the app's public Workshop through Steamworks UGC.
@@ -94,9 +102,87 @@ pub fn search_workshop(
 /// Read the current account's subscriptions for the app.
 pub fn subscribed_items(app_id: u32) -> Result<Vec<WorkshopSubscription>, String> {
     let client = initialize_client(app_id)?;
-    Ok(client.ugc().subscribed_items(true).into_iter().map(|id| {
-        WorkshopSubscription { published_file_id: id.0.to_string() }
-    }).collect())
+    let ugc = client.ugc();
+    let ids = ugc.subscribed_items(true);
+    let mut states = ids
+        .iter()
+        .copied()
+        .map(|id| {
+            let state = ugc.item_state(id);
+            (
+                id,
+                (
+                    state.contains(ItemState::INSTALLED),
+                    state.contains(ItemState::NEEDS_UPDATE),
+                    state.intersects(ItemState::DOWNLOADING | ItemState::DOWNLOAD_PENDING),
+                    ugc.item_download_info(id),
+                ),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut details = std::collections::BTreeMap::new();
+
+    for chunk in ids.chunks(50) {
+        let query = ugc
+            .query_items(chunk.to_vec())
+            .map_err(|error| format!("could not query subscribed Workshop items: {error}"))?
+            .include_long_desc(true)
+            .allow_cached_response(60);
+        let (sender, receiver) = mpsc::channel();
+        query.fetch(move |result| {
+            let mapped = result
+                .map(|results| {
+                    results
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, item)| {
+                            item.map(|item| WorkshopItem {
+                                published_file_id: item.published_file_id.0.to_string(),
+                                title: item.title,
+                                description: item.description,
+                                preview_url: results.preview_url(index as u32),
+                                updated_at_unix: item.time_updated,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|error| format!("subscribed Workshop item query failed: {error:?}"));
+            let _ = sender.send(mapped);
+        });
+        for item in pump_callbacks(&client, receiver)? {
+            details.insert(item.published_file_id.clone(), item);
+        }
+    }
+
+    Ok(ids
+        .into_iter()
+        .map(|id| {
+            let published_file_id = id.0.to_string();
+            let item = details.remove(&published_file_id);
+            let (installed, needs_update, downloading, download_progress) =
+                states.remove(&id).unwrap_or_default();
+            let (title, description, preview_url, updated_at_unix) = item.map_or_else(
+                || (
+                    "Workshop item details unavailable".to_owned(),
+                    String::new(),
+                    None,
+                    0,
+                ),
+                |item| (item.title, item.description, item.preview_url, item.updated_at_unix),
+            );
+            WorkshopSubscription {
+                published_file_id,
+                title,
+                description,
+                preview_url,
+                updated_at_unix,
+                installed,
+                needs_update,
+                downloading,
+                download_progress,
+            }
+        })
+        .collect())
 }
 
 /// Subscribe the current Steam account to one Workshop item.
