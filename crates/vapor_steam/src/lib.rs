@@ -15,6 +15,8 @@ use steamworks::{
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const CALLBACK_POLL: Duration = Duration::from_millis(10);
 const MAX_PAGE: u32 = 1_000;
+/// Maximum number of subscription changes sent through one client session.
+pub const MAX_SUBSCRIPTION_BATCH_SIZE: usize = 50;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkshopItem {
@@ -208,32 +210,109 @@ pub fn subscribed_items(app_id: u32) -> Result<Vec<WorkshopSubscription>, String
 
 /// Subscribe the current Steam account to one Workshop item.
 pub fn subscribe_item(app_id: u32, published_file_id: u64) -> Result<(), String> {
-    change_subscription(app_id, PublishedFileId(published_file_id), true)
+    change_subscriptions(app_id, &[published_file_id], true)
 }
 
 /// Unsubscribe the current Steam account from one Workshop item.
 pub fn unsubscribe_item(app_id: u32, published_file_id: u64) -> Result<(), String> {
-    change_subscription(app_id, PublishedFileId(published_file_id), false)
+    change_subscriptions(app_id, &[published_file_id], false)
 }
 
-fn change_subscription(
+/// Subscribe the current account to several Workshop items in one Steam session.
+pub fn subscribe_items(app_id: u32, published_file_ids: &[u64]) -> Result<(), String> {
+    change_subscriptions(app_id, published_file_ids, true)
+}
+
+/// Unsubscribe the current account from several Workshop items in one Steam session.
+pub fn unsubscribe_items(app_id: u32, published_file_ids: &[u64]) -> Result<(), String> {
+    change_subscriptions(app_id, published_file_ids, false)
+}
+
+fn change_subscriptions(
     app_id: u32,
-    published_file_id: PublishedFileId,
+    published_file_ids: &[u64],
     subscribe: bool,
 ) -> Result<(), String> {
+    if published_file_ids.is_empty() {
+        return Err("at least one Workshop item is required".to_owned());
+    }
+    if published_file_ids.len() > MAX_SUBSCRIPTION_BATCH_SIZE {
+        return Err(format!(
+            "at most {MAX_SUBSCRIPTION_BATCH_SIZE} Workshop items can be changed at once"
+        ));
+    }
+    if published_file_ids.contains(&0) {
+        return Err("Workshop item IDs must be nonzero".to_owned());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let ids = published_file_ids
+        .iter()
+        .copied()
+        .filter(|id| seen.insert(*id))
+        .collect::<Vec<_>>();
     let client = initialize_client(app_id)?;
     let ugc = client.ugc();
     let (sender, receiver) = mpsc::channel();
-    let callback = move |result: Result<(), SteamError>| {
-        let _ = sender
-            .send(result.map_err(|error| format!("Steam subscription action failed: {error:?}")));
-    };
-    if subscribe {
-        ugc.subscribe_item(published_file_id, callback);
-    } else {
-        ugc.unsubscribe_item(published_file_id, callback);
+    for id in &ids {
+        let sender = sender.clone();
+        let published_file_id = PublishedFileId(*id);
+        let callback = move |result: Result<(), SteamError>| {
+            let _ = sender.send(
+                result.map_err(|error| {
+                    format!("Workshop item {}: {error:?}", published_file_id.0)
+                }),
+            );
+        };
+        if subscribe {
+            ugc.subscribe_item(published_file_id, callback);
+        } else {
+            ugc.unsubscribe_item(published_file_id, callback);
+        }
     }
-    pump_callbacks(&client, receiver)
+    drop(sender);
+    pump_subscription_callbacks(&client, receiver, ids.len())
+}
+
+fn pump_subscription_callbacks(
+    client: &Client,
+    receiver: mpsc::Receiver<Result<(), String>>,
+    expected: usize,
+) -> Result<(), String> {
+    let deadline = Instant::now() + CALLBACK_TIMEOUT;
+    let mut completed = 0;
+    let mut failures = Vec::new();
+    while completed < expected {
+        client.run_callbacks();
+        match receiver.try_recv() {
+            Ok(Ok(())) => completed += 1,
+            Ok(Err(error)) => {
+                completed += 1;
+                failures.push(error);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(format!(
+                    "Steamworks completed {completed} of {expected} subscription actions before callbacks ended"
+                ));
+            }
+            Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                thread::sleep(CALLBACK_POLL);
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                return Err(format!(
+                    "timed out after {completed} of {expected} Workshop subscription actions"
+                ));
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} of {expected} Workshop subscription actions failed: {}",
+            failures.len(),
+            failures.join("; ")
+        ))
+    }
 }
 
 fn initialize_client(app_id: u32) -> Result<Client, String> {
