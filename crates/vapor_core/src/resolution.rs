@@ -103,7 +103,9 @@ pub fn resolve_local_content_exact(
     identity: &ContentVersionId,
 ) -> Result<ResolvedContentGraph, ResolutionError> {
     if catalog.get(identity).is_none() {
-        return Err(ResolutionError::RootNotFound { id: identity.id.clone() });
+        return Err(ResolutionError::RootNotFound {
+            id: identity.id.clone(),
+        });
     }
     let root = identity.clone();
     let mut resolver = LocalResolver {
@@ -112,7 +114,10 @@ pub fn resolve_local_content_exact(
         stack: Vec::new(),
     };
     resolver.resolve_identity(root.clone())?;
-    Ok(ResolvedContentGraph { root, nodes: resolver.nodes })
+    Ok(ResolvedContentGraph {
+        root,
+        nodes: resolver.nodes,
+    })
 }
 
 /// Resolve arbitrary Vapor Content while requiring one expected root kind.
@@ -185,7 +190,10 @@ fn resolve_packagepack_graph(
 ) -> Result<ResolvedComposition, ResolutionError> {
     let actual_kind = graph.root_node().kind;
     if actual_kind != ContentKind::Packagepack {
-        return Err(ResolutionError::RootNotPackagepack { identity: graph.root, actual_kind });
+        return Err(ResolutionError::RootNotPackagepack {
+            identity: graph.root,
+            actual_kind,
+        });
     }
     validate_resolved_content_graph(&graph)?;
     validate_pack_graph(&graph)?;

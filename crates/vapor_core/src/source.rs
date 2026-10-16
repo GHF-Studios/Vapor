@@ -107,6 +107,45 @@ pub fn resolve_source_context(
 }
 
 /// Validate, remember, and select one external source root.
+/// Register a valid authored Workspace without changing the active source.
+pub fn remember_source(
+    installation: &VaporInstallation,
+    source: &Path,
+) -> Result<SourceState, SourceError> {
+    let source = fs::canonicalize(source).map_err(|source_error| SourceError::Io {
+        path: source.to_path_buf(),
+        source: source_error,
+    })?;
+
+    if !source.is_dir() {
+        return Err(SourceError::NotDirectory { path: source });
+    }
+
+    let installation_root =
+        fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
+    if roots_overlap(&source, &installation_root) {
+        return Err(SourceError::OverlapsInstallation {
+            source,
+            installation: installation_root,
+        });
+    }
+
+    crate::VaporWorkspace::load(&source).map_err(|error| SourceError::InvalidWorkspace {
+        path: source.clone(),
+        message: error.to_string(),
+    })?;
+
+    let mut persisted = load(&source_state_path(installation))?;
+    if !persisted.known.contains(&source) {
+        persisted.known.push(source);
+        persisted.known.sort();
+        save(installation, &persisted)?;
+    }
+
+    source_state(installation)
+}
+
+/// Validate, remember, and select one external source root.
 pub fn open_source(
     installation: &VaporInstallation,
     source: &Path,
@@ -249,6 +288,11 @@ pub enum SourceError {
         installation: PathBuf,
     },
 
+    InvalidWorkspace {
+        path: PathBuf,
+        message: String,
+    },
+
     InvalidState {
         path: PathBuf,
         message: String,
@@ -308,6 +352,10 @@ impl fmt::Display for SourceError {
                     source.display(),
                     installation.display()
                 )
+            }
+
+            Self::InvalidWorkspace { path, message } => {
+                write!(formatter, "`{}` is not a valid Vapor Workspace: {message}", path.display())
             }
 
             Self::InvalidState { path, message } => {

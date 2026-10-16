@@ -4,9 +4,9 @@
 //! and managed tooling belong operationally to the active Vapor Installation.
 
 use crate::{
-    ManagedToolchain, ToolchainError, VaporInstallation, VaporProject, VaporSuperworkspace,
-    VaporWorkspace, install_ecosystem_bootstrap, reconcile_existing_development_environment,
-    resolve_source_context,
+    ManagedToolchain, OperationContext, OperationPhase, Progress, ToolchainError,
+    VaporInstallation, VaporProject, VaporSuperworkspace, VaporWorkspace,
+    install_ecosystem_bootstrap, reconcile_existing_development_environment, resolve_source_context,
 };
 use serde::Deserialize;
 use std::env;
@@ -199,11 +199,40 @@ pub fn run_workspace_operation(
     workspace: &VaporWorkspace,
     operation: DevelopmentOperation,
 ) -> Result<(), DevelopmentError> {
+    run_workspace_operation_inner(workspace, operation, None)
+}
+
+/// Run one workspace operation while reporting resolution and per-project
+/// progress through the shared frontend operation context.
+pub fn run_workspace_operation_with_context(
+    workspace: &VaporWorkspace,
+    operation: DevelopmentOperation,
+    context: &OperationContext,
+) -> Result<(), DevelopmentError> {
+    run_workspace_operation_inner(workspace, operation, Some(context))
+}
+
+fn run_workspace_operation_inner(
+    workspace: &VaporWorkspace,
+    operation: DevelopmentOperation,
+    context: Option<&OperationContext>,
+) -> Result<(), DevelopmentError> {
     let toolchain =
         ManagedToolchain::for_workspace(workspace).map_err(DevelopmentError::Toolchain)?;
 
-    for project in &workspace.projects {
+    let total = workspace.projects.len() as u64;
+    for (index, project) in workspace.projects.iter().enumerate() {
+        if let Some(context) = context {
+            context.set_phase(OperationPhase::Building);
+        }
         run_project_operation(&toolchain, project, operation)?;
+        if let Some(context) = context {
+            context.report_progress(Progress {
+                completed: index as u64 + 1,
+                total: Some(total),
+                unit: "projects".to_owned(),
+            });
+        }
     }
 
     Ok(())
@@ -220,6 +249,20 @@ pub fn run_workspace_operation_at(
     let workspace = VaporWorkspace::discover_from(workspace_root)
         .map_err(|error| DevelopmentError::Workspace(error.to_string()))?;
     run_workspace_operation(&workspace, operation)?;
+    Ok(workspace)
+}
+
+/// Context-reporting form of [`run_workspace_operation_at`].
+pub fn run_workspace_operation_at_with_context(
+    workspace_root: &Path,
+    operation: DevelopmentOperation,
+    context: &OperationContext,
+) -> Result<VaporWorkspace, DevelopmentError> {
+    context.set_phase(OperationPhase::Resolving);
+    let workspace = VaporWorkspace::discover_from(workspace_root)
+        .map_err(|error| DevelopmentError::Workspace(error.to_string()))?;
+    context.set_phase(OperationPhase::Building);
+    run_workspace_operation_with_context(&workspace, operation, context)?;
     Ok(workspace)
 }
 

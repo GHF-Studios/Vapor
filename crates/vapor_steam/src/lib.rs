@@ -3,8 +3,14 @@
 //! Steam API handles stay inside the calling operation. Public results are
 //! owned data so a UI can safely keep them after Steam callbacks complete.
 
-use std::{sync::mpsc, thread, time::{Duration, Instant}};
-use steamworks::{AppId, AppIDs, Client, ItemState, PublishedFileId, SteamError, UGCQueryType, UGCType};
+use std::{
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
+use steamworks::{
+    AppIDs, AppId, Client, ItemState, PublishedFileId, SteamError, UGCQueryType, UGCType,
+};
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const CALLBACK_POLL: Duration = Duration::from_millis(10);
@@ -43,16 +49,14 @@ pub struct WorkshopSubscription {
 ///
 /// Steam client initialization and callback pumping are local to this call;
 /// callers should run it on their existing background-operation worker.
-pub fn search_workshop(
-    app_id: u32,
-    search_text: &str,
-    page: u32,
-) -> Result<WorkshopPage, String> {
+pub fn search_workshop(app_id: u32, search_text: &str, page: u32) -> Result<WorkshopPage, String> {
     if app_id == 0 {
         return Err("Steam Workshop search needs a nonzero application ID".to_owned());
     }
     if !(1..=MAX_PAGE).contains(&page) {
-        return Err(format!("Steam Workshop page must be between 1 and {MAX_PAGE}"));
+        return Err(format!(
+            "Steam Workshop page must be between 1 and {MAX_PAGE}"
+        ));
     }
 
     let client = initialize_client(app_id)?;
@@ -78,21 +82,29 @@ pub fn search_workshop(
 
     let (sender, receiver) = mpsc::channel();
     query.fetch(move |result| {
-        let mapped = result.map(|results| {
-            let total_results = results.total_results();
-            let items = results
-                .iter()
-                .enumerate()
-                .filter_map(|(index, item)| item.map(|item| WorkshopItem {
-                    published_file_id: item.published_file_id.0.to_string(),
-                    title: item.title,
-                    description: item.description,
-                    preview_url: results.preview_url(index as u32),
-                    updated_at_unix: item.time_updated,
-                }))
-                .collect();
-            WorkshopPage { items, page, total_results }
-        }).map_err(|error| format!("Steam Workshop query failed: {error:?}"));
+        let mapped = result
+            .map(|results| {
+                let total_results = results.total_results();
+                let items = results
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, item)| {
+                        item.map(|item| WorkshopItem {
+                            published_file_id: item.published_file_id.0.to_string(),
+                            title: item.title,
+                            description: item.description,
+                            preview_url: results.preview_url(index as u32),
+                            updated_at_unix: item.time_updated,
+                        })
+                    })
+                    .collect();
+                WorkshopPage {
+                    items,
+                    page,
+                    total_results,
+                }
+            })
+            .map_err(|error| format!("Steam Workshop query failed: {error:?}"));
         let _ = sender.send(mapped);
     });
 
@@ -162,13 +174,22 @@ pub fn subscribed_items(app_id: u32) -> Result<Vec<WorkshopSubscription>, String
             let (installed, needs_update, downloading, download_progress) =
                 states.remove(&id).unwrap_or_default();
             let (title, description, preview_url, updated_at_unix) = item.map_or_else(
-                || (
-                    "Workshop item details unavailable".to_owned(),
-                    String::new(),
-                    None,
-                    0,
-                ),
-                |item| (item.title, item.description, item.preview_url, item.updated_at_unix),
+                || {
+                    (
+                        "Workshop item details unavailable".to_owned(),
+                        String::new(),
+                        None,
+                        0,
+                    )
+                },
+                |item| {
+                    (
+                        item.title,
+                        item.description,
+                        item.preview_url,
+                        item.updated_at_unix,
+                    )
+                },
             );
             WorkshopSubscription {
                 published_file_id,
@@ -204,7 +225,8 @@ fn change_subscription(
     let ugc = client.ugc();
     let (sender, receiver) = mpsc::channel();
     let callback = move |result: Result<(), SteamError>| {
-        let _ = sender.send(result.map_err(|error| format!("Steam subscription action failed: {error:?}")));
+        let _ = sender
+            .send(result.map_err(|error| format!("Steam subscription action failed: {error:?}")));
     };
     if subscribe {
         ugc.subscribe_item(published_file_id, callback);
@@ -218,12 +240,14 @@ fn initialize_client(app_id: u32) -> Result<Client, String> {
     if app_id == 0 {
         return Err("Steam Workshop needs a nonzero application ID".to_owned());
     }
-    Client::init_app(AppId(app_id)).map_err(|error| {
-        format!("Steamworks is unavailable for app {app_id}: {error:?}")
-    })
+    Client::init_app(AppId(app_id))
+        .map_err(|error| format!("Steamworks is unavailable for app {app_id}: {error:?}"))
 }
 
-fn pump_callbacks<T>(client: &Client, receiver: mpsc::Receiver<Result<T, String>>) -> Result<T, String> {
+fn pump_callbacks<T>(
+    client: &Client,
+    receiver: mpsc::Receiver<Result<T, String>>,
+) -> Result<T, String> {
     let deadline = Instant::now() + CALLBACK_TIMEOUT;
     loop {
         client.run_callbacks();
@@ -236,7 +260,10 @@ fn pump_callbacks<T>(client: &Client, receiver: mpsc::Receiver<Result<T, String>
                 thread::sleep(CALLBACK_POLL);
             }
             Err(mpsc::TryRecvError::Empty) => {
-                return Err("Steamworks did not complete the Workshop operation within 30 seconds".to_owned());
+                return Err(
+                    "Steamworks did not complete the Workshop operation within 30 seconds"
+                        .to_owned(),
+                );
             }
         }
     }

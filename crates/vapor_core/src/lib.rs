@@ -19,6 +19,7 @@ pub mod local;
 pub mod maintenance;
 pub mod managed_tool;
 pub mod manifest;
+pub mod operation;
 pub mod profiling;
 pub mod registry;
 pub mod resolution;
@@ -57,7 +58,8 @@ pub use development::{
     build_workspace_deployment_authority, build_workspace_deployment_inputs, deploy_client_locally,
     deploy_workspace, deploy_workspace_from_authority, development_target_dir,
     local_deployment_authority_active, run_workspace_deployment_authority, run_workspace_operation,
-    run_workspace_operation_at,
+    run_workspace_operation_at, run_workspace_operation_at_with_context,
+    run_workspace_operation_with_context,
 };
 
 pub use developer_environment::{
@@ -105,6 +107,11 @@ pub use managed_tool::{
 
 pub use manifest::{ContentHeader, ContentManifest, ManifestError, parse_content_manifest};
 
+pub use operation::{
+    OperationContext, OperationEvent, OperationEventSink, OperationId, OperationPhase,
+    OperationRequest, OperationService, OperationStatus, Progress,
+};
+
 pub use registry::{RegisteredEcosystem, RegisteredRepository, RegistryClient, RegistryError};
 
 pub use resolution::{
@@ -133,7 +140,7 @@ pub use role::{
 
 pub use source::{
     ResolvedSourceContext, SourceContextSource, SourceError, SourceState, active_source,
-    forget_source, open_source, resolve_source_context, source_state,
+    forget_source, open_source, remember_source, resolve_source_context, source_state,
 };
 
 pub use steam::{

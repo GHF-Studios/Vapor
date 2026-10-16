@@ -20,7 +20,10 @@ use crate::{
     inspect_local_cargo_package, install_installation, promote_role,
     reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
     repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
-    resolve_source_context, role_status, run_cargo_realization, run_workspace_operation_at,
+    resolve_source_context, role_status, run_cargo_realization,
+    run_workspace_operation_at_with_context,
+    OperationEvent, OperationId, OperationPhase, OperationRequest, OperationService,
+    OperationStatus,
     source_state, uninstall_installation, verify_local_library_cargo_dependencies,
 };
 use clap::Parser;
@@ -33,6 +36,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -321,21 +325,38 @@ fn execute_toolchain(command: ToolchainCommand) -> Result<(), String> {
 
 fn execute_workspace_operation(operation: DevelopmentOperation) -> Result<(), String> {
     let current = env::current_dir().map_err(|error| error.to_string())?;
-    let workspace =
-        run_workspace_operation_at(&current, operation).map_err(|error| error.to_string())?;
-    println!(
-        "{} {}/{}...",
-        match operation {
-            DevelopmentOperation::Fmt => "Formatting",
-            DevelopmentOperation::Check => "Checking",
-            DevelopmentOperation::Test => "Testing",
-            DevelopmentOperation::Build => "Building",
-            DevelopmentOperation::Clean => "Cleaning",
-        },
-        workspace.manifest.workspace.organization,
-        workspace.manifest.workspace.name,
-    );
-    Ok(())
+    let label = match operation {
+        DevelopmentOperation::Fmt => "fmt",
+        DevelopmentOperation::Check => "check",
+        DevelopmentOperation::Test => "test",
+        DevelopmentOperation::Build => "build",
+        DevelopmentOperation::Clean => "clean",
+    };
+    let request = OperationRequest {
+        id: OperationId::fresh(),
+        domain: "workspace".to_owned(),
+        action: label.to_owned(),
+    };
+    let sink: crate::OperationEventSink = Arc::new(|event: OperationEvent| match event.status {
+        OperationStatus::Succeeded { .. } => println!("Workspace operation completed."),
+        OperationStatus::Failed { message } => eprintln!("Workspace operation failed: {message}"),
+        OperationStatus::Cancelled => eprintln!("Workspace operation cancelled."),
+        OperationStatus::Running if event.phase == OperationPhase::Running => {
+            println!("Starting Vapor-managed {}…", event.action)
+        }
+        OperationStatus::Running => {}
+    });
+    OperationService::run(request, sink, |context| {
+        let workspace = run_workspace_operation_at_with_context(&current, operation, &context)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "{} {}/{}",
+            label,
+            workspace.manifest.workspace.organization,
+            workspace.manifest.workspace.name,
+        );
+        Ok(())
+    })
 }
 
 fn execute_run(args: RunArgs) -> Result<(), String> {
