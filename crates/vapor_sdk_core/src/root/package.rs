@@ -11,16 +11,8 @@ const CONTENT_DIR: &str = "content";
 const SCRIPTS_DIR: &str = "scripts";
 const STEAM_BUILD_DIR: &str = "steam-build";
 const BIN_DIR: &str = "bin";
-const APP_BINARIES: [&str; 6] = [
-    "vapor",
-    "vapor-gui",
-    "vapor-installer",
-    "vapor-entrypoint",
-    "vapor-ide-host",
-    "vapor-devtools",
-];
-const ACTIVATION_SCRIPT_UNIX: &str = "vapor_env.sh";
-const ACTIVATION_SCRIPT_WINDOWS: &str = "vapor_env.cmd";
+const ACTIVATION_SCRIPT_UNIX: [&str; 2] = ["vapor-env.sh", "vapor_env.sh"];
+const ACTIVATION_SCRIPT_WINDOWS: [&str; 2] = ["vapor-env.cmd", "vapor_env.cmd"];
 
 /// Assemble the Steam redistributable root package.
 pub fn root_package(request: &RootPackageRequest) -> Result<RootPackageReport, RootCommandError> {
@@ -71,7 +63,7 @@ impl RootPackageLayout {
         let scripts_root = package_root.join(SCRIPTS_DIR);
         let steam_build_root = package_root.join(STEAM_BUILD_DIR);
         let app_build_script = scripts_root.join(format!("app_build_{}.vdf", request.app_id));
-        let included_roots = package_roots(&status.vapor_home);
+        let included_roots = package_roots(&status.vapor_home)?;
 
         for root in &included_roots {
             if !root.source.exists() {
@@ -137,19 +129,34 @@ impl RootPackageLayout {
     }
 }
 
-fn package_roots(vapor_home: &Path) -> Vec<PackageRoot> {
-    let mut roots = APP_BINARIES
+fn package_roots(vapor_home: &Path) -> Result<Vec<PackageRoot>, RootCommandError> {
+    let bin = vapor_home.join(BIN_DIR);
+    if !bin.is_dir() {
+        return Err(RootCommandError::MissingPackageInput(bin));
+    }
+
+    // Keep the deployed target directories, runtime libraries, and launch
+    // wrappers together. Flattening only the executable names both loses the
+    // platform-specific layout and drops dynamic libraries needed at launch.
+    let mut roots = vec![PackageRoot::new(bin, PathBuf::from(BIN_DIR))];
+    let activation_script = activation_script_candidates()
         .iter()
-        .map(|binary| {
-            let relative = PathBuf::from(BIN_DIR).join(executable_name(binary));
-            PackageRoot::new(vapor_home.join(&relative), relative)
-        })
-        .collect::<Vec<_>>();
+        .map(|name| vapor_home.join(name))
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            RootCommandError::MissingPackageInput(
+                vapor_home.join(activation_script_candidates()[0]),
+            )
+        })?;
+    let activation_name = activation_script
+        .file_name()
+        .expect("activation script candidate has a filename")
+        .to_owned();
     roots.push(PackageRoot::new(
-        vapor_home.join(activation_script_name()),
-        PathBuf::from(activation_script_name()),
+        activation_script,
+        PathBuf::from(activation_name),
     ));
-    roots
+    Ok(roots)
 }
 
 #[derive(Debug, Clone)]
@@ -255,14 +262,10 @@ fn vdf_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn executable_name(stem: &str) -> String {
-    format!("{stem}{}", std::env::consts::EXE_SUFFIX)
-}
-
-fn activation_script_name() -> &'static str {
+fn activation_script_candidates() -> &'static [&'static str] {
     if cfg!(windows) {
-        ACTIVATION_SCRIPT_WINDOWS
+        &ACTIVATION_SCRIPT_WINDOWS
     } else {
-        ACTIVATION_SCRIPT_UNIX
+        &ACTIVATION_SCRIPT_UNIX
     }
 }
