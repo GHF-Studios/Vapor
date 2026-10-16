@@ -21,7 +21,7 @@ use crate::{
     reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
     repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
     resolve_source_context, role_status, run_cargo_realization,
-    run_workspace_operation_at_with_context,
+    run_workspace_operation_at, run_workspace_operation_at_with_context,
     OperationEvent, OperationId, OperationPhase, OperationRequest, OperationService,
     OperationStatus,
     source_state, uninstall_installation, verify_local_library_cargo_dependencies,
