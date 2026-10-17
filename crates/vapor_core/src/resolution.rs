@@ -6,7 +6,7 @@
 //! Vertical Slice 0 currently resolves only against a `LocalCatalog`.
 //! Full Cargo-style global version unification/backtracking remains deferred.
 
-use crate::{ContentKind, ContentVersionId, LocalCatalog, VaporId};
+use crate::{ContentKind, ContentVersionId, LocalCatalog, VaporId, allowed_pack_children};
 use semver::VersionReq;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -205,7 +205,32 @@ fn resolve_packagepack_graph(
 pub fn validate_resolved_content_graph(
     graph: &ResolvedContentGraph,
 ) -> Result<(), ResolutionError> {
+    validate_pack_member_kinds(&graph.nodes)?;
     validate_target_relationships(&graph.nodes)
+}
+
+fn validate_pack_member_kinds(
+    nodes: &BTreeMap<ContentVersionId, ResolvedContentNode>,
+) -> Result<(), ResolutionError> {
+    for parent in nodes.values() {
+        let Some(allowed_children) = allowed_pack_children(parent.kind) else {
+            continue;
+        };
+        for child_identity in parent.dependencies.values() {
+            let child = nodes
+                .get(child_identity)
+                .expect("resolved dependency nodes must exist in the graph");
+            if !allowed_children.contains(&child.kind) {
+                return Err(ResolutionError::PackChildKindNotAllowed {
+                    parent: parent.identity.clone(),
+                    parent_kind: parent.kind,
+                    child: child.identity.clone(),
+                    child_kind: child.kind,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 struct LocalResolver<'a> {
@@ -481,6 +506,13 @@ pub enum ResolutionError {
         cycle: Vec<ContentVersionId>,
     },
 
+    PackChildKindNotAllowed {
+        parent: ContentVersionId,
+        parent_kind: ContentKind,
+        child: ContentVersionId,
+        child_kind: ContentKind,
+    },
+
     EffectiveEngineCount {
         count: usize,
         engines: Vec<ContentVersionId>,
@@ -572,6 +604,16 @@ impl fmt::Display for ResolutionError {
 
                 Ok(())
             }
+
+            Self::PackChildKindNotAllowed {
+                parent,
+                parent_kind,
+                child,
+                child_kind,
+            } => write!(
+                formatter,
+                "{parent_kind} `{parent}` cannot contain {child_kind} `{child}`"
+            ),
 
             Self::EffectiveEngineCount { count, .. } => {
                 write!(

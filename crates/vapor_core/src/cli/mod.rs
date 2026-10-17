@@ -11,7 +11,8 @@ use crate::install::ensure_canonical_superworkspace;
 use crate::{
     CargoDependencyState, CargoPackageInspection, ContentKind, ContentVersionId,
     DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalClientDeploymentOutcome,
-    LocalContent, ManagedToolchain, ResolvedComposition, ResolvedContentGraph,
+    LocalContent, ManagedToolchain, OperationEvent, OperationId, OperationPhase, OperationRequest,
+    OperationService, OperationStatus, ResolvedComposition, ResolvedContentGraph,
     SUPERWORKSPACE_MANIFEST_FILE_NAME, SteamDeploymentOptions, UninstallOptions, VaporId,
     VaporInstallation, VaporProject, VaporRole, VaporSuperworkspace, VaporWorkspace,
     acquire_ecosystem_repositories, build_cargo_realization, demote_role, deploy_client_locally,
@@ -20,11 +21,9 @@ use crate::{
     inspect_local_cargo_package, install_installation, promote_role,
     reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
     repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
-    resolve_source_context, role_status, run_cargo_realization,
-    run_workspace_operation_at, run_workspace_operation_at_with_context,
-    OperationEvent, OperationId, OperationPhase, OperationRequest, OperationService,
-    OperationStatus,
-    source_state, uninstall_installation, verify_local_library_cargo_dependencies,
+    resolve_source_context, role_status, run_cargo_realization, run_workspace_operation_at,
+    run_workspace_operation_at_with_context, source_state, uninstall_installation,
+    verify_local_library_cargo_dependencies,
 };
 use clap::Parser;
 use commands::*;
@@ -351,9 +350,7 @@ fn execute_workspace_operation(operation: DevelopmentOperation) -> Result<(), St
             .map_err(|error| error.to_string())?;
         println!(
             "{} {}/{}",
-            label,
-            workspace.manifest.workspace.organization,
-            workspace.manifest.workspace.name,
+            label, workspace.manifest.workspace.organization, workspace.manifest.workspace.name,
         );
         Ok(())
     })

@@ -355,7 +355,11 @@ impl fmt::Display for SourceError {
             }
 
             Self::InvalidWorkspace { path, message } => {
-                write!(formatter, "`{}` is not a valid Vapor Workspace: {message}", path.display())
+                write!(
+                    formatter,
+                    "`{}` is not a valid Vapor Workspace: {message}",
+                    path.display()
+                )
             }
 
             Self::InvalidState { path, message } => {

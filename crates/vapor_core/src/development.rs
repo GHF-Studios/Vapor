@@ -6,7 +6,8 @@
 use crate::{
     ManagedToolchain, OperationContext, OperationPhase, Progress, ToolchainError,
     VaporInstallation, VaporProject, VaporSuperworkspace, VaporWorkspace,
-    install_ecosystem_bootstrap, reconcile_existing_development_environment, resolve_source_context,
+    install_ecosystem_bootstrap, reconcile_existing_development_environment,
+    resolve_source_context,
 };
 use serde::Deserialize;
 use std::env;

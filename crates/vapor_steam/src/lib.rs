@@ -4,17 +4,21 @@
 //! owned data so a UI can safely keep them after Steam callbacks complete.
 
 use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
     sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
 use steamworks::{
-    AppIDs, AppId, Client, ItemState, PublishedFileId, SteamError, UGCQueryType, UGCType,
+    AppIDs, AppId, Client, DownloadItemResult, ItemState, PublishedFileId, SteamError,
+    UGCQueryType, UGCType,
 };
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const CALLBACK_POLL: Duration = Duration::from_millis(10);
 const MAX_PAGE: u32 = 1_000;
+const WORKSHOP_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// Maximum number of subscription changes sent through one client session.
 pub const MAX_SUBSCRIPTION_BATCH_SIZE: usize = 50;
 
@@ -45,6 +49,105 @@ pub struct WorkshopSubscription {
     pub needs_update: bool,
     pub downloading: bool,
     pub download_progress: Option<(u64, u64)>,
+}
+
+/// Download Workshop items and consume each local folder while Steam keeps it available.
+///
+/// The current user's subscription list is not changed. Steam keeps downloads
+/// temporary for items the user has not subscribed to. The folder path is only
+/// valid for the callback; copy any files that must outlive this call.
+pub fn with_downloaded_workshop_items<T>(
+    app_id: u32,
+    published_file_ids: &[u64],
+    mut consume: impl FnMut(u64, &Path) -> Result<T, String>,
+) -> Result<Vec<T>, String> {
+    if app_id == 0 {
+        return Err("Steam Workshop download needs a nonzero application ID".to_owned());
+    }
+    if published_file_ids.is_empty() {
+        return Err("at least one Workshop item is required".to_owned());
+    }
+    if published_file_ids.contains(&0) {
+        return Err("Workshop item IDs must be nonzero".to_owned());
+    }
+
+    let client = initialize_client(app_id)?;
+    let ugc = client.ugc();
+    let mut consumed = Vec::with_capacity(published_file_ids.len());
+    let mut seen = BTreeSet::new();
+    for published_file_id in published_file_ids {
+        if !seen.insert(*published_file_id) {
+            continue;
+        }
+        let item = PublishedFileId(*published_file_id);
+        let state = ugc.item_state(item);
+        if state.contains(ItemState::INSTALLED)
+            && !state.contains(ItemState::NEEDS_UPDATE)
+            && let Some(info) = ugc.item_install_info(item)
+        {
+            consumed.push(consume(*published_file_id, Path::new(&info.folder))?);
+            continue;
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        let callback = client.register_callback(move |result: DownloadItemResult| {
+            if result.app_id.0 == app_id && result.published_file_id == item {
+                let result = result
+                    .error
+                    .map_or(Ok(()), |error| Err(format!("{error:?}")));
+                let _ = sender.send(result);
+            }
+        });
+        if !ugc.download_item(item, false) {
+            return Err(format!(
+                "Steam could not start downloading Workshop item {published_file_id}; check that Steam is signed in and the item is available to this account"
+            ));
+        }
+
+        let deadline = Instant::now() + WORKSHOP_DOWNLOAD_TIMEOUT;
+        let result = loop {
+            client.run_callbacks();
+            match receiver.try_recv() {
+                Ok(result) => break result,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(format!(
+                        "Steam stopped reporting the download for Workshop item {published_file_id}"
+                    ));
+                }
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    thread::sleep(CALLBACK_POLL);
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Err(format!(
+                        "timed out while Steam downloaded Workshop item {published_file_id}"
+                    ));
+                }
+            }
+        };
+        drop(callback);
+        result.map_err(|error| {
+            format!(
+                "Steam could not download Workshop item {published_file_id} ({error}). Check that Steam is open and signed in, and that this account can access the item on the game's Workshop page."
+            )
+        })?;
+        let root = installed_workshop_item_root(&ugc, item)?;
+        consumed.push(consume(*published_file_id, &root)?);
+    }
+    Ok(consumed)
+}
+
+fn installed_workshop_item_root(
+    ugc: &steamworks::UGC,
+    item: PublishedFileId,
+) -> Result<PathBuf, String> {
+    ugc.item_install_info(item)
+        .map(|info| PathBuf::from(info.folder))
+        .ok_or_else(|| {
+            format!(
+                "Steam completed the download for Workshop item {}, but provided no local folder",
+                item.0
+            )
+        })
 }
 
 /// Search the app's public Workshop through Steamworks UGC.
@@ -258,9 +361,7 @@ fn change_subscriptions(
         let published_file_id = PublishedFileId(*id);
         let callback = move |result: Result<(), SteamError>| {
             let _ = sender.send(
-                result.map_err(|error| {
-                    format!("Workshop item {}: {error:?}", published_file_id.0)
-                }),
+                result.map_err(|error| format!("Workshop item {}: {error:?}", published_file_id.0)),
             );
         };
         if subscribe {
@@ -320,7 +421,11 @@ fn initialize_client(app_id: u32) -> Result<Client, String> {
         return Err("Steam Workshop needs a nonzero application ID".to_owned());
     }
     Client::init_app(AppId(app_id))
-        .map_err(|error| format!("Steamworks is unavailable for app {app_id}: {error:?}"))
+        .map_err(|error| {
+            format!(
+                "Steam Workshop could not connect for app {app_id}. Open Steam, sign in, and try again ({error:?})."
+            )
+        })
 }
 
 fn pump_callbacks<T>(
