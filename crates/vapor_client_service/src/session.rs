@@ -2487,6 +2487,7 @@ impl ClientSession {
         if self.bootstrap.fixture_mode {
             let mut entries = vec![CatalogEntry {
                 id: "fixture.engine".to_owned(),
+                name: Some("Fixture Engine".to_owned()),
                 version: Some("1.0.0".to_owned()),
                 kind: "engine".to_owned(),
                 published_file_id: None,
@@ -2504,6 +2505,7 @@ impl ClientSession {
             }];
             entries.extend(self.fixture_acquisitions.values().map(|item| CatalogEntry {
                 id: item.id.clone(),
+                name: Some(item.id.clone()),
                 version: item.version.clone(),
                 kind: item.kind.clone(),
                 published_file_id: None,
@@ -4325,6 +4327,7 @@ fn catalog_entry(entry: CatalogContent) -> CatalogEntry {
     let role = catalog_item_role(&entry.kind);
     CatalogEntry {
         id: entry.id,
+        name: entry.name,
         version: entry.version,
         kind: entry.kind,
         published_file_id: entry.published_file_id,

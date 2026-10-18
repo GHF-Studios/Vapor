@@ -28,6 +28,7 @@ pub fn discover_content_catalog(
             for artifact in source_catalog.artifacts() {
                 entries.push(CatalogContent {
                     id: artifact.id().to_owned(),
+                    name: Some(artifact.name().to_owned()),
                     version: artifact.version().map(ToOwned::to_owned),
                     kind: artifact.kind().to_string(),
                     published_file_id: artifact
@@ -56,6 +57,7 @@ pub fn discover_content_catalog(
         let artifact = content::cached_artifact(&installation, &selector)?;
         entries.push(CatalogContent {
             id: artifact.artifact_id().to_owned(),
+            name: artifact.name().map(ToOwned::to_owned),
             version: artifact.version().map(ToOwned::to_owned),
             kind: artifact.kind().to_owned(),
             published_file_id: artifact.workshop_id().map(ToOwned::to_owned),
@@ -84,6 +86,7 @@ pub fn discover_content_catalog(
         for artifact in artifacts {
             entries.push(CatalogContent {
                 id: artifact.artifact_id().to_owned(),
+                name: artifact.name().map(ToOwned::to_owned),
                 version: artifact.version().map(ToOwned::to_owned),
                 kind: artifact.kind().to_owned(),
                 published_file_id: artifact.workshop_id().map(ToOwned::to_owned),

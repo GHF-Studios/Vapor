@@ -348,6 +348,7 @@ mod tests {
             composition_preview: None,
             catalog: vec![CatalogEntry {
                 id: "moon".into(),
+                name: Some("Moon".into()),
                 version: Some("1.0.0".into()),
                 kind: "mod".into(),
                 published_file_id: None,

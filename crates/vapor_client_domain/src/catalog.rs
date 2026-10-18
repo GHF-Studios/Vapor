@@ -50,6 +50,8 @@ pub struct CatalogConflict {
 pub struct CatalogContent {
     /// Stable, version-independent content identity.
     pub id: String,
+    /// Human-readable name authored by the content publisher, when present.
+    pub name: Option<String>,
     /// Exact semantic version, when authored.
     pub version: Option<String>,
     /// Canonical Rust-defined content kind.
@@ -111,6 +113,11 @@ fn merge_entry(
         if existing.kind != incoming.kind {
             conflicts.push(("kind", existing.kind.clone(), incoming.kind.clone()));
         }
+        if let (Some(first), Some(next)) = (&existing.name, &incoming.name)
+            && first != next
+        {
+            conflicts.push(("name", first.clone(), next.clone()));
+        }
         if let (Some(first), Some(next)) =
             (&existing.published_file_id, &incoming.published_file_id)
             && first != next
@@ -153,6 +160,9 @@ fn merge_entry(
         existing.conflicts.append(&mut incoming.conflicts);
         if existing.published_file_id.is_none() {
             existing.published_file_id = incoming.published_file_id.take();
+        }
+        if existing.name.is_none() {
+            existing.name = incoming.name.take();
         }
         if existing.dependencies.is_empty() {
             existing.dependencies = std::mem::take(&mut incoming.dependencies);

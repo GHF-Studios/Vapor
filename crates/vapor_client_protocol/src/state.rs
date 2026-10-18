@@ -250,6 +250,9 @@ pub struct WorkspaceProjectCandidate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogEntry {
     pub id: String,
+    /// Human-readable content name, when declared by its publisher.
+    #[serde(default)]
+    pub name: Option<String>,
     pub version: Option<String>,
     pub kind: String,
     pub published_file_id: Option<String>,

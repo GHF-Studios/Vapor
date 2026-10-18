@@ -70,6 +70,7 @@ mod tests {
     fn entry(id: &str) -> CatalogEntry {
         CatalogEntry {
             id: id.into(),
+            name: Some(id.into()),
             version: Some("1.0".into()),
             kind: "game-mod".into(),
             published_file_id: Some("3762162251".into()),

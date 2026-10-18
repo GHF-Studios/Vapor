@@ -4732,6 +4732,7 @@ pub fn delete_workshop_item(
 #[derive(Debug, Clone)]
 pub struct InstalledArtifactSnapshot {
     artifact_id: String,
+    name: Option<String>,
     version: Option<String>,
     kind: String,
     workshop_id: Option<String>,
@@ -4746,6 +4747,11 @@ impl InstalledArtifactSnapshot {
     /// Installed content ID.
     pub fn artifact_id(&self) -> &str {
         &self.artifact_id
+    }
+
+    /// Human-readable name authored by the content publisher, when present.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// Installed exact version, when declared.
@@ -4823,6 +4829,7 @@ pub fn cached_artifact(
     }
     Ok(InstalledArtifactSnapshot {
         artifact_id,
+        name: Some(artifact.name().to_owned()),
         version: artifact.version().map(ToOwned::to_owned),
         kind: artifact.kind().to_string(),
         workshop_id: cached.workshop_id.clone(),
@@ -4856,8 +4863,10 @@ pub fn installed_artifacts(
                 .installed
                 .get(&key)
                 .ok_or_else(|| format!("content is not installed: {selector}"))?;
+            let artifact = read_deployed_manifest(&record.installed_root)?;
             Ok(InstalledArtifactSnapshot {
                 artifact_id: record.artifact_id.clone(),
+                name: Some(artifact.name().to_owned()),
                 version: record.version.clone(),
                 kind: record.kind.clone(),
                 workshop_id: record.workshop_id.clone(),
@@ -4874,6 +4883,7 @@ pub fn installed_artifacts(
 fn installed_snapshot_from_record(record: &InstalledRecord) -> InstalledArtifactSnapshot {
     InstalledArtifactSnapshot {
         artifact_id: record.artifact_id.clone(),
+        name: None,
         version: record.version.clone(),
         kind: record.kind.clone(),
         workshop_id: record.workshop_id.clone(),

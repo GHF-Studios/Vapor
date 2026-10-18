@@ -48,6 +48,7 @@ impl CatalogQuery {
     pub fn matches_entry(&self, entry: &CatalogEntry) -> bool {
         self.matches_fields([
             entry.id.as_str(),
+            entry.name.as_deref().unwrap_or_default(),
             entry.kind.as_str(),
             entry.version.as_deref().unwrap_or_default(),
             entry.published_file_id.as_deref().unwrap_or_default(),
@@ -63,6 +64,7 @@ mod tests {
     fn all_catalog_search_fields_share_one_normalized_predicate() {
         let entry = CatalogEntry {
             id: "author/moon".into(),
+            name: Some("Moon".into()),
             kind: "game-mod".into(),
             version: Some("1.2.3".into()),
             published_file_id: Some("3762162251".into()),
