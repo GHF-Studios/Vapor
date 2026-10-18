@@ -2248,7 +2248,7 @@ impl ClientSession {
                     items,
                 });
                 summary = Some(format!(
-                    "Added {} Workshop items to content available on this device.",
+                    "Added {} Workshop items to your Library.",
                     imported
                 ));
                 self.refresh_catalog();
