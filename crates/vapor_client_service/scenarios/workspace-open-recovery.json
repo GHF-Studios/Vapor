@@ -1,0 +1,17 @@
+{
+  "name": "invalid workspace selection is recoverable",
+  "steps": [
+    {
+      "action": { "family": "workspace", "action": { "action": "open", "root": "fixture://workspace/missing" } },
+      "expect": { "response": "rejected", "error": "invalid-request" }
+    },
+    {
+      "action": { "family": "workspace", "action": { "action": "open", "root": "/" } },
+      "expect": { "response": "rejected", "error": "action-unavailable" }
+    },
+    {
+      "action": { "family": "catalog", "action": { "action": "refresh" } },
+      "expect": { "response": "applied", "catalog_len": 1 }
+    }
+  ]
+}

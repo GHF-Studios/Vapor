@@ -892,6 +892,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "doctest-file"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1800,6 +1806,19 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+]
+
+[[package]]
+name = "interprocess"
+version = "2.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7529951166d4dd4d2a6b9f0bb97919b810623f75eeb76e81ee9e6644886cae37"
+dependencies = [
+ "doctest-file",
+ "libc",
+ "recvmsg",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2961,6 +2980,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "recvmsg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
+
+[[package]]
 name = "redox_syscall"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3918,6 +3943,85 @@ dependencies = [
 ]
 
 [[package]]
+name = "vapor_client"
+version = "0.5.0"
+dependencies = [
+ "interprocess",
+ "serde_json",
+ "vapor_client_domain",
+ "vapor_client_protocol",
+ "widestring",
+]
+
+[[package]]
+name = "vapor_client_application"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vapor_client_domain",
+ "vapor_client_protocol",
+ "vapor_client_provider",
+ "vapor_core",
+ "vapor_steam",
+]
+
+[[package]]
+name = "vapor_client_domain"
+version = "0.5.0"
+dependencies = [
+ "semver",
+ "serde",
+ "vapor_content",
+]
+
+[[package]]
+name = "vapor_client_protocol"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vapor_client_domain",
+]
+
+[[package]]
+name = "vapor_client_provider"
+version = "0.5.0"
+dependencies = [
+ "semver",
+ "serde",
+ "toml",
+ "toml_edit 0.22.27",
+ "vapor_client_domain",
+ "vapor_content",
+ "vapor_core",
+]
+
+[[package]]
+name = "vapor_client_service"
+version = "0.5.0"
+dependencies = [
+ "interprocess",
+ "serde",
+ "serde_json",
+ "vapor_client",
+ "vapor_client_application",
+ "vapor_client_domain",
+ "vapor_client_protocol",
+ "vapor_core",
+ "vapor_sdk_core",
+]
+
+[[package]]
+name = "vapor_content"
+version = "0.5.0"
+dependencies = [
+ "semver",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "vapor_core"
 version = "0.5.0"
 dependencies = [
@@ -3929,6 +4033,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "vapor_content",
  "vapor_telemetry",
 ]
 
@@ -4462,6 +4567,12 @@ dependencies = [
  "static_assertions",
  "web-sys",
 ]
+
+[[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "winapi-util"

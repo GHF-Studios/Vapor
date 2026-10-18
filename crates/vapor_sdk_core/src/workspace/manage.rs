@@ -175,18 +175,8 @@ fn read_project_content(
 
 fn content_manifest_at(root: &Path) -> Result<Option<PathBuf>, WorkspaceCommandError> {
     let mut found = Vec::new();
-    for kind in [
-        ContentType::Packagepack,
-        ContentType::Enginepack,
-        ContentType::Gamepack,
-        ContentType::Modpack,
-        ContentType::Engine,
-        ContentType::Game,
-        ContentType::EngineMod,
-        ContentType::GameMod,
-        ContentType::ExtensionMod,
-    ] {
-        let candidate = root.join(content_manifest_file_name(kind));
+    for kind in ContentType::ALL {
+        let candidate = root.join(kind.manifest_file_name());
         if candidate.is_file() {
             found.push(candidate);
         }
@@ -208,36 +198,14 @@ fn content_type_for_manifest(path: &Path) -> Result<ContentType, WorkspaceComman
             path.display()
         )));
     };
-    match file_name {
-        "Packagepack.vapor.toml" => Ok(ContentType::Packagepack),
-        "Enginepack.vapor.toml" => Ok(ContentType::Enginepack),
-        "Gamepack.vapor.toml" => Ok(ContentType::Gamepack),
-        "Modpack.vapor.toml" => Ok(ContentType::Modpack),
-        "Engine.vapor.toml" => Ok(ContentType::Engine),
-        "Game.vapor.toml" => Ok(ContentType::Game),
-        "Engine-Mod.vapor.toml" => Ok(ContentType::EngineMod),
-        "Game-Mod.vapor.toml" => Ok(ContentType::GameMod),
-        "Extension-Mod.vapor.toml" => Ok(ContentType::ExtensionMod),
-        "Library.vapor.toml" => Ok(ContentType::Library),
-        other => Err(WorkspaceCommandError::InvalidContentGraph(format!(
-            "unknown role-specific content manifest filename `{other}`"
-        ))),
-    }
-}
-
-fn content_manifest_file_name(kind: ContentType) -> &'static str {
-    match kind {
-        ContentType::Packagepack => "Packagepack.vapor.toml",
-        ContentType::Enginepack => "Enginepack.vapor.toml",
-        ContentType::Gamepack => "Gamepack.vapor.toml",
-        ContentType::Modpack => "Modpack.vapor.toml",
-        ContentType::Engine => "Engine.vapor.toml",
-        ContentType::Game => "Game.vapor.toml",
-        ContentType::EngineMod => "Engine-Mod.vapor.toml",
-        ContentType::GameMod => "Game-Mod.vapor.toml",
-        ContentType::ExtensionMod => "Extension-Mod.vapor.toml",
-        ContentType::Library => "Library.vapor.toml",
-    }
+    ContentType::ALL
+        .into_iter()
+        .find(|kind| kind.manifest_file_name() == file_name)
+        .ok_or_else(|| {
+            WorkspaceCommandError::InvalidContentGraph(format!(
+                "unknown role-specific content manifest filename `{file_name}`"
+            ))
+        })
 }
 
 fn workspace_cargo_toml(content: &[ContentEntry]) -> String {

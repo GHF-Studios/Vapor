@@ -1,0 +1,23 @@
+[package]
+name = "vapor_client_service"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "vapor_client_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vapor-client-service"
+path = "src/main.rs"
+
+[dependencies]
+interprocess = "2.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+vapor_client = { path = "../vapor_client" }
+vapor_client_application = { path = "../vapor_client_application" }
+vapor_client_domain = { path = "../vapor_client_domain" }
+vapor_client_protocol = { path = "../vapor_client_protocol" }
+vapor_core = { path = "../vapor_core" }
+vapor_sdk_core = { path = "../vapor_sdk_core" }

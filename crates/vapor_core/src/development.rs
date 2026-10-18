@@ -34,6 +34,7 @@ const DISTRIBUTION_BINARIES: &[&str] = &[
     "vapor-entrypoint",
     "vapor-gui",
     "vapor-ide-host",
+    "vapor-client-service",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

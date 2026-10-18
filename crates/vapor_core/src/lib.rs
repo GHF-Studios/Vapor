@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod authored_manifest;
 pub mod cargo;
 pub mod cargo_reconciliation;
 pub mod cli;
@@ -41,15 +42,15 @@ pub use cargo::{
 
 pub use cargo_reconciliation::{
     CargoDependencyReconciliation, CargoDependencyState, CargoReconciliationError,
-    CargoRepairReport, LibraryCargoReconciliation, repair_local_library_cargo_dependencies,
-    verify_local_library_cargo_dependencies,
+    CargoRepairReport, CrateCargoReconciliation, repair_local_crate_cargo_dependencies,
+    verify_local_crate_cargo_dependencies,
 };
 
 pub use cli::{CliSurface, run_cli};
 
 pub use content::{
     ChildContentRef, ContentKind, ContentSource, ContentType, DependencySpec,
-    ParseContentSourceError, allowed_pack_children,
+    ParseContentSourceError, allowed_pack_children, dependency_kind_allowed,
 };
 
 pub use development::{
@@ -69,7 +70,8 @@ pub use developer_environment::{
 
 pub use ecosystem::{
     AcquiredRepository, EcosystemAcquisitionReport, EcosystemBootstrap, EcosystemError,
-    acquire_ecosystem, acquire_ecosystem_repositories, install_ecosystem_bootstrap,
+    acquire_ecosystem, acquire_ecosystem_repositories, discover_ecosystem_repositories,
+    install_ecosystem_bootstrap,
 };
 
 pub use ide::{
@@ -83,7 +85,9 @@ pub use host::{
     HostEnvironmentError, HostOperatingSystem, HostTarget,
 };
 
-pub use install::{InstallError, InstallReport, install_installation};
+pub use install::{
+    InstallError, InstallReport, ensure_canonical_superworkspace, install_installation,
+};
 
 pub use installation::{
     InstallationError, InstallationRootSource, VAPOR_HOME_ENV, VaporInstallation,
@@ -140,7 +144,8 @@ pub use role::{
 
 pub use source::{
     ResolvedSourceContext, SourceContextSource, SourceError, SourceState, active_source,
-    forget_source, open_source, remember_source, resolve_source_context, source_state,
+    configure_superworkspace, forget_source, open_source, remember_source,
+    resolve_source_context, source_state,
 };
 
 pub use steam::{

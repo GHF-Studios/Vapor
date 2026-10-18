@@ -1,0 +1,17 @@
+{
+  "name": "fixture catalog and composition selection",
+  "steps": [
+    {
+      "action": { "family": "catalog", "action": { "action": "refresh" } },
+      "expect": { "response": "applied", "catalog_len": 1 }
+    },
+    {
+      "action": { "family": "catalog", "action": { "action": "inspect", "content_id": "fixture.engine", "version": "1.0.0" } },
+      "expect": { "response": "applied", "selected_content_id": "fixture.engine@1.0.0" }
+    },
+    {
+      "action": { "family": "composition", "action": { "action": "select", "composition_id": "default" } },
+      "expect": { "response": "applied", "active_composition_id": "default" }
+    }
+  ]
+}

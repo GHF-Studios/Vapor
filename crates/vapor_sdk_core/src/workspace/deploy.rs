@@ -56,7 +56,7 @@ struct DeployTarget {
 fn deploy_target(identity: &WorkspaceIdentity) -> Result<DeployTarget, WorkspaceCommandError> {
     match identity.name.as_str() {
         "vapor-cli" => Ok(DeployTarget {
-            package: "vapor_shell",
+            package: "vapor_cli",
             alias: "vapor",
         }),
         _ => Err(WorkspaceCommandError::WrongWorkspaceName {

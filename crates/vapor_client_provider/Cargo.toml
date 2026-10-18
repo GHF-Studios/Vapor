@@ -1,0 +1,13 @@
+[package]
+name = "vapor_client_provider"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+toml_edit = "0.22.27"
+vapor_core = { path = "../vapor_core" }
+vapor_content = { path = "../vapor_content" }
+vapor_client_domain = { path = "../vapor_client_domain" }

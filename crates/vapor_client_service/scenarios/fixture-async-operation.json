@@ -1,0 +1,17 @@
+{
+  "name": "fixture scenario waits for a terminal operation result",
+  "steps": [
+    {
+      "action": {
+        "family": "workshop",
+        "action": { "action": "search", "query": "Moon", "page": 1 }
+      },
+      "expect": {
+        "response": "operation-accepted",
+        "operation_action": "workshop.search",
+        "operation_status": { "status": "succeeded" },
+        "operation_message_contains": "returned 1 items"
+      }
+    }
+  ]
+}

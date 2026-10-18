@@ -15,7 +15,7 @@
 //! A future stateful Vapor Shell may insert its session cursor between explicit
 //! command context and ambient process working-directory refinement.
 
-use crate::{InstallationError, VaporInstallation};
+use crate::{InstallationError, VaporInstallation, VaporSuperworkspace};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
@@ -77,6 +77,40 @@ pub fn source_state(installation: &VaporInstallation) -> Result<SourceState, Sou
         known: persisted.known,
         state_path,
     })
+}
+
+/// Configure the one canonical Superworkspace without changing the active
+/// authoring source. The supplied directory is initialized or adopted using
+/// Vapor's Superworkspace rules, then persisted in installation source state.
+pub fn configure_superworkspace(
+    installation: &VaporInstallation,
+    root: &Path,
+) -> Result<VaporSuperworkspace, SourceError> {
+    let installation_root = fs::canonicalize(&installation.root)
+        .unwrap_or_else(|_| installation.root.clone());
+    let user_data = installation.user_data_root();
+    let user_data_root = fs::canonicalize(&user_data).unwrap_or(user_data);
+    let candidate = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if roots_overlap(&candidate, &installation_root)
+        || roots_overlap(&candidate, &user_data_root)
+    {
+        return Err(SourceError::UnsafeSuperworkspace {
+            path: candidate,
+            installation: installation_root,
+            user_data: user_data_root,
+        });
+    }
+
+    let superworkspace = VaporSuperworkspace::setup(root)
+        .map_err(|error| SourceError::Superworkspace(error.to_string()))?;
+    let mut persisted = load(&source_state_path(installation))?;
+    persisted.superworkspace = Some(superworkspace.root.clone());
+    if !persisted.known.contains(&superworkspace.root) {
+        persisted.known.push(superworkspace.root.clone());
+        persisted.known.sort();
+    }
+    save(installation, &persisted)?;
+    Ok(superworkspace)
 }
 
 /// Return the currently selected external source root.
@@ -177,7 +211,6 @@ pub fn open_source(
         persisted.known.sort();
     }
 
-    persisted.superworkspace = Some(source.clone());
     persisted.active = Some(source);
 
     save(installation, &persisted)?;
@@ -288,6 +321,14 @@ pub enum SourceError {
         installation: PathBuf,
     },
 
+    UnsafeSuperworkspace {
+        path: PathBuf,
+        installation: PathBuf,
+        user_data: PathBuf,
+    },
+
+    Superworkspace(String),
+
     InvalidWorkspace {
         path: PathBuf,
         message: String,
@@ -353,6 +394,18 @@ impl fmt::Display for SourceError {
                     installation.display()
                 )
             }
+
+            Self::UnsafeSuperworkspace {
+                path,
+                installation,
+                user_data,
+            } => write!(
+                formatter,
+                "Superworkspace `{}` must not overlap the Vapor Installation `{}` or user data `{}`",
+                path.display(), installation.display(), user_data.display()
+            ),
+
+            Self::Superworkspace(message) => formatter.write_str(message),
 
             Self::InvalidWorkspace { path, message } => {
                 write!(

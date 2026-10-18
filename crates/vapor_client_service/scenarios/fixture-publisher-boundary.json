@@ -1,0 +1,9 @@
+{
+  "name": "fixture publisher boundary",
+  "steps": [
+    {
+      "action": { "family": "workshop", "action": { "action": "publish", "review_id": "fixture-review", "account": "publisher", "confirmation": "fixture-confirmation", "change_note": "" } },
+      "expect": { "response": "rejected", "error": "invalid-request" }
+    }
+  ]
+}

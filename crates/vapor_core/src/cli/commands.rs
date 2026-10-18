@@ -130,9 +130,9 @@ pub(super) enum VaporCommand {
         command: BehavioralContentCommand,
     },
 
-    Library {
+    Crate {
         #[command(subcommand)]
-        command: LibraryCommand,
+        command: CrateCommand,
     },
 }
 
@@ -494,7 +494,8 @@ pub(super) enum BehavioralContentCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub(super) enum LibraryCommand {
+/// Inspect and reconcile Rust Crate content projects.
+pub(super) enum CrateCommand {
     Create(CreateContentArgs),
     List(ContentListArgs),
     Inspect(LocalContentTargetArgs),

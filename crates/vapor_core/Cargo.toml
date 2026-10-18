@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 vapor_telemetry = { path = "../vapor_telemetry" }
+vapor_content = { path = "../vapor_content" }
 clap = { version = "4.6.6", features = ["derive"] }
 csv = "1"
 pathdiff = "0.2.3"

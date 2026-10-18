@@ -1,7 +1,7 @@
 use crate::installation::VaporInstallation;
 use crate::registry::{RegisteredRepository, RegistryClient, RegistryError};
 use crate::role::git_available;
-use crate::source::{SourceError, open_source};
+use crate::source::SourceError;
 use crate::steam::{INSTALLED_ECOSYSTEM_METADATA_FILE_NAME, ROOT_DISTRIBUTION_MANIFEST_FILE_NAME};
 use crate::superworkspace::{SuperworkspaceError, VaporSuperworkspace};
 use serde::Deserialize;
@@ -161,8 +161,6 @@ pub fn acquire_ecosystem_repositories(
         });
     }
 
-    open_source(installation, &superworkspace.root).map_err(EcosystemError::Source)?;
-
     Ok(EcosystemAcquisitionReport {
         ecosystem_id: ecosystem.id,
         registry_endpoint: registry.endpoint().to_owned(),
@@ -190,6 +188,24 @@ fn load_bootstrap(installation: &VaporInstallation) -> Result<EcosystemBootstrap
     }
 
     Err(EcosystemError::BootstrapUnavailable { installed })
+}
+
+/// Resolve the installation's configured ecosystem against its registry.
+///
+/// This is an explicit network operation; callers should not run it while
+/// producing ordinary installation or service snapshots.
+pub fn discover_ecosystem_repositories(
+    installation: &VaporInstallation,
+) -> Result<crate::registry::RegisteredEcosystem, EcosystemError> {
+    let bootstrap = load_bootstrap(installation)?;
+    let (namespace, name) = split_ecosystem_id(&bootstrap.ecosystem_id)?;
+    let registry = RegistryClient::new(&bootstrap.registry_endpoint)?;
+    let ecosystem = registry.ecosystem(namespace, name)?;
+    for repository in &ecosystem.repositories {
+        validate_repository(repository)?;
+        checkout_path(repository)?;
+    }
+    Ok(ecosystem)
 }
 
 fn load_bootstrap_file(path: &Path) -> Result<Option<EcosystemBootstrap>, EcosystemError> {

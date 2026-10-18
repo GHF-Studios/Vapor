@@ -1,0 +1,62 @@
+{
+  "name": "catalog query projection preserves facts",
+  "steps": [
+    {
+      "action": {
+        "family": "catalog",
+        "action": {
+          "action": "refresh"
+        }
+      },
+      "expect": {
+        "response": "applied",
+        "catalog_len": 1,
+        "catalog_matches_len": 1,
+        "catalog_loaded": true,
+        "catalog_has_error": false
+      }
+    },
+    {
+      "action": {
+        "family": "catalog",
+        "action": {
+          "action": "search",
+          "query": "absent"
+        }
+      },
+      "expect": {
+        "response": "applied",
+        "catalog_len": 1,
+        "catalog_matches_len": 0,
+        "catalog_loaded": true
+      }
+    },
+    {
+      "action": {
+        "family": "catalog",
+        "action": {
+          "action": "refresh"
+        }
+      },
+      "expect": {
+        "response": "applied",
+        "catalog_len": 1,
+        "catalog_matches_len": 0
+      }
+    },
+    {
+      "action": {
+        "family": "catalog",
+        "action": {
+          "action": "search",
+          "query": " ENGINE "
+        }
+      },
+      "expect": {
+        "response": "applied",
+        "catalog_len": 1,
+        "catalog_matches_len": 1
+      }
+    }
+  ]
+}

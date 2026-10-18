@@ -1,0 +1,9 @@
+[package]
+name = "vapor_client_domain"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+vapor_content = { path = "../vapor_content" }

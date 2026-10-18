@@ -10,7 +10,7 @@ mod platform_activity;
 use crate::install::ensure_canonical_superworkspace;
 use crate::{
     CargoDependencyState, CargoPackageInspection, ContentKind, ContentVersionId,
-    DevelopmentOperation, LibraryCargoReconciliation, LocalCatalog, LocalClientDeploymentOutcome,
+    CrateCargoReconciliation, DevelopmentOperation, LocalCatalog, LocalClientDeploymentOutcome,
     LocalContent, ManagedToolchain, OperationEvent, OperationId, OperationPhase, OperationRequest,
     OperationService, OperationStatus, ResolvedComposition, ResolvedContentGraph,
     SUPERWORKSPACE_MANIFEST_FILE_NAME, SteamDeploymentOptions, UninstallOptions, VaporId,
@@ -19,11 +19,11 @@ use crate::{
     deploy_ecosystem_to_steam, development_target_dir, diagnose_managed_state,
     discover_local_content, forget_source, generate_local_cargo_realization, git_available,
     inspect_local_cargo_package, install_installation, promote_role,
-    reconcile_existing_development_environment, repair_local_library_cargo_dependencies,
+    reconcile_existing_development_environment, repair_local_crate_cargo_dependencies,
     repair_managed_state, resolve_local_content_kind, resolve_local_packagepack,
     resolve_source_context, role_status, run_cargo_realization, run_workspace_operation_at,
     run_workspace_operation_at_with_context, source_state, uninstall_installation,
-    verify_local_library_cargo_dependencies,
+    verify_local_crate_cargo_dependencies,
 };
 use clap::Parser;
 use commands::*;
@@ -131,7 +131,7 @@ fn execute_vapor(command: VaporCommand) -> Result<(), String> {
             execute_behavioral(ContentKind::ExtensionMod, command)
         }
 
-        VaporCommand::Library { command } => execute_library(command),
+        VaporCommand::Crate { command } => execute_crate(command),
     }
 }
 
@@ -1315,23 +1315,23 @@ fn execute_behavioral(kind: ContentKind, command: BehavioralContentCommand) -> R
     }
 }
 
-fn execute_library(command: LibraryCommand) -> Result<(), String> {
+fn execute_crate(command: CrateCommand) -> Result<(), String> {
     match command {
-        LibraryCommand::Create(_) => not_implemented("library", "create"),
+        CrateCommand::Create(_) => not_implemented("crate", "create"),
 
-        LibraryCommand::List(args) => content_list(ContentKind::Library, args),
+        CrateCommand::List(args) => content_list(ContentKind::Crate, args),
 
-        LibraryCommand::Inspect(args) => content_inspect(ContentKind::Library, args),
+        CrateCommand::Inspect(args) => content_inspect(ContentKind::Crate, args),
 
-        LibraryCommand::Resolve(args) => content_resolve(ContentKind::Library, args),
+        CrateCommand::Resolve(args) => content_resolve(ContentKind::Crate, args),
 
-        LibraryCommand::Verify(args) => library_verify(args),
+        CrateCommand::Verify(args) => crate_verify(args),
 
-        LibraryCommand::Repair(args) => library_repair(args),
+        CrateCommand::Repair(args) => crate_repair(args),
 
-        LibraryCommand::Test(_) => not_implemented("library", "test"),
+        CrateCommand::Test(_) => not_implemented("crate", "test"),
 
-        LibraryCommand::Publish(_) => not_implemented("library", "publish"),
+        CrateCommand::Publish(_) => not_implemented("crate", "publish"),
     }
 }
 
@@ -2393,17 +2393,17 @@ fn content_resolve(kind: ContentKind, args: LocalContentTargetArgs) -> Result<()
             println!("Effective Mods: {count}");
         }
 
-        ContentKind::Library => {
+        ContentKind::Crate => {
             let content = catalog
                 .get(&graph.root)
-                .expect("resolved local Library must remain in the local catalog");
+                .expect("resolved local Crate must remain in the local catalog");
 
             let package =
                 inspect_local_cargo_package(content).map_err(|error| error.to_string())?;
 
             if !package.has_library_target() {
                 return Err(format!(
-                    "Vapor Library `{}` maps to Cargo package `{} {}`, \
+                    "Vapor Crate `{}` maps to Cargo package `{} {}`, \
                      but that package exposes no Rust library target",
                     graph.root, package.name, package.version
                 ));
@@ -2418,28 +2418,28 @@ fn content_resolve(kind: ContentKind, args: LocalContentTargetArgs) -> Result<()
     Ok(())
 }
 
-fn library_verify(args: LocalContentTargetArgs) -> Result<(), String> {
-    let (_, catalog, graph) = prepare_content_graph(ContentKind::Library, args)?;
+fn crate_verify(args: LocalContentTargetArgs) -> Result<(), String> {
+    let (_, catalog, graph) = prepare_content_graph(ContentKind::Crate, args)?;
 
-    let reconciliation = verify_local_library_cargo_dependencies(&catalog, &graph)
+    let reconciliation = verify_local_crate_cargo_dependencies(&catalog, &graph)
         .map_err(|error| error.to_string())?;
 
-    print_library_cargo_reconciliation(&reconciliation);
+    print_crate_cargo_reconciliation(&reconciliation);
 
     if reconciliation.is_valid() {
         Ok(())
     } else {
         Err(format!(
             "Cargo realization for `{}` does not match its resolved Vapor dependencies",
-            reconciliation.library
+            reconciliation.root
         ))
     }
 }
 
-fn library_repair(args: LocalContentTargetArgs) -> Result<(), String> {
-    let (_, catalog, graph) = prepare_content_graph(ContentKind::Library, args)?;
+fn crate_repair(args: LocalContentTargetArgs) -> Result<(), String> {
+    let (_, catalog, graph) = prepare_content_graph(ContentKind::Crate, args)?;
 
-    let report = repair_local_library_cargo_dependencies(&catalog, &graph)
+    let report = repair_local_crate_cargo_dependencies(&catalog, &graph)
         .map_err(|error| error.to_string())?;
 
     if report.added_bindings.is_empty() {
@@ -2452,13 +2452,13 @@ fn library_repair(args: LocalContentTargetArgs) -> Result<(), String> {
     }
 
     println!();
-    print_library_cargo_reconciliation(&report.reconciliation);
+    print_crate_cargo_reconciliation(&report.reconciliation);
 
     Ok(())
 }
 
-fn print_library_cargo_reconciliation(reconciliation: &LibraryCargoReconciliation) {
-    println!("Cargo realization for {}:", reconciliation.library);
+fn print_crate_cargo_reconciliation(reconciliation: &CrateCargoReconciliation) {
+    println!("Cargo realization for {}:", reconciliation.root);
     println!(
         "  package: {} {}",
         reconciliation.package.name, reconciliation.package.version

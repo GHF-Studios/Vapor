@@ -6,7 +6,7 @@
 
 use crate::{
     SourceError, SuperworkspaceError, VAPOR_HOME_ENV, VaporInstallation, VaporSuperworkspace,
-    open_source, source_state,
+    configure_superworkspace, source_state,
 };
 use std::env;
 use std::fmt;
@@ -54,22 +54,7 @@ pub fn ensure_canonical_superworkspace(
         None => default_superworkspace_root()?,
     };
 
-    let installation_root = canonical_or_original(&installation.root);
-    let user_data_root = canonical_or_original(&installation.user_data_root());
-    let candidate = canonical_or_original(&root);
-
-    if roots_overlap(&candidate, &installation_root) || roots_overlap(&candidate, &user_data_root) {
-        return Err(InstallError::UnsafeSuperworkspaceRoot {
-            path: candidate,
-            installation: installation_root,
-            user_data: user_data_root,
-        });
-    }
-
-    let superworkspace = VaporSuperworkspace::setup(&root).map_err(InstallError::Superworkspace)?;
-    open_source(installation, &superworkspace.root).map_err(InstallError::Source)?;
-
-    Ok(superworkspace)
+    configure_superworkspace(installation, &root).map_err(InstallError::Source)
 }
 
 fn default_superworkspace_root() -> Result<PathBuf, InstallError> {
@@ -78,14 +63,6 @@ fn default_superworkspace_root() -> Result<PathBuf, InstallError> {
         .map(PathBuf::from)
         .map(|home| home.join("Vapor"))
         .ok_or(InstallError::HomeUnavailable)
-}
-
-fn canonical_or_original(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn roots_overlap(left: &Path, right: &Path) -> bool {
-    left.starts_with(right) || right.starts_with(left)
 }
 
 fn install_machine_integration(

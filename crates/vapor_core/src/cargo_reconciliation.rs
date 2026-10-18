@@ -6,7 +6,7 @@
 //!
 //! The first reconciliation slice is deliberately conservative:
 //!
-//! - verify direct dependencies of one Library;
+//! - verify direct dependencies of one Crate;
 //! - add missing Cargo dependencies using `cargo add`;
 //! - never overwrite a conflicting existing Cargo dependency;
 //! - verify the resulting physical edge using `cargo metadata`.
@@ -77,7 +77,7 @@ impl fmt::Display for CargoDependencyState {
     }
 }
 
-/// Reconciliation state for one direct Vapor dependency of a Library.
+/// Reconciliation state for one direct Vapor dependency of a Crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CargoDependencyReconciliation {
     /// Vapor-local dependency binding.
@@ -95,15 +95,15 @@ pub struct CargoDependencyReconciliation {
     pub state: CargoDependencyState,
 }
 
-/// Cargo realization state for one resolved Vapor Library root.
+/// Cargo realization state for one resolved Vapor Crate root.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LibraryCargoReconciliation {
-    pub library: ContentVersionId,
+pub struct CrateCargoReconciliation {
+    pub root: ContentVersionId,
     pub package: CargoPackageInspection,
     pub dependencies: Vec<CargoDependencyReconciliation>,
 }
 
-impl LibraryCargoReconciliation {
+impl CrateCargoReconciliation {
     pub fn is_valid(&self) -> bool {
         self.dependencies
             .iter()
@@ -122,35 +122,35 @@ impl LibraryCargoReconciliation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CargoRepairReport {
     pub added_bindings: Vec<String>,
-    pub reconciliation: LibraryCargoReconciliation,
+    pub reconciliation: CrateCargoReconciliation,
 }
 
-/// Verify that the resolved direct Vapor dependencies of one Library are
+/// Verify that the resolved direct Vapor dependencies of one Crate are
 /// physically represented by Cargo.
 ///
 /// The current slice intentionally does not reconcile arbitrary behavioral
-/// Content yet. Library dependency realization is the architecture-proving
+/// Content yet. Crate dependency realization is the architecture-proving
 /// case from which broader Rust-backed Content semantics can be learned.
-pub fn verify_local_library_cargo_dependencies(
+pub fn verify_local_crate_cargo_dependencies(
     catalog: &LocalCatalog,
     graph: &ResolvedContentGraph,
-) -> Result<LibraryCargoReconciliation, CargoReconciliationError> {
-    if graph.root_node().kind != ContentKind::Library {
-        return Err(CargoReconciliationError::RootNotLibrary {
+) -> Result<CrateCargoReconciliation, CargoReconciliationError> {
+    if graph.root_node().kind != ContentKind::Crate {
+        return Err(CargoReconciliationError::RootNotCrate {
             identity: graph.root.clone(),
             actual_kind: graph.root_node().kind,
         });
     }
 
-    let library_content = local(catalog, &graph.root)?;
-    let library_package = inspect_local_cargo_package(library_content)?;
+    let crate_content = local(catalog, &graph.root)?;
+    let crate_package = inspect_local_cargo_package(crate_content)?;
 
-    require_library_target(&graph.root, &library_package)?;
+    require_library_target(&graph.root, &crate_package)?;
 
-    let declared_metadata = load_cargo_metadata(library_content, MetadataScope::DeclaredOnly)?;
+    let declared_metadata = load_cargo_metadata(crate_content, MetadataScope::DeclaredOnly)?;
 
-    let declared_library_package =
-        metadata_package_for_manifest(&declared_metadata, &library_package.manifest_path)?;
+    let declared_crate_package =
+        metadata_package_for_manifest(&declared_metadata, &crate_package.manifest_path)?;
 
     let mut dependencies = Vec::new();
 
@@ -160,7 +160,7 @@ pub fn verify_local_library_cargo_dependencies(
 
         require_library_target(dependency_identity, &dependency_package)?;
 
-        let matching_bindings: Vec<_> = declared_library_package
+        let matching_bindings: Vec<_> = declared_crate_package
             .dependencies
             .iter()
             .filter(|dependency| dependency.is_normal_unconditional())
@@ -199,7 +199,7 @@ pub fn verify_local_library_cargo_dependencies(
             .iter()
             .any(|dependency| matches!(dependency.state, CargoDependencyState::Declared))
     {
-        let resolved_metadata = load_cargo_metadata(library_content, MetadataScope::ResolvedGraph)?;
+        let resolved_metadata = load_cargo_metadata(crate_content, MetadataScope::ResolvedGraph)?;
 
         for dependency in &mut dependencies {
             if !matches!(dependency.state, CargoDependencyState::Declared) {
@@ -208,7 +208,7 @@ pub fn verify_local_library_cargo_dependencies(
 
             dependency.state = if resolved_edge_matches(
                 &resolved_metadata,
-                &library_package.manifest_path,
+                &crate_package.manifest_path,
                 &dependency.binding,
                 &dependency.package.manifest_path,
             )? {
@@ -226,14 +226,14 @@ pub fn verify_local_library_cargo_dependencies(
         }
     }
 
-    Ok(LibraryCargoReconciliation {
-        library: graph.root.clone(),
-        package: library_package,
+    Ok(CrateCargoReconciliation {
+        root: graph.root.clone(),
+        package: crate_package,
         dependencies,
     })
 }
 
-/// Repair missing Cargo dependencies required by one Vapor Library.
+/// Repair missing Cargo dependencies required by one Vapor Crate.
 ///
 /// This operation deliberately refuses to overwrite conflicts.
 ///
@@ -241,11 +241,11 @@ pub fn verify_local_library_cargo_dependencies(
 /// automatically stale Cargo entry from an intentional developer edit. Missing
 /// bindings are safe to add; conflicting bindings require future reconciliation
 /// history/override semantics.
-pub fn repair_local_library_cargo_dependencies(
+pub fn repair_local_crate_cargo_dependencies(
     catalog: &LocalCatalog,
     graph: &ResolvedContentGraph,
 ) -> Result<CargoRepairReport, CargoReconciliationError> {
-    let before = verify_local_library_cargo_dependencies(catalog, graph)?;
+    let before = verify_local_crate_cargo_dependencies(catalog, graph)?;
 
     let unsafe_bindings: Vec<_> = before
         .dependencies
@@ -256,12 +256,12 @@ pub fn repair_local_library_cargo_dependencies(
 
     if !unsafe_bindings.is_empty() {
         return Err(CargoReconciliationError::UnsafeRepair {
-            identity: before.library,
+            identity: before.root,
             bindings: unsafe_bindings,
         });
     }
 
-    let library_content = local(catalog, &graph.root)?;
+    let crate_content = local(catalog, &graph.root)?;
 
     let missing: Vec<_> = before
         .dependencies
@@ -276,7 +276,7 @@ pub fn repair_local_library_cargo_dependencies(
         let dependency_content = local(catalog, &dependency.dependency)?;
 
         cargo_add_dependency(
-            library_content,
+            crate_content,
             &before.package,
             &dependency.binding,
             dependency_content,
@@ -286,11 +286,11 @@ pub fn repair_local_library_cargo_dependencies(
         added_bindings.push(dependency.binding);
     }
 
-    let reconciliation = verify_local_library_cargo_dependencies(catalog, graph)?;
+    let reconciliation = verify_local_crate_cargo_dependencies(catalog, graph)?;
 
     if !reconciliation.is_valid() {
         return Err(CargoReconciliationError::RepairIncomplete {
-            identity: reconciliation.library.clone(),
+            identity: reconciliation.root.clone(),
             added_bindings,
         });
     }
@@ -620,7 +620,7 @@ struct CargoMetadataResolvedDependency {
 
 #[derive(Debug)]
 pub enum CargoReconciliationError {
-    RootNotLibrary {
+    RootNotCrate {
         identity: ContentVersionId,
         actual_kind: ContentKind,
     },
@@ -704,13 +704,13 @@ impl From<ToolchainError> for CargoReconciliationError {
 impl fmt::Display for CargoReconciliationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RootNotLibrary {
+            Self::RootNotCrate {
                 identity,
                 actual_kind,
             } => {
                 write!(
                     formatter,
-                    "Cargo Library reconciliation requires a Library root; \
+                    "Cargo Crate reconciliation requires a Crate root; \
                      `{identity}` is `{actual_kind}`"
                 )
             }

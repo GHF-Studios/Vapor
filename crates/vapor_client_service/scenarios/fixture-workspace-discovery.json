@@ -1,0 +1,27 @@
+{
+  "name": "fixture workspace discovery",
+  "steps": [
+    {
+      "action": {
+        "family": "workspace",
+        "action": { "action": "open", "root": "fixture://workspace" }
+      },
+      "expect": {
+        "response": "applied",
+        "workspace_source_projects_len": 1,
+        "workspace_candidates_len": 1
+      }
+    },
+    {
+      "action": {
+        "family": "catalog",
+        "action": { "action": "discover-content-projects" }
+      },
+      "expect": {
+        "response": "applied",
+        "workspace_source_projects_len": 1,
+        "workspace_candidates_len": 1
+      }
+    }
+  ]
+}

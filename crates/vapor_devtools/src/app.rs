@@ -147,7 +147,7 @@ impl DevtoolsApp {
                 session.workspace, session.address
             ));
         } else {
-            ui.small("No active run. Drag any saved .tracy file into this window to add it to the library.");
+            ui.small("No active Vapor Development Session. Start one with `vapor launch --current-workspace --profiling`; Steam launch options do not create a telemetry session. You can also drag a saved .tracy file here.");
         }
         if !self.status.is_empty() {
             ui.label(&self.status);
