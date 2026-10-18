@@ -134,6 +134,8 @@ pub enum AuthoringAction {
         id: String,
         version: String,
         dependencies: Vec<String>,
+        #[serde(default)]
+        optional_dependencies: Vec<String>,
         workshop: WorkshopMetadataDraft,
     },
     CreateWorkspace {

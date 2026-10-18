@@ -31,7 +31,7 @@ pub use message::{
 };
 pub use state::{
     AuthoringCompositionLink, AuthoringResult, AuthoringResultKind, AvailableAction,
-    CatalogConflict, CatalogEntry, CatalogLocation, CatalogLocationKind, ClientEvent,
+    CatalogConflict, CatalogEntry, CatalogItemAction, CatalogItemRole, CatalogLocation, CatalogLocationKind, ClientEvent,
     ClientRevision, ClientSnapshot, CompositionPreviewDependency, CompositionPreviewNode,
     CompositionPreviewSnapshot, CompositionPreviewSource, DurableStateSnapshot, HostSummary,
     OperationEvent, OperationPhase, OperationStatus, OperationSummary, RootPublishingSnapshot,
@@ -207,6 +207,7 @@ mod tests {
                 id: "moon".into(),
                 version: "1.0.0".into(),
                 dependencies: vec!["engine@1".into()],
+                optional_dependencies: vec![],
                 workshop: WorkshopMetadataDraft::default(),
             }),
             ClientAction::Authoring(AuthoringAction::CreateWorkspace {
@@ -359,6 +360,8 @@ mod tests {
                     fingerprint: None,
                     install_source: None,
                 }],
+                role: CatalogItemRole::Other,
+                actions: vec![],
             }],
             catalog_status: CatalogStatus::default(),
             catalog_search: CatalogSearchSnapshot::default(),

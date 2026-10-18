@@ -76,6 +76,8 @@ mod tests {
             dependencies: vec![],
             conflicts: vec![],
             locations: vec![],
+            role: vapor_client_protocol::CatalogItemRole::Other,
+            actions: vec![],
         }
     }
 

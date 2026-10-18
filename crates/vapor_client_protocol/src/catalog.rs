@@ -69,6 +69,8 @@ mod tests {
             dependencies: vec![],
             conflicts: vec![],
             locations: vec![],
+            role: crate::CatalogItemRole::Other,
+            actions: vec![],
         };
         for query in [" MOON ", "GAME-MOD", "1.2.3", "3762162251", ""] {
             assert!(CatalogQuery::new(query).matches_entry(&entry), "{query}");

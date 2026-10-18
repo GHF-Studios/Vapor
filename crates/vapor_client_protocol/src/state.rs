@@ -256,6 +256,42 @@ pub struct CatalogEntry {
     pub dependencies: Vec<String>,
     pub conflicts: Vec<CatalogConflict>,
     pub locations: Vec<CatalogLocation>,
+    /// Product role used by every frontend to route this item through the
+    /// correct lifecycle. This is projected by the service from Vapor's
+    /// Rust-defined content vocabulary.
+    #[serde(default)]
+    pub role: CatalogItemRole,
+    /// Service-derived lifecycle choices for the current catalog snapshot.
+    #[serde(default)]
+    pub actions: Vec<CatalogItemAction>,
+}
+
+/// Player/creator role of a catalog item, distinct from its Rust-defined kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CatalogItemRole {
+    /// A complete Packagepack that can become a playable composition.
+    PlayableComposition,
+    /// Runtime content that may be installed into a composition.
+    RuntimeContent,
+    /// Rust-only code, available only through creator workflows.
+    CreatorCrate,
+    /// A recognized Vapor artifact that is not yet routed to a player action.
+    #[default]
+    Other,
+}
+
+/// Lifecycle action surfaced from service-owned catalog and composition facts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CatalogItemAction {
+    Install,
+    Review,
+    Play,
+    SelectComposition,
+    CreateComposition,
+    AddToComposition,
+    OpenForAuthoring,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

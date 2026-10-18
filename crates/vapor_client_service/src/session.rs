@@ -8,7 +8,8 @@ use std::{
 };
 use vapor_client_protocol::{
     AuthoringAction, AuthoringCompositionLink, AuthoringResult, AuthoringResultKind,
-    AvailableAction, CatalogAction, CatalogConflict, CatalogEntry, CatalogLocation,
+    AvailableAction, CatalogAction, CatalogConflict, CatalogEntry, CatalogItemAction,
+    CatalogItemRole, CatalogLocation,
     LibraryAction,
     CatalogLocationKind, ClientAction, ClientEvent, ClientRequest, ClientResponse,
     ClientResponseKind, ClientRevision, ClientSnapshot, Composition, CompositionAction,
@@ -514,7 +515,14 @@ impl ClientSession {
             },
             active_operation: self.active_operation.clone(),
             composition_preview: self.composition_preview.clone(),
-            catalog: self.catalog.entries().to_vec(),
+            catalog: self
+                .catalog
+                .entries()
+                .iter()
+                .map(|entry| {
+                    catalog_projection(entry, &self.durable_state, self.catalog.entries())
+                })
+                .collect(),
             catalog_status: self.catalog.status().clone(),
             catalog_search: self.catalog.search(),
             workspace_content: self.workspace_content.clone(),
@@ -2491,6 +2499,8 @@ impl ClientSession {
                     fingerprint: Some("fixture:v1".to_owned()),
                     install_source: None,
                 }],
+                role: CatalogItemRole::Other,
+                actions: Vec::new(),
             }];
             entries.extend(self.fixture_acquisitions.values().map(|item| CatalogEntry {
                 id: item.id.clone(),
@@ -2506,6 +2516,8 @@ impl ClientSession {
                     fingerprint: Some(item.fingerprint.clone()),
                     install_source: None,
                 }],
+                role: CatalogItemRole::Other,
+                actions: Vec::new(),
             }));
             self.catalog.replace(entries);
             return;
@@ -3035,6 +3047,7 @@ fn execute_authoring_operation(
             id,
             version,
             dependencies,
+            optional_dependencies,
             workshop,
         } => {
             let active = active_workspace.ok_or("Open a workspace before creating content.")?;
@@ -3055,13 +3068,14 @@ fn execute_authoring_operation(
                 tags: workshop.tags,
                 change_note: workshop.change_note,
             };
-            let manifest = vapor_client_application::create_content_workspace_with_workshop(
+            let manifest = vapor_client_application::create_content_workspace_with_dependency_policies(
                 executable,
                 &active,
                 &id,
                 &version,
                 kind,
                 &dependencies,
+                &optional_dependencies,
                 &policy,
             )?;
             let contents = std::fs::read_to_string(&manifest)
@@ -4308,6 +4322,7 @@ fn fixture_workspace_content(root: &Path) -> WorkspaceContentSnapshot {
 }
 
 fn catalog_entry(entry: CatalogContent) -> CatalogEntry {
+    let role = catalog_item_role(&entry.kind);
     CatalogEntry {
         id: entry.id,
         version: entry.version,
@@ -4344,6 +4359,125 @@ fn catalog_entry(entry: CatalogContent) -> CatalogEntry {
                 install_source: location.install_source,
             })
             .collect(),
+        role,
+        actions: Vec::new(),
+    }
+}
+
+fn catalog_projection(
+    entry: &CatalogEntry,
+    state: &ClientPersistentState,
+    catalog: &[CatalogEntry],
+) -> CatalogEntry {
+    let mut projected = entry.clone();
+    projected.role = catalog_item_role(&projected.kind);
+    projected.actions = if !projected.conflicts.is_empty() {
+        Vec::new()
+    } else {
+        match projected.role {
+            CatalogItemRole::PlayableComposition => {
+                let matching = state
+                    .compositions
+                    .compositions
+                    .iter()
+                    .filter(|composition| {
+                        composition.root_package.as_ref().is_some_and(|root| {
+                            root.id == projected.id && root.version == projected.version
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                if matching.is_empty() {
+                    vec![CatalogItemAction::CreateComposition]
+                } else if matching.iter().any(|composition| {
+                    state.active_composition_id == composition.id
+                }) {
+                    let active = matching.iter().find(|composition| {
+                        state.active_composition_id == composition.id
+                    });
+                    if active.is_some_and(|composition| {
+                        matches!(&composition.installation, InstallationState::Installed { .. })
+                    }) {
+                        vec![CatalogItemAction::Play]
+                    } else if active.is_some_and(|composition| {
+                        matches!(
+                            &composition.installation,
+                            InstallationState::OutOfDate { .. }
+                                | InstallationState::Partial { .. }
+                                | InstallationState::NeedsRepair { .. }
+                        )
+                    }) {
+                        vec![CatalogItemAction::Review]
+                    } else {
+                        vec![CatalogItemAction::Install]
+                    }
+                } else {
+                    vec![CatalogItemAction::SelectComposition]
+                }
+            }
+            CatalogItemRole::RuntimeContent => {
+                let addable = projected.locations.iter().any(|location| {
+                    location.kind == CatalogLocationKind::Workspace
+                        && state.compositions.compositions.iter().any(|composition| {
+                            let Some(root) = composition.root_package.as_ref() else {
+                                return false;
+                            };
+                            let Some(workspace) = composition.workspace.as_ref() else {
+                                return false;
+                            };
+                            if workspace.root != location.root {
+                                return false;
+                            }
+                            let Some(root_entry) = catalog.iter().find(|candidate| {
+                                candidate.id == root.id && candidate.version == root.version
+                            }) else {
+                                return false;
+                            };
+                            let Ok(parent_kind) = root_entry.kind.parse::<vapor_core::ContentKind>()
+                            else {
+                                return false;
+                            };
+                            let Ok(child_kind) = projected.kind.parse::<vapor_core::ContentKind>()
+                            else {
+                                return false;
+                            };
+                            vapor_client_application::source_dependency_allowed(
+                                parent_kind,
+                                child_kind,
+                            )
+                        })
+                });
+                let mut actions = Vec::new();
+                if addable {
+                    actions.push(CatalogItemAction::AddToComposition);
+                }
+                if projected.locations.iter().any(|location| {
+                    location.kind == CatalogLocationKind::Workspace
+                }) {
+                    actions.push(CatalogItemAction::OpenForAuthoring);
+                }
+                actions
+            }
+            CatalogItemRole::CreatorCrate => {
+                if projected.locations.iter().any(|location| {
+                    location.kind == CatalogLocationKind::Workspace
+                }) {
+                    vec![CatalogItemAction::OpenForAuthoring]
+                } else {
+                    Vec::new()
+                }
+            }
+            CatalogItemRole::Other => Vec::new(),
+        }
+    };
+    projected
+}
+
+fn catalog_item_role(kind: &str) -> CatalogItemRole {
+    match kind.parse::<vapor_core::ContentKind>() {
+        Ok(vapor_core::ContentKind::Packagepack) => CatalogItemRole::PlayableComposition,
+        Ok(vapor_core::ContentKind::Crate) => CatalogItemRole::CreatorCrate,
+        Ok(_) => CatalogItemRole::RuntimeContent,
+        Err(_) => CatalogItemRole::Other,
     }
 }
 

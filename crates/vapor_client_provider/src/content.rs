@@ -1618,6 +1618,27 @@ pub fn create_source_project_with_workshop(
     dependency_selectors: &[String],
     workshop: &WorkshopPolicyDraft,
 ) -> Result<PathBuf, String> {
+    create_source_project_with_dependency_policies(
+        paths,
+        content_id,
+        version,
+        kind,
+        dependency_selectors,
+        &[],
+        workshop,
+    )
+}
+
+/// Create a source project with selected optional dependency edges.
+pub fn create_source_project_with_dependency_policies(
+    paths: &EnvironmentPaths,
+    content_id: &str,
+    version: &str,
+    kind: ContentKind,
+    dependency_selectors: &[String],
+    optional_dependency_selectors: &[String],
+    workshop: &WorkshopPolicyDraft,
+) -> Result<PathBuf, String> {
     validate_workshop_policy_draft(workshop)?;
     let workspace_manifest = paths.source().root().join(manifest::WORKSPACE_FILE_NAME);
     let _workspace_lock = acquire_workspace_project_lock(&workspace_manifest)?;
@@ -1651,6 +1672,27 @@ pub fn create_source_project_with_workshop(
 
     let catalog = discover(paths)?;
     let mut children = Vec::new();
+    let optional_selectors = optional_dependency_selectors
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut optional_identities = BTreeSet::new();
+    for selector in optional_selectors {
+        let child = catalog
+            .find(selector)
+            .ok_or_else(|| format!("optional content is no longer available: {selector}"))?;
+        if source_dependency_relationship(kind, child.kind()) != Some("dependency") {
+            return Err(format!(
+                "{} is required for the '{}' role and cannot be optional",
+                child.id(),
+                source_dependency_relationship(kind, child.kind()).unwrap_or("dependency")
+            ));
+        }
+        optional_identities.insert((
+            child.id().to_owned(),
+            child.version().map(ToOwned::to_owned),
+        ));
+    }
     for selector in dependency_selectors {
         let child = catalog
             .find(selector)
@@ -1662,6 +1704,13 @@ pub fn create_source_project_with_workshop(
             return Err("content cannot depend on itself".to_owned());
         }
         children.push(child);
+    }
+    if optional_identities.iter().any(|(id, version)| {
+        !children.iter().any(|child| {
+            child.id() == id && child.version().map(ToOwned::to_owned).as_ref() == version.as_ref()
+        })
+    }) {
+        return Err("optional content must also be selected for this project".to_owned());
     }
     validate_composition_children(kind, &children)?;
 
@@ -1738,6 +1787,7 @@ pub fn create_source_project_with_workshop(
             &version.to_string(),
             kind,
             &children,
+            &optional_identities,
             &template,
             workshop,
         );
@@ -3122,6 +3172,7 @@ fn source_project_manifest(
     version: &str,
     kind: ContentKind,
     children: &[&ContentArtifact],
+    optional_identities: &BTreeSet<(String, Option<String>)>,
     template: &crate::source::GeneratedContentProject,
     workshop: &WorkshopPolicyDraft,
 ) -> String {
@@ -3168,6 +3219,12 @@ fn source_project_manifest(
             ));
             if let Some(version) = child.version() {
                 output.push_str(&format!("version = \"={version}\"\n"));
+            }
+            if optional_identities.contains(&(
+                child.id().to_owned(),
+                child.version().map(ToOwned::to_owned),
+            )) {
+                output.push_str("optional = true\n");
             }
         }
     }

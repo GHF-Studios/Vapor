@@ -275,15 +275,39 @@ pub fn create_content_workspace_with_workshop(
     dependency_selectors: &[String],
     workshop: &WorkshopPolicyDraft,
 ) -> Result<PathBuf, String> {
+    create_content_workspace_with_dependency_policies(
+        application_executable,
+        workspace_root,
+        id,
+        version,
+        kind,
+        dependency_selectors,
+        &[],
+        workshop,
+    )
+}
+
+/// Create source content with explicit optional dependency selections.
+pub fn create_content_workspace_with_dependency_policies(
+    application_executable: &Path,
+    workspace_root: &Path,
+    id: &str,
+    version: &str,
+    kind: vapor_core::ContentKind,
+    dependency_selectors: &[String],
+    optional_dependency_selectors: &[String],
+    workshop: &WorkshopPolicyDraft,
+) -> Result<PathBuf, String> {
     let kind = shell_content_kind(kind);
     let installation = InstallationPaths::from_application_executable(application_executable)?;
     let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
-    content::create_source_project_with_workshop(
+    content::create_source_project_with_dependency_policies(
         &paths,
         id,
         version,
         kind,
         dependency_selectors,
+        optional_dependency_selectors,
         workshop,
     )
 }
