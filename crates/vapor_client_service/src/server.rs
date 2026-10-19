@@ -4,7 +4,11 @@ use crate::{
 };
 use std::{
     io::{self, BufRead, BufReader, BufWriter, Read, Write},
-    sync::mpsc::{self, RecvTimeoutError, SyncSender},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc::{self, RecvTimeoutError, SyncSender},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -19,9 +23,10 @@ const SERVICE_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_PENDING_LOCAL_INPUTS: usize = 8;
 const MAX_LOCAL_CLIENTS: usize = 8;
 // A service poll can release the session's full output window in one batch.
-// Keep extra outbound capacity for lifecycle and snapshot frames so healthy
-// frontends do not get disconnected mid-operation.
+// Keep extra outbound capacity for lifecycle and snapshot frames, with a hard
+// byte ceiling so large snapshots cannot turn the frame queue into unbounded RAM.
 const MAX_PENDING_CLIENT_FRAMES: usize = MAX_BUFFERED_OPERATION_OUTPUT_EVENTS + 64;
+const MAX_PENDING_CLIENT_BYTES: usize = 40 * 1024 * 1024;
 
 // Protocol frames carry heap-backed request payloads; keeping this local event
 // value inline avoids one allocation for every message on the service channel.
@@ -65,7 +70,6 @@ fn serve_local(
     host_context: ClientHostContext,
 ) -> Result<(), String> {
     use interprocess::local_socket::traits::{Listener as _, Stream as _};
-    use std::sync::mpsc::{self, SyncSender};
 
     let (sender, receiver) = local_input_channel();
     let listener = std::sync::Arc::new(listener);
@@ -90,7 +94,7 @@ fn serve_local(
         })
         .map_err(|error| format!("could not start local service acceptor: {error}"))?;
 
-    let mut clients = std::collections::HashMap::<u64, SyncSender<ProtocolFrame>>::new();
+    let mut clients = ServiceClients::new();
     let mut authenticated = std::collections::HashSet::<u64>::new();
     let mut telemetry_subscribers = std::collections::HashSet::<u64>::new();
     let mut latest_development_status = None;
@@ -112,7 +116,10 @@ fn serve_local(
                 let client_id = next_client_id;
                 next_client_id = next_client_id.saturating_add(1);
                 let (reader, writer) = stream.split();
-                let (outbound, outbound_receiver) = mpsc::sync_channel(MAX_PENDING_CLIENT_FRAMES);
+                let (outbound, outbound_receiver) =
+                    client_outbound_channel(MAX_PENDING_CLIENT_FRAMES, MAX_PENDING_CLIENT_BYTES);
+                let pending_bytes = outbound.pending_bytes.clone();
+                let closed = outbound.closed.clone();
                 clients.insert(client_id, outbound);
 
                 let writer_sender = sender.clone();
@@ -121,7 +128,12 @@ fn serve_local(
                     .spawn(move || {
                         let mut writer = writer;
                         while let Ok(frame) = outbound_receiver.recv() {
-                            if let Err(error) = write_frame(&mut writer, &frame) {
+                            if closed.load(Ordering::Acquire) {
+                                break;
+                            }
+                            let result = write_encoded_frame(&mut writer, &frame.bytes);
+                            pending_bytes.fetch_sub(frame.bytes.len(), Ordering::AcqRel);
+                            if let Err(error) = result {
                                 let _ =
                                     writer_sender.send(LocalInput::Frame(client_id, Err(error)));
                                 break;
@@ -451,13 +463,75 @@ fn local_input_channel() -> (SyncSender<LocalInput>, mpsc::Receiver<LocalInput>)
     mpsc::sync_channel(MAX_PENDING_LOCAL_INPUTS)
 }
 
-type ServiceClients = std::collections::HashMap<u64, SyncSender<ProtocolFrame>>;
+struct QueuedProtocolFrame {
+    bytes: Vec<u8>,
+}
+
+struct ClientOutbound {
+    sender: SyncSender<QueuedProtocolFrame>,
+    pending_bytes: Arc<AtomicUsize>,
+    closed: Arc<AtomicBool>,
+    byte_capacity: usize,
+}
+
+impl ClientOutbound {
+    fn try_send(&self, frame: ProtocolFrame) -> Result<(), ()> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(());
+        }
+        let mut bytes = serde_json::to_vec(&frame).map_err(|_| ())?;
+        if bytes.len().saturating_add(1) > MAX_FRAME_BYTES {
+            return Err(());
+        }
+        bytes.push(b'\n');
+        let byte_count = bytes.len();
+        if self
+            .pending_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                pending
+                    .checked_add(byte_count)
+                    .filter(|reserved| *reserved <= self.byte_capacity)
+            })
+            .is_err()
+        {
+            return Err(());
+        }
+        match self.sender.try_send(QueuedProtocolFrame { bytes }) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                self.pending_bytes.fetch_sub(byte_count, Ordering::AcqRel);
+                Err(())
+            }
+        }
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+}
+
+fn client_outbound_channel(
+    frame_capacity: usize,
+    byte_capacity: usize,
+) -> (ClientOutbound, mpsc::Receiver<QueuedProtocolFrame>) {
+    let (sender, receiver) = mpsc::sync_channel(frame_capacity);
+    (
+        ClientOutbound {
+            sender,
+            pending_bytes: Arc::new(AtomicUsize::new(0)),
+            closed: Arc::new(AtomicBool::new(false)),
+            byte_capacity,
+        },
+        receiver,
+    )
+}
+
+type ServiceClients = std::collections::HashMap<u64, ClientOutbound>;
 type ClientIds = std::collections::HashSet<u64>;
 
 /// A client that cannot accept the next protocol frame has missed state and
-/// cannot safely continue the session. Removing its sender closes the writer
-/// once already-queued frames have drained, so the frontend reconnects from a
-/// fresh snapshot instead of observing a silently incomplete event stream.
+/// cannot safely continue the session. Closing its sender stops queued stale
+/// frames from draining; the frontend reconnects from a fresh snapshot.
 fn send_to_client(
     clients: &mut ServiceClients,
     authenticated: &mut ClientIds,
@@ -479,7 +553,9 @@ fn disconnect_client(
     telemetry_subscribers: &mut ClientIds,
     client_id: u64,
 ) {
-    clients.remove(&client_id);
+    if let Some(client) = clients.remove(&client_id) {
+        client.close();
+    }
     authenticated.remove(&client_id);
     telemetry_subscribers.remove(&client_id);
 }
@@ -787,8 +863,12 @@ fn write_frame(writer: &mut impl Write, frame: &ProtocolFrame) -> Result<(), Str
         ));
     }
     bytes.push(b'\n');
+    write_encoded_frame(writer, &bytes)
+}
+
+fn write_encoded_frame(writer: &mut impl Write, bytes: &[u8]) -> Result<(), String> {
     writer
-        .write_all(&bytes)
+        .write_all(bytes)
         .and_then(|()| writer.flush())
         .map_err(|error| format!("failed writing protocol response: {error}"))
 }
@@ -817,6 +897,24 @@ mod tests {
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice(line).expect("server emits valid JSON frames"))
             .collect()
+    }
+
+    fn queued_frame(frame: &QueuedProtocolFrame) -> ProtocolFrame {
+        serde_json::from_slice(&frame.bytes[..frame.bytes.len() - 1])
+            .expect("outbound queue contains a complete encoded frame")
+    }
+
+    #[test]
+    fn outbound_client_queue_enforces_its_byte_budget() {
+        let frame = ProtocolFrame::Event(ClientEvent::ServiceReady {
+            protocol_version: PROTOCOL_VERSION,
+        });
+        let required_bytes = serde_json::to_vec(&frame).unwrap().len() + 1;
+        let (client, receiver) = client_outbound_channel(4, required_bytes);
+
+        client.try_send(frame.clone()).unwrap();
+        assert!(client.try_send(frame).is_err());
+        assert_eq!(receiver.try_iter().count(), 1);
     }
 
     #[test]
@@ -911,8 +1009,8 @@ mod tests {
 
     #[test]
     fn development_telemetry_only_reaches_subscribed_clients() {
-        let (first_sender, first_receiver) = std::sync::mpsc::sync_channel(1);
-        let (second_sender, second_receiver) = std::sync::mpsc::sync_channel(1);
+        let (first_sender, first_receiver) = client_outbound_channel(1, MAX_PENDING_CLIENT_BYTES);
+        let (second_sender, second_receiver) = client_outbound_channel(1, MAX_PENDING_CLIENT_BYTES);
         let mut clients = std::collections::HashMap::from([(1, first_sender), (2, second_sender)]);
         let mut authenticated = std::collections::HashSet::from([1, 2]);
         let mut subscribers = std::collections::HashSet::from([2]);
@@ -935,7 +1033,7 @@ mod tests {
         assert!(first_receiver.try_recv().is_err());
         assert!(matches!(
             second_receiver.try_recv(),
-            Ok(ProtocolFrame::Event(ClientEvent::Telemetry(_)))
+            Ok(frame) if matches!(queued_frame(&frame), ProtocolFrame::Event(ClientEvent::Telemetry(_)))
         ));
 
         broadcast_development_event(
@@ -948,13 +1046,13 @@ mod tests {
         assert!(first_receiver.try_recv().is_err());
         assert!(matches!(
             second_receiver.try_recv(),
-            Ok(ProtocolFrame::Event(ClientEvent::ProfileAnalysis(Err(_))))
+            Ok(frame) if matches!(queued_frame(&frame), ProtocolFrame::Event(ClientEvent::ProfileAnalysis(Err(_))))
         ));
     }
 
     #[test]
     fn a_client_that_cannot_receive_protocol_frames_is_removed_from_all_subscriptions() {
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let (sender, receiver) = client_outbound_channel(1, MAX_PENDING_CLIENT_BYTES);
         sender
             .try_send(ProtocolFrame::Event(ClientEvent::ServiceReady {
                 protocol_version: PROTOCOL_VERSION,
@@ -979,7 +1077,7 @@ mod tests {
         assert!(!subscribers.contains(&7));
         assert!(matches!(
             receiver.try_recv(),
-            Ok(ProtocolFrame::Event(ClientEvent::ServiceReady { .. }))
+            Ok(frame) if matches!(queued_frame(&frame), ProtocolFrame::Event(ClientEvent::ServiceReady { .. }))
         ));
     }
 
