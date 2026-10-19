@@ -168,3 +168,94 @@ pub fn dependency_kind_allowed(parent: ContentKind, child: ContentKind) -> bool 
         None => true,
     }
 }
+
+/// Authored relationship name for one permitted parent/child content pair.
+///
+/// Most relationships are ordinary dependencies. Composition slots use a
+/// role-specific name so manifests can express the package graph without each
+/// authoring frontend inventing its own mapping.
+pub fn dependency_relationship(parent: ContentKind, child: ContentKind) -> Option<&'static str> {
+    if !dependency_kind_allowed(parent, child) {
+        return None;
+    }
+    Some(match (parent, child) {
+        (ContentKind::Packagepack, ContentKind::Engine) => "engine",
+        (ContentKind::Packagepack, ContentKind::Enginepack) => "enginepack",
+        (ContentKind::Packagepack, ContentKind::Game) => "game",
+        (ContentKind::Packagepack, ContentKind::Gamepack) => "gamepack",
+        (ContentKind::Game, ContentKind::Engine) => "engine",
+        (ContentKind::Enginepack, ContentKind::Engine) => "engine",
+        (ContentKind::Gamepack, ContentKind::Game) => "game",
+        _ => "dependency",
+    })
+}
+
+/// Exclusive authored choice slot for a permitted parent/child pair.
+pub fn dependency_choice_group(parent: ContentKind, child: ContentKind) -> Option<&'static str> {
+    let relationship = dependency_relationship(parent, child)?;
+    dependency_choice_group_for_relationship(parent, relationship)
+}
+
+/// Choice slot represented by an authored relationship on a parent kind.
+pub fn dependency_choice_group_for_relationship(
+    parent: ContentKind,
+    relationship: &str,
+) -> Option<&'static str> {
+    Some(match (parent, relationship) {
+        (ContentKind::Packagepack, "engine" | "enginepack") => "engine-choice",
+        (ContentKind::Packagepack, "game" | "gamepack") => "game-choice",
+        (ContentKind::Game | ContentKind::Enginepack, "engine") => "engine",
+        (ContentKind::Gamepack, "game") => "game",
+        _ => return None,
+    })
+}
+
+/// Exclusive role slots that must be populated for a content kind to form a
+/// valid authored composition.
+pub fn required_dependency_choice_groups(parent: ContentKind) -> &'static [&'static str] {
+    match parent {
+        ContentKind::Packagepack => &["engine-choice", "game-choice"],
+        ContentKind::Game | ContentKind::Enginepack => &["engine"],
+        ContentKind::Gamepack => &["game"],
+        _ => &[],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ContentKind as K, dependency_choice_group, dependency_relationship,
+        required_dependency_choice_groups,
+    };
+
+    #[test]
+    fn package_composition_roles_and_choice_groups_are_canonical() {
+        assert_eq!(
+            dependency_relationship(K::Packagepack, K::Engine),
+            Some("engine")
+        );
+        assert_eq!(
+            dependency_relationship(K::Packagepack, K::Gamepack),
+            Some("gamepack")
+        );
+        assert_eq!(
+            dependency_choice_group(K::Packagepack, K::Engine),
+            Some("engine-choice")
+        );
+        assert_eq!(
+            dependency_choice_group(K::Packagepack, K::Gamepack),
+            Some("game-choice")
+        );
+        assert_eq!(
+            required_dependency_choice_groups(K::Packagepack),
+            &["engine-choice", "game-choice"]
+        );
+    }
+
+    #[test]
+    fn invalid_role_pairs_have_no_authored_relationship() {
+        assert_eq!(dependency_relationship(K::Crate, K::Game), None);
+        assert_eq!(dependency_choice_group(K::Game, K::Game), None);
+        assert!(required_dependency_choice_groups(K::ExtensionMod).is_empty());
+    }
+}

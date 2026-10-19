@@ -3,7 +3,7 @@ use vapor_client::{Client, ClientHostConfig};
 use vapor_client_protocol::{
     CatalogAction, ClientAction, ClientEvent, ClientResponseKind, CompositionAction,
     CompositionDocument, LegacyStorageSeed, ProtocolFrame, WorkshopAction, WorkspaceAction,
-    WorkspaceFileResult,
+    WorkspaceFileResult, WorkspaceProjectSelection, WorkspaceToolOperation,
 };
 use vapor_client_service::run_simulator;
 
@@ -198,6 +198,70 @@ fn workspace_file_results_follow_the_terminal_service_event() {
 }
 
 #[test]
+fn managed_workspace_tool_contract_round_trips_and_fixture_process_refuses_execution() {
+    let root = std::env::temp_dir().join(format!(
+        "vapor-client-service-process-tool-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).expect("create fixture workspace");
+    fs::write(root.join("Vapor.toml"), "[workspace]").expect("write workspace manifest");
+    let executable = service_executable();
+    let mut client = Client::spawn(
+        &executable,
+        ClientHostConfig {
+            application_executable: executable.clone(),
+            workshop_app_id: None,
+            workspace_root: Some(root.clone()),
+            active_composition_id: Some("default".to_owned()),
+            fixture_mode: true,
+            legacy_storage: LegacyStorageSeed::default(),
+            state_directory: None,
+        },
+    )
+    .expect("fixture service starts");
+    client
+        .send(
+            ClientAction::Workspace(WorkspaceAction::RunTool {
+                operation: WorkspaceToolOperation::BuildRelease,
+                project_selection: WorkspaceProjectSelection::Installable,
+                target_triples: vec!["x86_64-unknown-linux-gnu".into()],
+            }),
+            Some(client.latest_snapshot().revision),
+        )
+        .expect("send managed workspace build");
+    let ProtocolFrame::Response(response) = client
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive accepted workspace operation")
+    else {
+        panic!("expected a response frame");
+    };
+    assert_eq!(response.kind, ClientResponseKind::OperationAccepted);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut refused = false;
+    while std::time::Instant::now() < deadline {
+        if let ProtocolFrame::Event(ClientEvent::OperationChanged(event)) = client
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .expect("receive workspace operation outcome")
+            && event.action == "workspace.build-release"
+            && let vapor_client_protocol::OperationStatus::Failed { message } = event.status
+        {
+            assert!(message.contains("unavailable in fixture mode"));
+            refused = true;
+            break;
+        }
+    }
+    assert!(refused, "fixture service refuses managed tool execution");
+    client
+        .shutdown(Duration::from_secs(2))
+        .expect("fixture service shuts down");
+    fs::remove_dir_all(root).expect("remove fixture workspace");
+}
+
+#[test]
 fn fixture_workshop_acquisition_round_trips_through_the_service_process() {
     let mut client = fixture_client();
     client
@@ -284,6 +348,10 @@ fn fixture_workshop_review_and_publish_round_trip_through_the_service_process() 
         .send(
             ClientAction::Workshop(WorkshopAction::Stage {
                 selector: "fixture.game@1.0.0".into(),
+                target_triples: vec![
+                    "x86_64-unknown-linux-gnu".into(),
+                    "x86_64-pc-windows-msvc".into(),
+                ],
             }),
             Some(client.latest_snapshot().revision),
         )
@@ -315,6 +383,10 @@ fn fixture_workshop_review_and_publish_round_trip_through_the_service_process() 
                 assert_eq!(
                     snapshot.workshop.review.as_ref().unwrap().selector,
                     "fixture.game@1.0.0"
+                );
+                assert_eq!(
+                    snapshot.workshop.review.as_ref().unwrap().preview.target,
+                    "x86_64-unknown-linux-gnu,x86_64-pc-windows-msvc"
                 );
                 break;
             }
@@ -377,6 +449,135 @@ fn fixture_workshop_review_and_publish_round_trip_through_the_service_process() 
         "fixture publication reports completion"
     );
     assert!(client.latest_snapshot().workshop.review.is_none());
+    client
+        .shutdown(Duration::from_secs(2))
+        .expect("fixture service shuts down");
+}
+
+#[test]
+fn fixture_workshop_batch_review_round_trips_through_the_service_process() {
+    let executable = service_executable();
+    let mut client = Client::spawn(
+        &executable,
+        ClientHostConfig {
+            application_executable: executable.clone(),
+            workshop_app_id: Some(2122620),
+            workspace_root: Some(PathBuf::from("/fixture/workspace")),
+            active_composition_id: Some("default".to_owned()),
+            fixture_mode: true,
+            legacy_storage: LegacyStorageSeed::default(),
+            state_directory: None,
+        },
+    )
+    .expect("fixture service starts with its authored workspace");
+    client
+        .send(
+            ClientAction::Workshop(WorkshopAction::StageBatch {
+                selectors: vec!["fixture.game@1.0.0".into()],
+                target_triples: vec!["x86_64-unknown-linux-gnu".into()],
+            }),
+            Some(client.latest_snapshot().revision),
+        )
+        .expect("send batch stage request");
+    let response = client
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive accepted batch stage");
+    let ProtocolFrame::Response(response) = response else {
+        panic!("expected batch stage response");
+    };
+    assert_eq!(response.kind, ClientResponseKind::OperationAccepted);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if let Some(review) = client.latest_snapshot().workshop.batch_review.as_ref() {
+            assert_eq!(review.items.len(), 1);
+            assert_eq!(review.items[0].selector, "fixture.game@1.0.0");
+            assert_eq!(review.items[0].preview.target, "x86_64-unknown-linux-gnu");
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let _ = client
+            .recv_timeout(remaining)
+            .expect("receive batch stage result");
+    }
+    let review = client
+        .latest_snapshot()
+        .workshop
+        .batch_review
+        .as_ref()
+        .expect("service snapshot contains the batch review")
+        .clone();
+
+    client
+        .send(
+            ClientAction::Workshop(WorkshopAction::PublishBatch {
+                review_id: review.review_id.clone(),
+                account: "publisher".into(),
+                confirmation: "PUBLISH 1 ITEM TO someone-else".into(),
+                change_note: "Fixture batch".into(),
+            }),
+            Some(client.latest_snapshot().revision),
+        )
+        .expect("send wrong batch confirmation");
+    let response = client
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive wrong-confirmation rejection");
+    let ProtocolFrame::Response(response) = response else {
+        panic!("expected wrong-confirmation response");
+    };
+    assert_eq!(response.kind, ClientResponseKind::Rejected);
+    assert!(client.latest_snapshot().workshop.batch_review.is_some());
+
+    client
+        .send(
+            ClientAction::Workshop(WorkshopAction::PublishBatch {
+                review_id: review.review_id,
+                account: "publisher".into(),
+                confirmation: "PUBLISH 1 ITEM TO publisher".into(),
+                change_note: "Fixture batch".into(),
+            }),
+            Some(client.latest_snapshot().revision),
+        )
+        .expect("send reviewed batch publish request");
+    let response = client
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive accepted batch publication");
+    let ProtocolFrame::Response(response) = response else {
+        panic!("expected batch publish response");
+    };
+    assert_eq!(response.kind, ClientResponseKind::OperationAccepted);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut saw_success = false;
+    let mut saw_review_cleared = false;
+    while std::time::Instant::now() < deadline {
+        match client
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .expect("receive batch publication result")
+        {
+            ProtocolFrame::Event(ClientEvent::OperationChanged(event))
+                if event.action == "workshop.publish-batch"
+                    && event.status == vapor_client_protocol::OperationStatus::Succeeded =>
+            {
+                saw_success = true;
+            }
+            ProtocolFrame::Event(ClientEvent::Snapshot(snapshot))
+                if snapshot.workshop.batch_review.is_none() =>
+            {
+                saw_review_cleared = true;
+            }
+            _ => {}
+        }
+        if saw_success && saw_review_cleared {
+            break;
+        }
+    }
+    assert!(saw_success, "fixture batch publication reports completion");
+    assert!(
+        saw_review_cleared,
+        "published review is removed from the snapshot"
+    );
+    assert!(client.latest_snapshot().workshop.batch_review.is_none());
     client
         .shutdown(Duration::from_secs(2))
         .expect("fixture service shuts down");

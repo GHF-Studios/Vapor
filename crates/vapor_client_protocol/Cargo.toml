@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 vapor_client_domain = { path = "../vapor_client_domain" }
+vapor_telemetry = { path = "../vapor_telemetry" }
 
 [dev-dependencies]
 serde_json = "1"

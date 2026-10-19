@@ -7,18 +7,29 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
-mod cross_toolchain;
+/// App-local cross-compilation tool inspection and Cargo environment setup.
+pub mod cross_toolchain;
 mod source;
+mod target;
+pub mod workspace_build;
 
+/// Installation of source-owned app-root assets.
+pub mod app_root;
 /// Content discovery, packaging, installation, and Workshop operations.
 pub mod content;
 /// Installation and source workspace discovery.
 pub mod discovery;
 /// App distribution staging and SteamPipe publishing.
 pub mod distribution;
+/// Building and installing Rustdoc.
+pub mod documentation;
 /// Role-specific Vapor manifest parsing.
 pub mod manifest;
+/// Managed Rust validation, release builds, and app-root promotion.
+pub mod release;
 /// SteamCMD-backed Steam operations.
 pub mod steam;
 /// Source workspace structure and policy.
 pub mod workspace;
+/// Canonical runtime target identity and validation.
+pub use target::{host_runtime_target, validate_runtime_target};

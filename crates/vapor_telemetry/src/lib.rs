@@ -24,7 +24,7 @@ const BROKER_QUEUE: usize = 4096;
 const PRODUCER_QUEUE: usize = 256;
 const CONSUMER_WRITE_TIMEOUT: Duration = Duration::from_millis(10);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TelemetryEvent {
     pub timestamp_unix_ms: u64,
     pub source: String,
@@ -41,7 +41,7 @@ impl TelemetryEvent {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum TelemetryPayload {
     Log {

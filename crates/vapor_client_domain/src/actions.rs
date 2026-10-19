@@ -1,3 +1,4 @@
+use crate::ProfileAnalysisOptions;
 pub use crate::{CompositionAction, LibraryAction};
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +63,16 @@ pub enum WorkspaceAction {
         root: String,
     },
     Validate,
+    RunTool {
+        operation: WorkspaceToolOperation,
+        #[serde(default)]
+        project_selection: WorkspaceProjectSelection,
+        #[serde(default)]
+        target_triples: Vec<String>,
+    },
+    Clean {
+        confirmed_workspace_root: String,
+    },
     Remember,
     Create {
         root: String,
@@ -90,10 +101,51 @@ pub enum WorkspaceAction {
     },
 }
 
+/// Managed development action for an opened workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceToolOperation {
+    /// Format workspace Rust source.
+    Format,
+    /// Type-check the workspace.
+    Check,
+    /// Run workspace tests.
+    Test,
+    /// Build the workspace.
+    Build,
+    /// Build optimized release artifacts.
+    BuildRelease,
+    /// Check formatting, compile, test, lint, and build documentation.
+    Validate,
+}
+
+/// Selects Cargo projects for a managed workspace tool operation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "selection", content = "name", rename_all = "kebab-case")]
+pub enum WorkspaceProjectSelection {
+    /// Every Cargo project declared by the workspace.
+    #[default]
+    All,
+    /// Projects that declare runtime binaries for local deployment.
+    Installable,
+    /// One project selected by its declared workspace name.
+    Named(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum AuthoringAction {
     ListRegisteredSources,
+    RememberSource {
+        root: String,
+    },
+    OpenSource {
+        root: String,
+    },
+    ForgetSource {
+        root: String,
+    },
+    CloseSource,
     LoadComposition {
         project_id: String,
     },
@@ -122,6 +174,13 @@ pub enum AuthoringAction {
     ValidateContent {
         project_id: String,
     },
+    PackageContent {
+        selector: String,
+        #[serde(default)]
+        target_triples: Vec<String>,
+        #[serde(default)]
+        dry_run: bool,
+    },
     SaveRuntimeOutputs {
         project_id: String,
         expected_fingerprint: String,
@@ -147,6 +206,16 @@ pub enum AuthoringAction {
         parent: String,
         organization: String,
         name: String,
+    },
+    InitializeSourceWorkspace {
+        path: String,
+        organization: String,
+        name: String,
+        app_id: Option<u32>,
+    },
+    RepairSourceMetadata {
+        workspace_root: String,
+        write_changes: bool,
     },
 }
 
@@ -192,8 +261,23 @@ pub enum WorkshopAction {
     Stage {
         #[serde(alias = "project_id")]
         selector: String,
+        #[serde(default)]
+        target_triples: Vec<String>,
+    },
+    StageBatch {
+        selectors: Vec<String>,
+        #[serde(default)]
+        target_triples: Vec<String>,
     },
     Publish {
+        review_id: String,
+        #[serde(default)]
+        account: String,
+        confirmation: String,
+        #[serde(default)]
+        change_note: String,
+    },
+    PublishBatch {
         review_id: String,
         #[serde(default)]
         account: String,
@@ -212,7 +296,18 @@ pub enum PublishingAction {
         description: String,
         set_live: Option<String>,
     },
+    StageApplication {
+        account: String,
+        branch: Option<String>,
+        description: String,
+        runtime_targets: Vec<String>,
+        build_release: bool,
+    },
     PublishRoot {
+        review_id: String,
+        confirmation: String,
+    },
+    PublishApplication {
         review_id: String,
         confirmation: String,
     },
@@ -222,11 +317,25 @@ pub enum PublishingAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum DeveloperAction {
+    SubscribeTelemetry {
+        enabled: bool,
+    },
+    OpenProfiler,
+    RefreshProfileTraces,
+    ImportProfileTrace {
+        path: String,
+    },
+    AnalyzeProfileTrace {
+        trace_id: String,
+        options: ProfileAnalysisOptions,
+    },
     Format,
     Check,
     Test,
     Build,
-    Clean { confirmation: String },
+    Clean {
+        confirmation: String,
+    },
 }
 
 impl ClientAction {
@@ -242,6 +351,15 @@ impl ClientAction {
             },
             Self::Library(action) => match action {
                 LibraryAction::SetAutoInstall { .. } => "library.set-auto-install",
+                LibraryAction::Install { .. } => "library.install",
+                LibraryAction::Acquire { .. } => "library.acquire",
+                LibraryAction::ValidateArtifacts { .. } => "library.validate-artifacts",
+                LibraryAction::Update { .. } => "library.update",
+                LibraryAction::Verify { .. } => "library.verify",
+                LibraryAction::Repair { .. } => "library.repair",
+                LibraryAction::Disable { .. } => "library.disable",
+                LibraryAction::Enable { .. } => "library.enable",
+                LibraryAction::Uninstall { .. } => "library.uninstall",
             },
             Self::Composition(action) => match action {
                 CompositionAction::Create { .. } => "composition.create",
@@ -277,6 +395,15 @@ impl ClientAction {
                 WorkspaceAction::DiscoverWorkspace { .. } => "workspace.discover-workspace",
                 WorkspaceAction::Open { .. } => "workspace.open",
                 WorkspaceAction::Validate => "workspace.validate",
+                WorkspaceAction::RunTool { operation, .. } => match operation {
+                    WorkspaceToolOperation::Format => "workspace.fmt",
+                    WorkspaceToolOperation::Check => "workspace.check",
+                    WorkspaceToolOperation::Test => "workspace.test",
+                    WorkspaceToolOperation::Build => "workspace.build",
+                    WorkspaceToolOperation::BuildRelease => "workspace.build-release",
+                    WorkspaceToolOperation::Validate => "workspace.validate",
+                },
+                WorkspaceAction::Clean { .. } => "workspace.clean",
                 WorkspaceAction::Remember => "workspace.remember",
                 WorkspaceAction::Create { .. } => "workspace.create",
                 WorkspaceAction::AdoptProject { .. } => "workspace.adopt-project",
@@ -288,16 +415,25 @@ impl ClientAction {
             },
             Self::Authoring(action) => match action {
                 AuthoringAction::ListRegisteredSources => "authoring.list-registered-sources",
+                AuthoringAction::RememberSource { .. } => "authoring.remember-source",
+                AuthoringAction::OpenSource { .. } => "authoring.open-source",
+                AuthoringAction::ForgetSource { .. } => "authoring.forget-source",
+                AuthoringAction::CloseSource => "authoring.close-source",
                 AuthoringAction::LoadComposition { .. } => "authoring.load-composition",
                 AuthoringAction::SaveComposition { .. } => "authoring.save-composition",
                 AuthoringAction::LoadWorkshopMetadata { .. } => "authoring.load-workshop-metadata",
                 AuthoringAction::SaveWorkshopMetadata { .. } => "authoring.save-workshop-metadata",
                 AuthoringAction::LoadRuntimeOutputs { .. } => "authoring.load-runtime-outputs",
                 AuthoringAction::ValidateContent { .. } => "authoring.validate-content",
+                AuthoringAction::PackageContent { .. } => "authoring.package-content",
                 AuthoringAction::SaveRuntimeOutputs { .. } => "authoring.save-runtime-outputs",
                 AuthoringAction::CreateContent { .. } => "authoring.create-content",
                 AuthoringAction::ForkContent { .. } => "authoring.fork-content",
                 AuthoringAction::CreateWorkspace { .. } => "authoring.create-workspace",
+                AuthoringAction::InitializeSourceWorkspace { .. } => {
+                    "authoring.initialize-source-workspace"
+                }
+                AuthoringAction::RepairSourceMetadata { .. } => "authoring.repair-source-metadata",
             },
             Self::Workshop(action) => match action {
                 WorkshopAction::Search { .. } => "workshop.search",
@@ -306,15 +442,24 @@ impl ClientAction {
                 WorkshopAction::Unsubscribe { .. } => "workshop.unsubscribe",
                 WorkshopAction::Acquire { .. } => "workshop.acquire",
                 WorkshopAction::Stage { .. } => "workshop.stage",
+                WorkshopAction::StageBatch { .. } => "workshop.stage-batch",
                 WorkshopAction::Publish { .. } => "workshop.publish",
+                WorkshopAction::PublishBatch { .. } => "workshop.publish-batch",
                 WorkshopAction::DiscardReview => "workshop.discard-review",
             },
             Self::Publishing(action) => match action {
                 PublishingAction::StageRoot { .. } => "publishing.stage-root",
+                PublishingAction::StageApplication { .. } => "publishing.stage-application",
                 PublishingAction::PublishRoot { .. } => "publishing.publish-root",
+                PublishingAction::PublishApplication { .. } => "publishing.publish-application",
                 PublishingAction::DiscardRootReview => "publishing.discard-root-review",
             },
             Self::Developer(action) => match action {
+                DeveloperAction::SubscribeTelemetry { .. } => "developer.subscribe-telemetry",
+                DeveloperAction::OpenProfiler => "developer.open-profiler",
+                DeveloperAction::RefreshProfileTraces => "developer.refresh-profile-traces",
+                DeveloperAction::ImportProfileTrace { .. } => "developer.import-profile-trace",
+                DeveloperAction::AnalyzeProfileTrace { .. } => "developer.analyze-profile-trace",
                 DeveloperAction::Format => "developer.format",
                 DeveloperAction::Check => "developer.check",
                 DeveloperAction::Test => "developer.test",

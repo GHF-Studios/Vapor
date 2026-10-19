@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use vapor_client_provider::{
     content,
     discovery::{EnvironmentPaths, InstallationPaths},
-    manifest::ContentKind as ShellContentKind,
 };
+
+pub use vapor_client_provider::content::{BasicSourceWorkspaceReport, SourceMetadataRepairReport};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceContent {
@@ -122,7 +123,7 @@ pub fn source_dependency_allowed(
     parent: vapor_core::ContentKind,
     child: vapor_core::ContentKind,
 ) -> bool {
-    source_dependency_relationship(parent, child).is_some()
+    vapor_client_domain::dependency_kind_allowed(parent, child)
 }
 
 /// Return the Shell-authored relationship for one supported role pair.
@@ -130,9 +131,7 @@ pub fn source_dependency_relationship(
     parent: vapor_core::ContentKind,
     child: vapor_core::ContentKind,
 ) -> Option<&'static str> {
-    let parent = shell_content_kind(parent);
-    let child = shell_content_kind(child);
-    content::source_dependency_relationship(parent, child)
+    vapor_client_domain::dependency_relationship(parent, child)
 }
 
 /// Return the exclusive role slot used to prevent conflicting content choices.
@@ -140,33 +139,14 @@ pub fn source_dependency_choice_group(
     parent: vapor_core::ContentKind,
     child: vapor_core::ContentKind,
 ) -> Option<&'static str> {
-    let parent = shell_content_kind(parent);
-    let child = shell_content_kind(child);
-    content::source_dependency_choice_group(parent, child)
-}
-
-/// Parse a content kind emitted by workspace project discovery.
-pub fn source_project_kind(kind: &str) -> Option<ShellContentKind> {
-    Some(match kind {
-        "engine" => ShellContentKind::Engine,
-        "game" => ShellContentKind::Game,
-        "packagepack" => ShellContentKind::Packagepack,
-        "enginepack" => ShellContentKind::Enginepack,
-        "gamepack" => ShellContentKind::Gamepack,
-        "modpack" => ShellContentKind::Modpack,
-        "engine-mod" => ShellContentKind::EngineMod,
-        "game-mod" => ShellContentKind::GameMod,
-        "extension-mod" => ShellContentKind::ExtensionMod,
-        "crate" => ShellContentKind::Crate,
-        _ => return None,
-    })
+    vapor_client_domain::dependency_choice_group(parent, child)
 }
 
 /// Return every exclusive dependency role required for a project to be valid.
 pub fn source_required_dependency_choice_groups(
     parent: vapor_core::ContentKind,
 ) -> &'static [&'static str] {
-    content::source_required_dependency_choice_groups(shell_content_kind(parent))
+    vapor_client_domain::required_dependency_choice_groups(parent)
 }
 
 pub fn discover_source_content(
@@ -308,7 +288,6 @@ pub fn create_content_workspace_with_dependency_policies(
     dependencies: ContentDependencyDraft,
     workshop: &WorkshopPolicyDraft,
 ) -> Result<PathBuf, String> {
-    let kind = shell_content_kind(kind);
     let installation = InstallationPaths::from_application_executable(application_executable)?;
     let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
     content::create_source_project_with_dependency_policies(
@@ -352,19 +331,38 @@ pub fn create_basic_content_workspace(
     )
 }
 
-fn shell_content_kind(kind: vapor_core::ContentKind) -> ShellContentKind {
-    match kind {
-        vapor_core::ContentKind::Engine => ShellContentKind::Engine,
-        vapor_core::ContentKind::Game => ShellContentKind::Game,
-        vapor_core::ContentKind::Packagepack => ShellContentKind::Packagepack,
-        vapor_core::ContentKind::Enginepack => ShellContentKind::Enginepack,
-        vapor_core::ContentKind::Gamepack => ShellContentKind::Gamepack,
-        vapor_core::ContentKind::Modpack => ShellContentKind::Modpack,
-        vapor_core::ContentKind::EngineMod => ShellContentKind::EngineMod,
-        vapor_core::ContentKind::GameMod => ShellContentKind::GameMod,
-        vapor_core::ContentKind::ExtensionMod => ShellContentKind::ExtensionMod,
-        vapor_core::ContentKind::Crate => ShellContentKind::Crate,
-    }
+/// Initialize the maintained starter workspace at an exact destination.
+///
+/// # Errors
+///
+/// Returns validation, installation, or filesystem errors from the shared
+/// content provider.
+pub fn initialize_source_workspace(
+    application_executable: &Path,
+    destination: &Path,
+    organization: &str,
+    name: &str,
+    app_id: Option<u32>,
+) -> Result<BasicSourceWorkspaceReport, String> {
+    let installation = InstallationPaths::from_application_executable(application_executable)?;
+    content::initialize_basic_source_workspace(
+        &installation,
+        destination.to_path_buf(),
+        organization,
+        name,
+        app_id,
+    )
+}
+
+/// Preview or apply Workshop ID repairs in a creator workspace.
+pub fn repair_source_metadata(
+    application_executable: &Path,
+    workspace_root: &Path,
+    write_changes: bool,
+) -> Result<SourceMetadataRepairReport, String> {
+    let installation = InstallationPaths::from_application_executable(application_executable)?;
+    let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
+    content::repair_source_metadata(&paths, write_changes)
 }
 
 /// Add a validated authored Workspace to this Vapor Installation's known sources.

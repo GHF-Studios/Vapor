@@ -15,6 +15,14 @@ pub fn root_publish(request: &RootPublishRequest) -> Result<RootPublishReport, R
         set_live: request.set_live.clone(),
     };
     let package = root_package(&package_request)?;
+    if let Some(expected) = request.expected_fingerprint.as_deref()
+        && expected != package.fingerprint
+    {
+        return Err(RootCommandError::ReviewedPackageChanged {
+            expected: expected.to_owned(),
+            actual: package.fingerprint,
+        });
+    }
     let steam_request = SteamRunAppBuildRequest {
         account: request.account.clone(),
         steamcmd: request.steamcmd.clone(),

@@ -40,31 +40,18 @@ launch Tracy.
 Tracy is missing, the developer environment is degraded and should be repaired
 rather than silently performing setup from a feature command.
 
-## Devtools CLI
+## Studio Diagnostics
 
-```text
-vapor devtools
-vapor devtools open [--address HOST:PORT]
-vapor devtools trace import capture.tracy
-vapor devtools trace list
-vapor devtools trace report [TRACE] --top 50 --sort p95
-```
+Vapor Studio's Diagnostics page embeds the Devtools workbench as a library. It
+combines active Development Session context, live telemetry/logs/snapshots,
+saved Tracy artifacts, aggregate zone statistics and source-aware inspection.
+Saved traces are one evidence source alongside live runtime state.
 
-`trace report` supports thread-id, trace-relative time, zone-name and
-inclusive/self-time filtering plus table/CSV/JSON output. The CLI and GUI use
-the same analysis backend.
+There is no separate Devtools executable or CLI command. Managed builds remove
+the retired `vapor-devtools` and `vapor-studio-service` executables from the
+app's binary directory while retaining Studio's Diagnostics page.
 
-## Devtools application
-
-The `vapor-devtools` app combines active Development Session context, live
-telemetry/logs/snapshots, saved Tracy artifacts, aggregate zone statistics and
-source-aware inspection. Saved traces are one evidence source alongside live
-runtime state, not the identity of the app.
-
-## Deployment identity
-
-The installed application binary is `vapor-devtools`. Superseded
-`vapor-monitor` and `vapor-profile` binaries are removed by local deployment.
+## Deployment
 
 A Git commit/push does not replace the installed Vapor App Instance. After
 changing Vapor Client source, run `vapor client deploy local` before testing the

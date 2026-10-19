@@ -29,7 +29,6 @@ const LOCAL_DEPLOYMENT_AUTHORITY_ENV: &str = "VAPOR_LOCAL_DEPLOYMENT_AUTHORITY";
 
 const DISTRIBUTION_BINARIES: &[&str] = &[
     "vapor",
-    "vapor-devtools",
     "vapor-installer",
     "vapor-entrypoint",
     "vapor-gui",
@@ -233,6 +232,7 @@ fn run_workspace_operation_inner(
                 completed: index as u64 + 1,
                 total: Some(total),
                 unit: "projects".to_owned(),
+                message: None,
             });
         }
     }
@@ -382,9 +382,13 @@ fn promote_workspace_build(
         });
     }
 
-    // Remove superseded observability binaries so deployment cannot leave an
-    // old product surface shadowing the current Vapor Devtools executable.
-    for legacy in ["vapor-monitor", "vapor-profile"] {
+    // Remove retired executables so the app root contains only current launch surfaces.
+    for legacy in [
+        "vapor-devtools",
+        "vapor-studio-service",
+        "vapor-monitor",
+        "vapor-profile",
+    ] {
         let path = bin_root.join(executable_name(legacy));
         if path.is_file() {
             fs::remove_file(&path).map_err(|source| DevelopmentError::Io { path, source })?;

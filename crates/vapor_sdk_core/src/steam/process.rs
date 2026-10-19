@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Stdio};
 
 use super::error::SteamCommandError;
 use super::status::steam_status_for;
@@ -40,7 +40,7 @@ pub fn steam_run_app_build(
         .clone()
         .ok_or_else(|| SteamCommandError::SteamCmdUnavailable(request.steamcmd.clone()))?;
     let steam_args = run_app_build_args(&request.account, &request.app_build_script);
-    let exit_status = run_steamcmd(&steamcmd, &steam_args)?;
+    let exit_status = run_steamcmd_captured(&steamcmd, &steam_args)?;
 
     Ok(SteamRunAppBuildReport {
         status,
@@ -88,4 +88,29 @@ fn run_steamcmd(steamcmd: &Path, steam_args: &[String]) -> Result<ExitStatus, St
         .args(steam_args)
         .status()
         .map_err(SteamCommandError::SteamCmdIo)
+}
+
+fn run_steamcmd_captured(
+    steamcmd: &Path,
+    steam_args: &[String],
+) -> Result<ExitStatus, SteamCommandError> {
+    use std::io::Write;
+
+    let output = Command::new(steamcmd)
+        .args(steam_args)
+        .stdin(Stdio::inherit())
+        .output()
+        .map_err(SteamCommandError::SteamCmdIo)?;
+    let mut stderr = std::io::stderr().lock();
+    // The Client service reserves stdout for framed protocol messages.
+    for stream in [&output.stdout, &output.stderr] {
+        if !stream.is_empty() {
+            let _ = stderr.write_all(stream);
+            if !stream.ends_with(b"\n") {
+                let _ = stderr.write_all(b"\n");
+            }
+        }
+    }
+    let _ = stderr.flush();
+    Ok(output.status)
 }

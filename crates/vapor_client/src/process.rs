@@ -75,6 +75,54 @@ pub struct Client {
     shared_service: Option<(PathBuf, ClientHostConfig)>,
 }
 
+#[derive(Default)]
+struct ServiceHandshake {
+    ready: bool,
+    snapshot: Option<ClientSnapshot>,
+    require_snapshot: bool,
+}
+
+impl ServiceHandshake {
+    fn new(require_snapshot: bool) -> Self {
+        Self {
+            ready: false,
+            snapshot: None,
+            require_snapshot,
+        }
+    }
+
+    fn accept(&mut self, frame: ProtocolFrame) -> Result<Option<ClientSnapshot>, ClientError> {
+        match frame {
+            ProtocolFrame::Event(ClientEvent::ServiceReady { protocol_version }) => {
+                if protocol_version != PROTOCOL_VERSION {
+                    return Err(ClientError::Protocol(format!(
+                        "service protocol {protocol_version} does not match client protocol {PROTOCOL_VERSION}"
+                    )));
+                }
+                self.ready = true;
+            }
+            ProtocolFrame::Event(ClientEvent::Snapshot(snapshot)) => {
+                self.snapshot = Some(*snapshot);
+            }
+            ProtocolFrame::Event(ClientEvent::ProtocolError(error)) => {
+                return Err(ClientError::Protocol(error.message));
+            }
+            _ => {
+                return Err(ClientError::Protocol(
+                    "service sent an unexpected frame during connection".into(),
+                ));
+            }
+        }
+        Ok(
+            if self.ready && (self.snapshot.is_some() || !self.require_snapshot) {
+                Some(self.snapshot.take().unwrap_or_else(empty_snapshot))
+            } else {
+                None
+            },
+        )
+    }
+}
+
 impl Client {
     /// Connects to this installation's shared service, starting it once if needed.
     pub fn connect_or_start(
@@ -172,13 +220,19 @@ impl Client {
             .take()
             .ok_or_else(|| ClientError::Spawn("service stdin was not piped".into()))?;
         let mut writer = BufWriter::new(stdin);
-        write_frame(
+        if let Err(error) = write_frame(
             &mut writer,
             &ProtocolFrame::Initialize {
                 protocol_version: PROTOCOL_VERSION,
                 legacy_storage: bootstrap.legacy_storage,
             },
-        )?;
+        ) {
+            // A child that exits before accepting its first frame must not be
+            // left running or unreaped when initialization fails.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         let stdout = child
             .stdout
             .take()
@@ -207,11 +261,12 @@ impl Client {
     ) -> Result<Self, ClientError> {
         let stream =
             local_socket::connect(endpoint).map_err(|error| ClientError::Io(error.to_string()))?;
-        Self::connect_stream(stream, legacy_storage)
+        Self::connect_stream(stream, legacy_storage.is_some(), legacy_storage)
     }
 
     fn connect_stream(
         stream: local_socket::Stream,
+        require_snapshot: bool,
         legacy_storage: Option<LegacyStorageSeed>,
     ) -> Result<Self, ClientError> {
         stream
@@ -227,32 +282,12 @@ impl Client {
             },
         )?;
         let mut reader = BufReader::new(reader);
-        let mut ready = false;
-        let mut snapshot = None;
+        let mut handshake = ServiceHandshake::new(require_snapshot);
         loop {
             let frame = read_frame(&mut reader)
                 .map_err(ClientError::Protocol)?
                 .ok_or(ClientError::ServiceExited(None))?;
-            match frame {
-                ProtocolFrame::Event(ClientEvent::ServiceReady { protocol_version }) => {
-                    if protocol_version != PROTOCOL_VERSION {
-                        return Err(ClientError::Protocol(format!(
-                            "service protocol {protocol_version} does not match client protocol {PROTOCOL_VERSION}"
-                        )));
-                    }
-                    ready = true;
-                }
-                ProtocolFrame::Event(ClientEvent::Snapshot(value)) => snapshot = Some(*value),
-                ProtocolFrame::Event(ClientEvent::ProtocolError(error)) => {
-                    return Err(ClientError::Protocol(error.message));
-                }
-                _ => {
-                    return Err(ClientError::Protocol(
-                        "service sent an unexpected frame during connection".into(),
-                    ));
-                }
-            }
-            if ready {
+            if let Some(snapshot) = handshake.accept(frame)? {
                 reader
                     .get_ref()
                     .set_timeout(None)
@@ -264,9 +299,7 @@ impl Client {
                     .spawn(move || read_protocol(read, sender))
                     .map_err(|error| ClientError::Spawn(error.to_string()))?;
                 let mut client = Self::new(None, Box::new(writer), incoming);
-                if let Some(snapshot) = snapshot {
-                    client.latest_snapshot = snapshot;
-                }
+                client.latest_snapshot = snapshot;
                 return Ok(client);
             }
         }
@@ -385,31 +418,15 @@ impl Client {
 
     fn await_ready(&mut self) -> Result<(), ClientError> {
         let deadline = Instant::now() + START_TIMEOUT;
-        let mut ready = false;
-        let mut snapshot = None;
+        let mut handshake = ServiceHandshake::new(true);
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(ClientError::Timeout("service startup"));
             }
             let frame = self.recv_timeout(remaining)?;
-            match frame {
-                ProtocolFrame::Event(ClientEvent::ServiceReady { protocol_version }) => {
-                    if protocol_version != PROTOCOL_VERSION {
-                        return Err(ClientError::Protocol(format!(
-                            "service protocol {protocol_version} does not match client protocol {PROTOCOL_VERSION}"
-                        )));
-                    }
-                    ready = true;
-                }
-                ProtocolFrame::Event(ClientEvent::Snapshot(value)) => snapshot = Some(value),
-                ProtocolFrame::Event(ClientEvent::ProtocolError(error)) => {
-                    return Err(ClientError::Protocol(error.message));
-                }
-                _ => {}
-            }
-            if ready && let Some(snapshot) = snapshot {
-                self.latest_snapshot = *snapshot;
+            if let Some(snapshot) = handshake.accept(frame)? {
+                self.latest_snapshot = snapshot;
                 return Ok(());
             }
         }
@@ -633,6 +650,7 @@ fn empty_snapshot() -> ClientSnapshot {
             platform: String::new(),
             steam_client_available: false,
         },
+        root_distribution: vapor_client_protocol::RootDistributionIdentitySnapshot::default(),
         active_composition_id: None,
         durable_state: vapor_client_protocol::DurableStateSnapshot::default(),
         active_operation: None,
@@ -644,6 +662,9 @@ fn empty_snapshot() -> ClientSnapshot {
         superworkspace: vapor_client_protocol::SuperworkspaceSnapshot::default(),
         workshop: vapor_client_protocol::WorkshopSnapshot::default(),
         root_publishing: None,
+        application_release: None,
+        profile_traces: Vec::new(),
+        profile_trace_error: None,
         selected_content_id: None,
         available_actions: Vec::new(),
     }
@@ -651,8 +672,12 @@ fn empty_snapshot() -> ClientSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::{Client, ClientError, ClientHostConfig, service_sibling_path_for};
+    use super::{
+        Client, ClientError, ClientHostConfig, ServiceHandshake, empty_snapshot,
+        service_sibling_path_for,
+    };
     use std::path::Path;
+    use vapor_client_protocol::{ClientEvent, ClientRevision, PROTOCOL_VERSION, ProtocolFrame};
 
     fn bootstrap() -> ClientHostConfig {
         ClientHostConfig {
@@ -674,6 +699,63 @@ mod tests {
         let windows = service_sibling_path_for(Path::new("C:/app/bin/vapor-gui.exe"), true);
         assert_eq!(windows.file_name().unwrap(), "vapor-client-service.exe");
         assert_eq!(windows.parent().unwrap(), Path::new("C:/app/bin"));
+    }
+
+    #[test]
+    fn shared_service_handshake_waits_for_initial_snapshot_after_ready() {
+        let mut handshake = ServiceHandshake::new(true);
+        assert!(
+            handshake
+                .accept(ProtocolFrame::Event(ClientEvent::ServiceReady {
+                    protocol_version: PROTOCOL_VERSION,
+                }))
+                .unwrap()
+                .is_none()
+        );
+
+        let mut snapshot = empty_snapshot();
+        snapshot.revision = ClientRevision(5);
+        let connected = handshake
+            .accept(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(
+                snapshot,
+            ))))
+            .unwrap()
+            .expect("snapshot completes the handshake");
+        assert_eq!(connected.revision, ClientRevision(5));
+    }
+
+    #[test]
+    fn shared_service_handshake_accepts_snapshot_before_ready() {
+        let mut handshake = ServiceHandshake::new(true);
+        let mut snapshot = empty_snapshot();
+        snapshot.revision = ClientRevision(7);
+        assert!(
+            handshake
+                .accept(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(
+                    snapshot
+                ))))
+                .unwrap()
+                .is_none()
+        );
+        let connected = handshake
+            .accept(ProtocolFrame::Event(ClientEvent::ServiceReady {
+                protocol_version: PROTOCOL_VERSION,
+            }))
+            .unwrap()
+            .expect("ready completes the handshake");
+        assert_eq!(connected.revision, ClientRevision(7));
+    }
+
+    #[test]
+    fn service_readiness_probe_does_not_wait_for_an_uninitialized_snapshot() {
+        let mut handshake = ServiceHandshake::new(false);
+        let snapshot = handshake
+            .accept(ProtocolFrame::Event(ClientEvent::ServiceReady {
+                protocol_version: PROTOCOL_VERSION,
+            }))
+            .unwrap()
+            .expect("readiness probe completes without a session snapshot");
+        assert_eq!(snapshot.revision, ClientRevision(0));
     }
 
     #[test]
@@ -709,7 +791,10 @@ mod tests {
         let exited = Client::spawn(&exiting, bootstrap())
             .err()
             .expect("early exit fails");
-        assert!(matches!(exited, ClientError::ServiceExited(_)));
+        assert!(
+            matches!(exited, ClientError::ServiceExited(_) | ClientError::Io(_)),
+            "unexpected early-exit error: {exited:?}"
+        );
 
         let malformed = root.join("malformed-service");
         fs::write(

@@ -1,6 +1,7 @@
 //! Process-owned application state and the shared local IPC service host.
 
 mod catalog;
+mod development_telemetry;
 mod host;
 mod legacy_import;
 mod persistence;

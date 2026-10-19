@@ -26,8 +26,9 @@ pub use content::{
     CompositionPreviewSource, CompositionRunResult, InstallationCheck, InstalledArtifact,
     InstalledComposition, WorkshopAcquisition, collect_library_item, default_packagepack_selector,
     download_workshop_item, download_workshop_items, download_workshop_items_with_constraints,
-    install_composition, preview_composition, repair_composition, run_installed_composition,
-    run_source_composition, update_composition, verify_installation,
+    install_composition, package_authored_content, preview_composition, repair_composition,
+    run_installed_composition, run_library_operation, run_source_composition, update_composition,
+    verify_installation,
 };
 pub use operation::{
     CoreOperationEvent, CoreOperationRequest, OperationContext, OperationEvent, OperationEventSink,
@@ -35,9 +36,112 @@ pub use operation::{
     OperationStatus, Progress,
 };
 pub use publishing::{
-    WorkshopPackagePreview, WorkshopPublication, publish_reviewed_workshop_content,
-    stage_workshop_preview,
+    ApplicationReleaseResult, ApplicationReleaseReview, BuildMode, BuildReport,
+    MAX_WORKSHOP_REVIEW_BATCH, WorkshopBatchReview, WorkshopPackagePreview, WorkshopPublication,
+    build_application_release, build_authored_workspace, publish_reviewed_application_release,
+    publish_reviewed_workshop_batch, publish_reviewed_workshop_content, run_workspace_tool,
+    run_workspace_tool_with_progress, stage_application_release, stage_workshop_batch_preview,
+    stage_workshop_preview, validate_application_release_request,
 };
+pub use vapor_client_domain::can_auto_install_library_item;
+
+fn profile_trace_snapshot(
+    record: vapor_core::ProfileTraceRecord,
+) -> vapor_client_protocol::ProfileTraceSnapshot {
+    let available = record.exists();
+    vapor_client_protocol::ProfileTraceSnapshot {
+        id: record.id,
+        path: record.path,
+        available,
+        added_unix_ms: record.added_unix_ms,
+        workspace: record.workspace,
+        session_id: record.session_id,
+        configuration: record.configuration,
+    }
+}
+
+/// Read the managed Tracy capture library for a frontend snapshot.
+pub fn list_managed_profile_traces()
+-> Result<Vec<vapor_client_protocol::ProfileTraceSnapshot>, String> {
+    vapor_core::list_profile_traces()
+        .map(|records| records.into_iter().map(profile_trace_snapshot).collect())
+        .map_err(|error| error.to_string())
+}
+
+/// Add a Tracy capture to Vapor's managed profiler library.
+pub fn import_managed_profile_trace(
+    path: &std::path::Path,
+) -> Result<vapor_client_protocol::ProfileTraceSnapshot, String> {
+    vapor_core::import_profile_trace(path)
+        .map(profile_trace_snapshot)
+        .map_err(|error| error.to_string())
+}
+
+/// Analyze a saved Tracy capture using the managed exporter and shared options.
+pub fn analyze_managed_profile_trace(
+    record: &vapor_client_protocol::ProfileTraceSnapshot,
+    options: &vapor_client_domain::ProfileAnalysisOptions,
+) -> Result<vapor_client_protocol::ProfileReportSnapshot, String> {
+    let record = vapor_core::ProfileTraceRecord {
+        id: record.id.clone(),
+        path: record.path.clone(),
+        added_unix_ms: record.added_unix_ms,
+        workspace: record.workspace.clone(),
+        session_id: record.session_id.clone(),
+        configuration: record.configuration.clone(),
+    };
+    let options = vapor_core::ProfileReportOptions {
+        top: options.top,
+        sort: match options.sort {
+            vapor_client_domain::ProfileTraceSort::Total => vapor_core::ProfileSort::Total,
+            vapor_client_domain::ProfileTraceSort::Count => vapor_core::ProfileSort::Count,
+            vapor_client_domain::ProfileTraceSort::Mean => vapor_core::ProfileSort::Mean,
+            vapor_client_domain::ProfileTraceSort::Median => vapor_core::ProfileSort::Median,
+            vapor_client_domain::ProfileTraceSort::P90 => vapor_core::ProfileSort::P90,
+            vapor_client_domain::ProfileTraceSort::P95 => vapor_core::ProfileSort::P95,
+            vapor_client_domain::ProfileTraceSort::P99 => vapor_core::ProfileSort::P99,
+            vapor_client_domain::ProfileTraceSort::Max => vapor_core::ProfileSort::Max,
+        },
+        thread_ids: Vec::new(),
+        after_ms: None,
+        before_ms: None,
+        name_filter: options.name_filter.clone(),
+        self_time: options.self_time,
+    };
+    let report =
+        vapor_core::analyze_profile_trace(&record, &options).map_err(|error| error.to_string())?;
+    Ok(vapor_client_protocol::ProfileReportSnapshot {
+        trace: report.trace,
+        self_time: report.self_time,
+        occurrence_count: report.occurrence_count,
+        zone_count: report.zone_count,
+        zones: report
+            .zones
+            .into_iter()
+            .map(|zone| vapor_client_protocol::ProfileZoneSnapshot {
+                name: zone.name,
+                source: zone.source,
+                line: zone.line,
+                threads: zone.threads,
+                count: zone.count,
+                total_ns: zone.total_ns,
+                mean_ns: zone.mean_ns,
+                median_ns: zone.median_ns,
+                p90_ns: zone.p90_ns,
+                p95_ns: zone.p95_ns,
+                p99_ns: zone.p99_ns,
+                max_ns: zone.max_ns,
+            })
+            .collect(),
+    })
+}
+
+/// Open Vapor's managed Tracy profiler for the current installation.
+pub fn open_managed_profiler() -> Result<(), String> {
+    vapor_core::DeveloperEnvironment::discover()
+        .and_then(|environment| environment.launch_tracy())
+        .map_err(|error| error.to_string())
+}
 pub use vapor_steam::{
     MAX_SUBSCRIPTION_BATCH_SIZE as MAX_WORKSHOP_SUBSCRIPTION_BATCH, search_workshop,
     subscribe_item as subscribe_workshop_item, subscribe_items as subscribe_workshop_items,
@@ -47,16 +151,17 @@ pub use vapor_steam::{
 pub use vapor_steam::{WorkshopItem, WorkshopPage, WorkshopSubscription};
 
 pub use workspace::{
-    ContentDependencyDraft, SourceComposition, SourceCompositionLink, SourceContent,
-    SourceRuntimeOutputs, SourceWorkshopMetadata, SourceWorkshopPolicy,
-    UnregisteredProjectCandidate, UnregisteredProjectScan, WorkshopPolicyDraft,
-    adopt_workspace_content_project, create_basic_content_workspace, create_content_workspace,
-    create_content_workspace_with_dependency_policies, create_content_workspace_with_workshop,
-    discover_source_content, fork_acquired_content, load_source_composition,
-    load_source_runtime_outputs, load_source_workshop_metadata, remember_workspace,
+    BasicSourceWorkspaceReport, ContentDependencyDraft, SourceComposition, SourceCompositionLink,
+    SourceContent, SourceMetadataRepairReport, SourceRuntimeOutputs, SourceWorkshopMetadata,
+    SourceWorkshopPolicy, UnregisteredProjectCandidate, UnregisteredProjectScan,
+    WorkshopPolicyDraft, adopt_workspace_content_project, create_basic_content_workspace,
+    create_content_workspace, create_content_workspace_with_dependency_policies,
+    create_content_workspace_with_workshop, discover_source_content, fork_acquired_content,
+    initialize_source_workspace, load_source_composition, load_source_runtime_outputs,
+    load_source_workshop_metadata, remember_workspace, repair_source_metadata,
     save_source_composition, save_source_runtime_outputs, save_source_workshop_metadata,
     scan_unregistered_content_projects, source_dependency_allowed, source_dependency_choice_group,
-    source_dependency_relationship, source_project_kind, source_required_dependency_choice_groups,
+    source_dependency_relationship, source_required_dependency_choice_groups,
     unregister_workspace_content_project, validate_composition_source, validate_workspace,
     validate_workspace_source,
 };

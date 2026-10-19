@@ -5,7 +5,6 @@
 pub mod authored_manifest;
 pub mod cargo;
 pub mod cargo_reconciliation;
-pub mod cli;
 pub mod content;
 pub mod developer_environment;
 pub mod development;
@@ -45,8 +44,6 @@ pub use cargo_reconciliation::{
     CargoRepairReport, CrateCargoReconciliation, repair_local_crate_cargo_dependencies,
     verify_local_crate_cargo_dependencies,
 };
-
-pub use cli::{CliSurface, run_cli};
 
 pub use content::{
     ChildContentRef, ContentKind, ContentSource, ContentType, DependencySpec,
@@ -144,8 +141,8 @@ pub use role::{
 
 pub use source::{
     ResolvedSourceContext, SourceContextSource, SourceError, SourceState, active_source,
-    configure_superworkspace, forget_source, open_source, remember_source, resolve_source_context,
-    source_state,
+    close_source, configure_superworkspace, forget_source, open_source, remember_source,
+    resolve_source_context, source_state,
 };
 
 pub use steam::{

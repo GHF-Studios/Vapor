@@ -1,6 +1,7 @@
 //! Declarative assembly of the self-hosting Steam application payload.
 
 use crate::discovery::{EnvironmentPaths, ensure_contained};
+use crate::target::{host_runtime_target, validate_runtime_target};
 use serde::Deserialize;
 use std::{
     collections::BTreeSet,
@@ -473,20 +474,6 @@ fn depot_root(stage_root: &Path, kind: SteamDepotKind) -> PathBuf {
     stage_root.join(kind.label())
 }
 
-fn validate_runtime_target(target: &str) -> Result<(), String> {
-    let valid = !target.is_empty()
-        && target
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'));
-    if valid {
-        Ok(())
-    } else {
-        Err(format!(
-            "runtime target must be a Rust target triple such as x86_64-pc-windows-gnullvm: {target}"
-        ))
-    }
-}
-
 fn depot_kinds_for_targets(targets: &[String]) -> Result<BTreeSet<SteamDepotKind>, String> {
     let mut depots = BTreeSet::new();
     for target in targets {
@@ -560,21 +547,4 @@ fn validate_relative(path: &Path) -> Result<(), String> {
 
 fn io<'a>(action: &'a str, path: &'a Path) -> impl Fn(std::io::Error) -> String + 'a {
     move |error| format!("failed to {action} '{}': {error}", path.display())
-}
-
-fn host_runtime_target() -> String {
-    let arch = std::env::consts::ARCH;
-    match (arch, std::env::consts::OS, std::env::consts::FAMILY) {
-        ("x86_64", "linux", _) => "x86_64-unknown-linux-gnu".to_owned(),
-        ("aarch64", "linux", _) => "aarch64-unknown-linux-gnu".to_owned(),
-        ("x86_64", "windows", _) => "x86_64-pc-windows-gnullvm".to_owned(),
-        ("aarch64", "windows", _) => "aarch64-pc-windows-msvc".to_owned(),
-        ("x86_64", "macos", _) => "x86_64-apple-darwin".to_owned(),
-        ("aarch64", "macos", _) => "aarch64-apple-darwin".to_owned(),
-        _ => format!(
-            "{arch}-{}-{}",
-            std::env::consts::OS,
-            std::env::consts::FAMILY
-        ),
-    }
 }

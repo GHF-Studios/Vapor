@@ -8,8 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 use vapor_client_protocol::{
-    ClientEvent, LegacyStorageSeed, MAX_PROTOCOL_FRAME_BYTES, PROTOCOL_VERSION, ProtocolFrame,
-    ServiceError, ServiceErrorCode,
+    ClientAction, ClientEvent, DeveloperAction, LegacyStorageSeed, MAX_PROTOCOL_FRAME_BYTES,
+    PROTOCOL_VERSION, ProtocolFrame, ServiceError, ServiceErrorCode,
 };
 
 const MAX_FRAME_BYTES: usize = MAX_PROTOCOL_FRAME_BYTES;
@@ -85,7 +85,11 @@ fn serve_local(
 
     let mut clients = std::collections::HashMap::<u64, SyncSender<ProtocolFrame>>::new();
     let mut authenticated = std::collections::HashSet::<u64>::new();
+    let mut telemetry_subscribers = std::collections::HashSet::<u64>::new();
+    let mut latest_development_status = None;
     let mut session: Option<ClientSession> = None;
+    let telemetry_events = crate::development_telemetry::spawn();
+    let mut development_status = None;
     let mut next_client_id = 1_u64;
     let mut idle_since = None;
 
@@ -194,6 +198,12 @@ fn serve_local(
                 let Some(session) = session.as_mut() else {
                     continue;
                 };
+                let telemetry_subscription = match &request.action {
+                    ClientAction::Developer(DeveloperAction::SubscribeTelemetry { enabled }) => {
+                        Some(*enabled)
+                    }
+                    _ => None,
+                };
                 let response = if request.protocol_version != PROTOCOL_VERSION {
                     vapor_client_protocol::ClientResponse {
                         protocol_version: PROTOCOL_VERSION,
@@ -213,8 +223,23 @@ fn serve_local(
                 } else {
                     session.dispatch(request)
                 };
+                if response.kind == vapor_client_protocol::ClientResponseKind::Applied
+                    && let Some(enabled) = telemetry_subscription
+                {
+                    if enabled {
+                        telemetry_subscribers.insert(client_id);
+                    } else {
+                        telemetry_subscribers.remove(&client_id);
+                    }
+                }
                 if let Some(client) = clients.get(&client_id) {
                     let _ = client.try_send(ProtocolFrame::Response(Box::new(response)));
+                }
+                if telemetry_subscription == Some(true)
+                    && let Some(event) = development_status.clone()
+                    && let Some(client) = clients.get(&client_id)
+                {
+                    let _ = client.try_send(ProtocolFrame::Event(event));
                 }
                 broadcast(
                     &clients,
@@ -236,6 +261,7 @@ fn serve_local(
             Ok(LocalInput::Disconnected(client_id)) => {
                 clients.remove(&client_id);
                 authenticated.remove(&client_id);
+                telemetry_subscribers.remove(&client_id);
                 if clients.is_empty() {
                     idle_since = Some(Instant::now());
                 }
@@ -251,13 +277,30 @@ fn serve_local(
             let events = session.poll_background_operations();
             if !events.is_empty() {
                 for event in events {
-                    broadcast(&clients, ProtocolFrame::Event(event));
+                    if matches!(&event, ClientEvent::ProfileAnalysis(_)) {
+                        broadcast_development_event(
+                            &clients,
+                            &telemetry_subscribers,
+                            event,
+                            &mut latest_development_status,
+                        );
+                    } else {
+                        broadcast(&clients, ProtocolFrame::Event(event));
+                    }
                 }
                 broadcast(
                     &clients,
                     ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(session.snapshot()))),
                 );
             }
+        }
+        while let Ok(event) = telemetry_events.try_recv() {
+            broadcast_development_event(
+                &clients,
+                &telemetry_subscribers,
+                event,
+                &mut development_status,
+            );
         }
         if clients.is_empty()
             && session
@@ -352,6 +395,28 @@ fn broadcast(
 ) {
     for client in clients.values() {
         let _ = client.try_send(frame.clone());
+    }
+}
+
+fn broadcast_development_event(
+    clients: &std::collections::HashMap<u64, SyncSender<ProtocolFrame>>,
+    subscribers: &std::collections::HashSet<u64>,
+    event: ClientEvent,
+    latest_status: &mut Option<ClientEvent>,
+) {
+    if matches!(&event, ClientEvent::DevelopmentSessionChanged { .. }) {
+        *latest_status = Some(event.clone());
+    } else if !matches!(
+        &event,
+        ClientEvent::Telemetry(_) | ClientEvent::ProfileAnalysis(_)
+    ) {
+        return;
+    }
+    let frame = ProtocolFrame::Event(event);
+    for client_id in subscribers {
+        if let Some(client) = clients.get(client_id) {
+            let _ = client.try_send(frame.clone());
+        }
     }
 }
 
@@ -711,6 +776,46 @@ mod tests {
             frames(&output).last(),
             Some(ProtocolFrame::Event(ClientEvent::ProtocolError(error)))
                 if error.message.contains("32 MiB limit")
+        ));
+    }
+
+    #[test]
+    fn development_telemetry_only_reaches_subscribed_clients() {
+        let (first_sender, first_receiver) = std::sync::mpsc::sync_channel(1);
+        let (second_sender, second_receiver) = std::sync::mpsc::sync_channel(1);
+        let clients = std::collections::HashMap::from([(1, first_sender), (2, second_sender)]);
+        let subscribers = std::collections::HashSet::from([2]);
+        let mut latest_status = None;
+
+        broadcast_development_event(
+            &clients,
+            &subscribers,
+            ClientEvent::Telemetry(vapor_telemetry::TelemetryEvent::new(
+                "engine",
+                vapor_telemetry::TelemetryPayload::Lifecycle {
+                    state: "running".into(),
+                    detail: None,
+                },
+            )),
+            &mut latest_status,
+        );
+
+        assert!(first_receiver.try_recv().is_err());
+        assert!(matches!(
+            second_receiver.try_recv(),
+            Ok(ProtocolFrame::Event(ClientEvent::Telemetry(_)))
+        ));
+
+        broadcast_development_event(
+            &clients,
+            &subscribers,
+            ClientEvent::ProfileAnalysis(Err("trace analysis failed".to_owned())),
+            &mut latest_status,
+        );
+        assert!(first_receiver.try_recv().is_err());
+        assert!(matches!(
+            second_receiver.try_recv(),
+            Ok(ProtocolFrame::Event(ClientEvent::ProfileAnalysis(Err(_))))
         ));
     }
 }

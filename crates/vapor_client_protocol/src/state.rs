@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 pub use vapor_client_domain::ClientStateDocument as DurableStateSnapshot;
 use vapor_client_domain::WorkshopMetadataDraft;
 pub use vapor_client_domain::{
@@ -32,6 +33,8 @@ pub struct AvailableAction {
 pub struct ClientSnapshot {
     pub revision: ClientRevision,
     pub host: HostSummary,
+    #[serde(default)]
+    pub root_distribution: RootDistributionIdentitySnapshot,
     pub active_composition_id: Option<String>,
     #[serde(default)]
     pub durable_state: DurableStateSnapshot,
@@ -52,8 +55,68 @@ pub struct ClientSnapshot {
     pub workshop: WorkshopSnapshot,
     #[serde(default)]
     pub root_publishing: Option<RootPublishingSnapshot>,
+    #[serde(default)]
+    pub application_release: Option<ApplicationReleaseSnapshot>,
+    #[serde(default)]
+    pub profile_traces: Vec<ProfileTraceSnapshot>,
+    #[serde(default)]
+    pub profile_trace_error: Option<String>,
     pub selected_content_id: Option<String>,
     pub available_actions: Vec<AvailableAction>,
+}
+
+/// Canonical Steam identity for the installed Vapor root application.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootDistributionIdentitySnapshot {
+    pub app_id: u32,
+    pub depot_id: u32,
+}
+
+/// A saved Tracy capture projected from the Client service's managed library.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileTraceSnapshot {
+    pub id: String,
+    pub path: PathBuf,
+    pub available: bool,
+    pub added_unix_ms: u64,
+    pub workspace: Option<PathBuf>,
+    pub session_id: Option<String>,
+    pub configuration: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileReportSnapshot {
+    pub trace: PathBuf,
+    pub self_time: bool,
+    pub occurrence_count: usize,
+    pub zone_count: usize,
+    pub zones: Vec<ProfileZoneSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileZoneSnapshot {
+    pub name: String,
+    pub source: String,
+    pub line: u32,
+    pub threads: Vec<u64>,
+    pub count: usize,
+    pub total_ns: u64,
+    pub mean_ns: u64,
+    pub median_ns: u64,
+    pub p90_ns: u64,
+    pub p95_ns: u64,
+    pub p99_ns: u64,
+    pub max_ns: u64,
+}
+
+impl ProfileTraceSnapshot {
+    pub fn display_name(&self) -> String {
+        self.path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&self.id)
+            .to_owned()
+    }
 }
 
 /// Service-owned view of the canonical source container. This is independent
@@ -102,9 +165,32 @@ pub struct RootPublishingSnapshot {
     pub steamcmd: String,
     pub package_root: String,
     pub copied_files: usize,
+    #[serde(default)]
+    pub fingerprint: String,
     pub included_roots: Vec<String>,
     pub status: Option<String>,
     pub succeeded: bool,
+}
+
+/// Service-owned review or outcome for the split-depot application release.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplicationReleaseSnapshot {
+    pub review_id: String,
+    pub planned: bool,
+    pub app_id: u32,
+    pub depot_ids: Vec<u32>,
+    pub runtime_targets: Vec<String>,
+    pub branch: String,
+    pub account: String,
+    pub description: String,
+    #[serde(default)]
+    pub release_build_validated: bool,
+    pub package_root: String,
+    pub build_script: String,
+    pub files: usize,
+    pub fingerprint: String,
+    pub succeeded: bool,
+    pub status: Option<String>,
 }
 
 /// Read-only view of the latest Workshop query and the account's subscriptions.
@@ -122,6 +208,20 @@ pub struct WorkshopSnapshot {
     pub acquisition: Option<WorkshopAcquisitionBatchSnapshot>,
     #[serde(default)]
     pub review: Option<WorkshopReviewSnapshot>,
+    #[serde(default)]
+    pub batch_review: Option<WorkshopBatchReviewSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkshopBatchReviewSnapshot {
+    pub review_id: String,
+    pub items: Vec<WorkshopReviewItemSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkshopReviewItemSnapshot {
+    pub selector: String,
+    pub preview: WorkshopPackagePreviewSnapshot,
 }
 
 /// Service-issued review token paired with the exact staged artifact facts.
@@ -427,6 +527,16 @@ pub enum AuthoringResultKind {
         #[serde(default)]
         summary: String,
     },
+    ContentPackaged {
+        id: String,
+        root: String,
+        target: String,
+        fingerprint: String,
+        files: u64,
+        bytes: u64,
+        dry_run: bool,
+        receipt: Option<String>,
+    },
     ContentCreated {
         workspace_root: String,
         manifest: String,
@@ -437,6 +547,36 @@ pub enum AuthoringResultKind {
         root: String,
         files: Vec<String>,
     },
+    SourceWorkspaceCreated {
+        root: String,
+        workspace_id: String,
+        packagepack_id: String,
+        files: Vec<String>,
+    },
+    SourceMetadataRepaired {
+        write_changes: bool,
+        actions: Vec<SourceMetadataRepairAction>,
+    },
+}
+
+/// A single authored dependency Workshop ID repair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceMetadataRepairAction {
+    pub manifest: String,
+    pub section: String,
+    pub reference_id: String,
+    pub workshop_id: String,
+}
+
+/// Development run currently observed by the shared Client service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevelopmentSessionSnapshot {
+    pub id: String,
+    pub configuration: String,
+    pub workspace: String,
+    pub address: String,
+    pub state: String,
+    pub profiling: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -487,11 +627,19 @@ pub enum OperationStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", content = "payload", rename_all = "kebab-case")]
 pub enum ClientEvent {
-    ServiceReady { protocol_version: u16 },
+    ServiceReady {
+        protocol_version: u16,
+    },
     Snapshot(Box<ClientSnapshot>),
     OperationChanged(OperationEvent),
     WorkspaceFileResult(Box<WorkspaceFileResult>),
     AuthoringResult(Box<AuthoringResult>),
+    DevelopmentSessionChanged {
+        session: Option<DevelopmentSessionSnapshot>,
+        status: String,
+    },
+    Telemetry(vapor_telemetry::TelemetryEvent),
+    ProfileAnalysis(Result<ProfileReportSnapshot, String>),
     ServiceStopping,
     ProtocolError(crate::ServiceError),
 }

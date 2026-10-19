@@ -1,78 +1,106 @@
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
-use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::Duration;
-use vapor_core::{
-    DeveloperEnvironment, ProfileReport, ProfileReportOptions, ProfileSort, ProfileTraceRecord,
-    analyze_profile_trace, import_profile_trace, list_profile_traces,
+use vapor_client_protocol::{
+    DeveloperAction, ProfileAnalysisOptions, ProfileReportSnapshot, ProfileTraceSnapshot,
+    ProfileTraceSort,
 };
 
 use crate::model::{DevtoolsMessage, DevtoolsState, MetricSeries, format_metric, metric_label};
 
 pub struct DevtoolsApp {
-    receiver: Receiver<DevtoolsMessage>,
     state: DevtoolsState,
-    traces: Vec<ProfileTraceRecord>,
+    traces: Vec<ProfileTraceSnapshot>,
+    pending_profile_actions: Vec<DeveloperAction>,
     trace_filter: String,
     selected_trace: Option<String>,
     metric_filter: String,
     selected_metric: Option<String>,
-    report: Option<ProfileReport>,
+    report: Option<ProfileReportSnapshot>,
     selected_zone: Option<usize>,
-    analysis_receiver: Option<Receiver<Result<ProfileReport, String>>>,
     analysis_busy: bool,
     report_top: usize,
-    report_sort: ProfileSort,
+    report_sort: ProfileTraceSort,
     report_self_time: bool,
     report_filter: String,
     status: String,
+    open_profiler_requested: bool,
     configured_style: bool,
 }
 
 impl DevtoolsApp {
-    pub(crate) fn new(receiver: Receiver<DevtoolsMessage>) -> Self {
+    pub fn new() -> Self {
         Self {
-            receiver,
             state: DevtoolsState::default(),
-            traces: list_profile_traces().unwrap_or_default(),
+            traces: Vec::new(),
+            pending_profile_actions: Vec::new(),
             trace_filter: String::new(),
             selected_trace: None,
             metric_filter: String::new(),
             selected_metric: None,
             report: None,
             selected_zone: None,
-            analysis_receiver: None,
             analysis_busy: false,
             report_top: 50,
-            report_sort: ProfileSort::P95,
+            report_sort: ProfileTraceSort::P95,
             report_self_time: false,
             report_filter: String::new(),
             status: String::new(),
+            open_profiler_requested: false,
             configured_style: false,
         }
     }
 
-    fn drain(&mut self) {
-        while let Ok(message) = self.receiver.try_recv() {
-            self.state.ingest(message);
-        }
-        let finished = self
-            .analysis_receiver
-            .as_ref()
-            .and_then(|receiver| receiver.try_recv().ok());
-        if let Some(result) = finished {
-            self.analysis_receiver = None;
-            self.analysis_busy = false;
-            match result {
-                Ok(report) => {
-                    self.report = Some(report);
-                    self.selected_zone = None;
-                    self.status.clear();
+    /// Apply one event delivered by Vapor Client IPC.
+    pub fn ingest(&mut self, message: DevtoolsMessage) {
+        match message {
+            DevtoolsMessage::ProfileAnalysis(result) => {
+                self.analysis_busy = false;
+                match result {
+                    Ok(report) => {
+                        self.report = Some(report);
+                        self.selected_zone = None;
+                        self.status.clear();
+                    }
+                    Err(error) => self.status = error,
                 }
-                Err(error) => self.status = error,
             }
+            message => self.state.ingest(message),
         }
+    }
+
+    /// Take a request to open the managed profiler through the host service.
+    pub fn take_open_profiler_request(&mut self) -> bool {
+        std::mem::take(&mut self.open_profiler_requested)
+    }
+
+    /// Show the result of a host-service action in the diagnostics panel.
+    pub fn set_status(&mut self, status: impl Into<String>) {
+        self.status = status.into();
+    }
+
+    /// Replace the saved captures projected by the Client service.
+    pub fn set_profile_traces(&mut self, traces: Vec<ProfileTraceSnapshot>) {
+        self.traces = traces;
+        if self
+            .selected_trace
+            .as_ref()
+            .is_some_and(|id| !self.traces.iter().any(|trace| &trace.id == id))
+        {
+            self.selected_trace = None;
+            self.report = None;
+        }
+    }
+
+    /// Drain trace-library requests for the owning Client service connection.
+    pub fn take_profile_actions(&mut self) -> Vec<DeveloperAction> {
+        std::mem::take(&mut self.pending_profile_actions)
+    }
+
+    /// Clear the busy state when the service rejects an analysis request.
+    pub fn profile_action_failed(&mut self, message: impl Into<String>) {
+        self.analysis_busy = false;
+        self.status = message.into();
     }
 
     fn configure_style(&mut self, ctx: &egui::Context) {
@@ -95,19 +123,14 @@ impl DevtoolsApp {
             if path.extension().and_then(|value| value.to_str()) != Some("tracy") {
                 continue;
             }
-            match import_profile_trace(path) {
-                Ok(record) => {
-                    self.status = format!("Added {}", record.path.display());
-                    self.traces = list_profile_traces().unwrap_or_default();
-                    self.selected_trace = Some(record.id);
-                    self.report = None;
-                }
-                Err(error) => self.status = error.to_string(),
-            }
+            self.pending_profile_actions
+                .push(DeveloperAction::ImportProfileTrace {
+                    path: path.display().to_string(),
+                });
         }
     }
 
-    fn selected_trace_record(&self) -> Option<ProfileTraceRecord> {
+    fn selected_trace_record(&self) -> Option<ProfileTraceSnapshot> {
         let id = self.selected_trace.as_deref()?;
         self.traces.iter().find(|trace| trace.id == id).cloned()
     }
@@ -130,15 +153,11 @@ impl DevtoolsApp {
             }
             ui.separator();
             if ui.button("Open Tracy").clicked() {
-                match DeveloperEnvironment::discover()
-                    .and_then(|environment| environment.launch_tracy())
-                {
-                    Ok(()) => self.status = "Opened Tracy collector.".to_owned(),
-                    Err(error) => self.status = error.to_string(),
-                }
+                self.open_profiler_requested = true;
             }
             if ui.button("Refresh traces").clicked() {
-                self.traces = list_profile_traces().unwrap_or_default();
+                self.pending_profile_actions
+                    .push(DeveloperAction::RefreshProfileTraces);
             }
         });
         if let Some(session) = &self.state.session {
@@ -180,7 +199,7 @@ impl DevtoolsApp {
                     if let Some(configuration) = &trace.configuration {
                         label.push_str(&format!("  ·  {configuration}"));
                     }
-                    if !trace.exists() {
+                    if !trace.available {
                         label.push_str("  ·  MISSING");
                     }
                     if ui.selectable_label(selected, label).clicked() {
@@ -274,7 +293,7 @@ impl DevtoolsApp {
         );
     }
 
-    fn draw_trace(&mut self, ui: &mut egui::Ui, trace: &ProfileTraceRecord) {
+    fn draw_trace(&mut self, ui: &mut egui::Ui, trace: &ProfileTraceSnapshot) {
         ui.horizontal_wrapped(|ui| {
             ui.heading(trace.display_name());
             ui.weak(trace.path.display().to_string());
@@ -287,13 +306,13 @@ impl DevtoolsApp {
                 .selected_text(sort_label(self.report_sort))
                 .show_ui(ui, |ui| {
                     for sort in [
-                        ProfileSort::P95,
-                        ProfileSort::P99,
-                        ProfileSort::Median,
-                        ProfileSort::Mean,
-                        ProfileSort::Max,
-                        ProfileSort::Total,
-                        ProfileSort::Count,
+                        ProfileTraceSort::P95,
+                        ProfileTraceSort::P99,
+                        ProfileTraceSort::Median,
+                        ProfileTraceSort::Mean,
+                        ProfileTraceSort::Max,
+                        ProfileTraceSort::Total,
+                        ProfileTraceSort::Count,
                     ] {
                         ui.selectable_value(&mut self.report_sort, sort, sort_label(sort));
                     }
@@ -305,7 +324,7 @@ impl DevtoolsApp {
                 .add_enabled(!self.analysis_busy, egui::Button::new("Analyze"))
                 .clicked()
             {
-                self.start_analysis(trace.clone());
+                self.start_analysis(trace.id.clone());
             }
         });
 
@@ -363,24 +382,19 @@ impl DevtoolsApp {
             });
     }
 
-    fn start_analysis(&mut self, trace: ProfileTraceRecord) {
-        let options = ProfileReportOptions {
+    fn start_analysis(&mut self, trace_id: String) {
+        let options = ProfileAnalysisOptions {
             top: self.report_top,
             sort: self.report_sort,
-            thread_ids: Vec::new(),
-            after_ms: None,
-            before_ms: None,
             name_filter: (!self.report_filter.trim().is_empty())
                 .then(|| self.report_filter.trim().to_owned()),
             self_time: self.report_self_time,
         };
-        let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            let result = analyze_profile_trace(&trace, &options).map_err(|error| error.to_string());
-            let _ = sender.send(result);
-        });
-        self.analysis_receiver = Some(receiver);
+        self.pending_profile_actions
+            .push(DeveloperAction::AnalyzeProfileTrace { trace_id, options });
         self.analysis_busy = true;
+        self.report = None;
+        self.selected_zone = None;
         self.status.clear();
     }
 
@@ -455,6 +469,12 @@ impl DevtoolsApp {
     }
 }
 
+impl Default for DevtoolsApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl eframe::App for DevtoolsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
@@ -465,7 +485,6 @@ impl DevtoolsApp {
     /// Render diagnostics inside an existing eframe application.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.configure_style(ui.ctx());
-        self.drain();
         self.handle_drops(ui.ctx());
         ui.ctx().request_repaint_after(Duration::from_millis(100));
 
@@ -517,16 +536,16 @@ fn stat(ui: &mut egui::Ui, label: &str, value: String) {
     });
 }
 
-fn sort_label(sort: ProfileSort) -> &'static str {
+fn sort_label(sort: ProfileTraceSort) -> &'static str {
     match sort {
-        ProfileSort::Total => "Total",
-        ProfileSort::Count => "Count",
-        ProfileSort::Mean => "Mean",
-        ProfileSort::Median => "Median",
-        ProfileSort::P90 => "P90",
-        ProfileSort::P95 => "P95",
-        ProfileSort::P99 => "P99",
-        ProfileSort::Max => "Max",
+        ProfileTraceSort::Total => "Total",
+        ProfileTraceSort::Count => "Count",
+        ProfileTraceSort::Mean => "Mean",
+        ProfileTraceSort::Median => "Median",
+        ProfileTraceSort::P90 => "P90",
+        ProfileTraceSort::P95 => "P95",
+        ProfileTraceSort::P99 => "P99",
+        ProfileTraceSort::Max => "Max",
     }
 }
 

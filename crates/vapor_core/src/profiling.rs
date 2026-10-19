@@ -238,7 +238,7 @@ pub fn resolve_profile_trace(selector: Option<&str>) -> Result<ProfileTraceRecor
         .find(ProfileTraceRecord::exists)
         .ok_or_else(|| {
             ProfileError::message(
-                "trace library is empty; drag a .tracy file into `vapor devtools` or run `vapor devtools trace import PATH`".to_owned(),
+                "trace library is empty; drag a .tracy file into the Devtools panel in Vapor Studio".to_owned(),
             )
         })
 }

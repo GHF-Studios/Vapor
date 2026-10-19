@@ -1,6 +1,6 @@
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
-use vapor_telemetry::{TelemetryEvent, TelemetryPayload};
+use vapor_client_protocol::{ProfileReportSnapshot, TelemetryEvent, TelemetryPayload};
 
 pub const HISTORY_POINTS: usize = 900;
 const LOG_LINES: usize = 1200;
@@ -17,10 +17,12 @@ pub struct SessionInfo {
 
 #[derive(Debug)]
 pub enum DevtoolsMessage {
-    Waiting(String),
-    Connected(Option<SessionInfo>),
+    Session {
+        session: Option<SessionInfo>,
+        status: String,
+    },
     Event(TelemetryEvent),
-    Disconnected(String),
+    ProfileAnalysis(Result<ProfileReportSnapshot, String>),
 }
 
 #[derive(Debug, Clone)]
@@ -85,13 +87,12 @@ impl Default for DevtoolsState {
 impl DevtoolsState {
     pub fn ingest(&mut self, message: DevtoolsMessage) {
         match message {
-            DevtoolsMessage::Waiting(status) => self.status = status,
-            DevtoolsMessage::Connected(session) => {
-                self.status = "Live".to_owned();
+            DevtoolsMessage::Session { session, status } => {
+                self.status = status;
                 self.session = session;
             }
-            DevtoolsMessage::Disconnected(status) => self.status = status,
             DevtoolsMessage::Event(event) => self.ingest_event(event),
+            DevtoolsMessage::ProfileAnalysis(_) => {}
         }
     }
 

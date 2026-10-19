@@ -9,6 +9,7 @@
 use crate::{
     discovery::EnvironmentPaths,
     manifest::{self, ContentKind, VaporEntity},
+    target::validate_runtime_target,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -290,11 +291,7 @@ fn source_runtime_targets(path: &Path, kind: SourceRootKind) -> Result<Vec<Strin
 fn validate_runtime_targets(path: &Path, targets: Vec<String>) -> Result<Vec<String>, String> {
     let mut seen = HashSet::new();
     for target in &targets {
-        let valid = !target.is_empty()
-            && target.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
-            });
-        if !valid {
+        if validate_runtime_target(target).is_err() {
             return Err(format!(
                 "runtime target must be a Rust target triple such as x86_64-pc-windows-gnullvm in '{}': {target}",
                 path.display()
@@ -409,11 +406,7 @@ fn workspace_binaries(marker: &Path) -> Result<Vec<String>, String> {
 fn workspace_libraries(marker: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
     let policy = read_workspace_policy(marker)?;
     for (target, libraries) in &policy.runtime.libraries {
-        let valid = !target.is_empty()
-            && target.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
-            });
-        if !valid {
+        if validate_runtime_target(target).is_err() {
             return Err(format!(
                 "runtime library target must be a Rust target triple in '{}': {target}",
                 marker.display()

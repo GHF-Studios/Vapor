@@ -1,4 +1,6 @@
 use std::fs;
+use std::hash::Hasher;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::toolchain::toolchain_status;
@@ -84,6 +86,10 @@ impl RootPackageLayout {
     }
 
     fn package(&self, request: &RootPackageRequest) -> Result<RootPackageReport, RootCommandError> {
+        let planned_fingerprint = request
+            .plan
+            .then(|| fingerprint_roots(&self.included_roots))
+            .transpose()?;
         let mut copied_files = 0;
 
         if !request.plan {
@@ -96,6 +102,22 @@ impl RootPackageLayout {
             let target = self.content_root.join(&root.depot_path);
             copied_files += copy_tree(&root.source, &target, request.plan)?;
         }
+
+        let fingerprint = if let Some(fingerprint) = planned_fingerprint {
+            fingerprint
+        } else {
+            let staged_roots = self
+                .included_roots
+                .iter()
+                .map(|root| {
+                    PackageRoot::new(
+                        self.content_root.join(&root.depot_path),
+                        root.depot_path.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            fingerprint_roots(&staged_roots)?
+        };
 
         if !request.plan {
             write_app_build_script(
@@ -125,6 +147,7 @@ impl RootPackageLayout {
                 .map(|root| root.depot_path.clone())
                 .collect(),
             copied_files,
+            fingerprint,
         })
     }
 }
@@ -181,9 +204,31 @@ fn reset_dir(path: &Path) -> Result<(), RootCommandError> {
 }
 
 fn copy_tree(source: &Path, target: &Path, plan: bool) -> Result<usize, RootCommandError> {
+    copy_tree_with_ancestors(source, target, plan, &mut Vec::new())
+}
+
+fn copy_tree_with_ancestors(
+    source: &Path,
+    target: &Path,
+    plan: bool,
+    ancestors: &mut Vec<PathBuf>,
+) -> Result<usize, RootCommandError> {
     let metadata = fs::symlink_metadata(source)?;
 
+    if metadata.file_type().is_symlink() {
+        let resolved = fs::canonicalize(source)?;
+        if ancestors.contains(&resolved) {
+            return Err(RootCommandError::SymlinkCycle(source.to_path_buf()));
+        }
+        return copy_tree_with_ancestors(&resolved, target, plan, ancestors);
+    }
+
     if metadata.is_dir() {
+        let canonical = fs::canonicalize(source)?;
+        if ancestors.contains(&canonical) {
+            return Err(RootCommandError::SymlinkCycle(source.to_path_buf()));
+        }
+        ancestors.push(canonical);
         if !plan {
             fs::create_dir_all(target)?;
         }
@@ -191,13 +236,15 @@ fn copy_tree(source: &Path, target: &Path, plan: bool) -> Result<usize, RootComm
         let mut copied_files = 0;
         for entry in fs::read_dir(source)? {
             let entry = entry?;
-            copied_files += copy_tree(&entry.path(), &target.join(entry.file_name()), plan)?;
+            copied_files += copy_tree_with_ancestors(
+                &entry.path(),
+                &target.join(entry.file_name()),
+                plan,
+                ancestors,
+            )?;
         }
+        ancestors.pop();
         return Ok(copied_files);
-    }
-
-    if metadata.file_type().is_symlink() {
-        return copy_symlink_target(source, target, plan);
     }
 
     if metadata.is_file() {
@@ -213,22 +260,85 @@ fn copy_tree(source: &Path, target: &Path, plan: bool) -> Result<usize, RootComm
     Ok(0)
 }
 
-fn copy_symlink_target(
-    source: &Path,
-    target: &Path,
-    plan: bool,
-) -> Result<usize, RootCommandError> {
-    let link_target = fs::read_link(source)?;
-    let resolved_target = if link_target.is_absolute() {
-        link_target
-    } else {
-        source
-            .parent()
-            .ok_or_else(|| RootCommandError::SymlinkHasNoParent(source.to_path_buf()))?
-            .join(link_target)
-    };
+fn fingerprint_roots(roots: &[PackageRoot]) -> Result<String, RootCommandError> {
+    let mut hash = Fnv64::default();
+    let mut files = 0usize;
+    for root in roots {
+        hash.write(root.depot_path.to_string_lossy().as_bytes());
+        hash.write_u8(0);
+        files += fingerprint_tree(&root.source, &root.depot_path, &mut hash, &mut Vec::new())?;
+    }
+    Ok(format!("fnv1a64:{:016x}:{files}", hash.finish()))
+}
 
-    copy_tree(&resolved_target, target, plan)
+fn fingerprint_tree(
+    source: &Path,
+    package_path: &Path,
+    hash: &mut Fnv64,
+    ancestors: &mut Vec<PathBuf>,
+) -> Result<usize, RootCommandError> {
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        return fingerprint_tree(&fs::canonicalize(source)?, package_path, hash, ancestors);
+    }
+    if metadata.is_dir() {
+        let canonical = fs::canonicalize(source)?;
+        if ancestors.contains(&canonical) {
+            return Err(RootCommandError::SymlinkCycle(source.to_path_buf()));
+        }
+        ancestors.push(canonical);
+        let mut entries = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        let mut files = 0;
+        for entry in entries {
+            files += fingerprint_tree(
+                &entry.path(),
+                &package_path.join(entry.file_name()),
+                hash,
+                ancestors,
+            )?;
+        }
+        ancestors.pop();
+        return Ok(files);
+    }
+    if !metadata.is_file() {
+        return Ok(0);
+    }
+
+    hash.write(package_path.to_string_lossy().as_bytes());
+    hash.write_u8(0);
+    let mut file = fs::File::open(source)?;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hash.write(&buffer[..read]);
+    }
+    hash.write_u8(0xff);
+    Ok(1)
+}
+
+struct Fnv64(u64);
+
+impl Default for Fnv64 {
+    fn default() -> Self {
+        Self(0xcbf29ce484222325)
+    }
+}
+
+impl Hasher for Fnv64 {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x100000001b3);
+        }
+    }
 }
 
 fn write_app_build_script(
@@ -267,5 +377,68 @@ fn activation_script_candidates() -> &'static [&'static str] {
         &ACTIVATION_SCRIPT_WINDOWS
     } else {
         &ACTIVATION_SCRIPT_UNIX
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PackageRoot, fingerprint_roots};
+    use std::{fs, path::PathBuf, time::SystemTime};
+
+    #[test]
+    fn root_review_fingerprint_tracks_package_path_and_file_bytes() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "vapor-root-fingerprint-{}-{unique}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        fs::create_dir_all(source.join("bin")).expect("create test payload");
+        fs::write(source.join("bin/vapor"), b"reviewed executable").expect("write payload");
+        let packages = [PackageRoot::new(source.join("bin"), PathBuf::from("bin"))];
+        let first = fingerprint_roots(&packages).expect("fingerprint package");
+        assert_eq!(
+            first,
+            fingerprint_roots(&packages).expect("repeat fingerprint")
+        );
+
+        fs::write(source.join("bin/vapor"), b"changed executable").expect("change payload");
+        let changed = fingerprint_roots(&packages).expect("fingerprint changed package");
+        assert_ne!(first, changed);
+        fs::remove_dir_all(root).expect("remove test payload");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_package_copy_rejects_recursive_directory_symlinks() {
+        use super::copy_tree;
+        use crate::root::error::RootCommandError;
+        use std::os::unix::fs::symlink;
+
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "vapor-root-symlink-cycle-{}-{unique}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        fs::create_dir_all(source.join("nested")).expect("create source tree");
+        fs::write(source.join("nested/payload"), b"payload").expect("write source file");
+        symlink(&source, source.join("nested/loop")).expect("create recursive directory link");
+
+        let roots = [PackageRoot::new(source.clone(), PathBuf::from("bin"))];
+        assert!(matches!(
+            fingerprint_roots(&roots),
+            Err(RootCommandError::SymlinkCycle(_))
+        ));
+        let result = copy_tree(&source, &root.join("staged"), false);
+        assert!(matches!(result, Err(RootCommandError::SymlinkCycle(_))));
+
+        fs::remove_dir_all(root).expect("remove test package");
     }
 }

@@ -56,6 +56,9 @@ pub struct Progress {
     pub total: Option<u64>,
     /// Human-readable work unit.
     pub unit: String,
+    /// Most recently completed unit of work, when the runner can identify it.
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 /// Serializable event emitted by the shared operation runner.

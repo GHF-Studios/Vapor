@@ -15,7 +15,8 @@ pub enum RootCommandError {
     InvalidDepotId(u32),
     DefaultBranchCannotBeSetLive,
     MissingPackageInput(PathBuf),
-    SymlinkHasNoParent(PathBuf),
+    SymlinkCycle(PathBuf),
+    ReviewedPackageChanged { expected: String, actual: String },
 }
 
 impl From<ToolchainStatusError> for RootCommandError {
@@ -62,13 +63,13 @@ impl fmt::Display for RootCommandError {
                     path.display()
                 )
             }
-            Self::SymlinkHasNoParent(path) => {
-                write!(
-                    formatter,
-                    "symlink path has no parent: `{}`",
-                    path.display()
-                )
+            Self::SymlinkCycle(path) => {
+                write!(formatter, "symlink cycle reaches '{}'", path.display())
             }
+            Self::ReviewedPackageChanged { expected, actual } => write!(
+                formatter,
+                "root package changed after review (expected {expected}, got {actual}); review and confirm it again"
+            ),
         }
     }
 }
@@ -83,7 +84,8 @@ impl Error for RootCommandError {
             | Self::InvalidDepotId(_)
             | Self::DefaultBranchCannotBeSetLive
             | Self::MissingPackageInput(_)
-            | Self::SymlinkHasNoParent(_) => None,
+            | Self::SymlinkCycle(_)
+            | Self::ReviewedPackageChanged { .. } => None,
         }
     }
 }

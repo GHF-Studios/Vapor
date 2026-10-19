@@ -21,3 +21,4 @@ vapor_client_domain = { path = "../vapor_client_domain" }
 vapor_client_protocol = { path = "../vapor_client_protocol" }
 vapor_core = { path = "../vapor_core" }
 vapor_sdk_core = { path = "../vapor_sdk_core" }
+vapor_telemetry = { path = "../vapor_telemetry" }

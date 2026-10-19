@@ -23,11 +23,21 @@ pub(crate) struct BasicContentInit {
 #[derive(Debug, Clone)]
 pub(crate) struct InitReport {
     root: PathBuf,
+    workspace_id: String,
+    packagepack_id: String,
 }
 
 impl InitReport {
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(crate) fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    pub(crate) fn packagepack_id(&self) -> &str {
+        &self.packagepack_id
     }
 }
 
@@ -345,7 +355,11 @@ change-note = "Initial Vapor content upload."
         ),
     )?;
 
-    Ok(InitReport { root: options.path })
+    Ok(InitReport {
+        root: options.path,
+        workspace_id,
+        packagepack_id,
+    })
 }
 
 fn write_package_manifest(

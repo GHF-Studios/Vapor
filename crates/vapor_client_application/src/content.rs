@@ -1,8 +1,22 @@
 use std::path::{Path, PathBuf};
+use vapor_client_domain::LibraryAction;
 use vapor_client_provider::{
     content,
     discovery::{EnvironmentPaths, InstallationPaths},
 };
+
+/// Stage or preview one authored artifact package through Vapor's content provider.
+pub fn package_authored_content(
+    application_executable: &Path,
+    workspace_root: &Path,
+    selector: &str,
+    target_triples: &[String],
+    dry_run: bool,
+) -> Result<content::PackageReport, String> {
+    let installation = InstallationPaths::from_application_executable(application_executable)?;
+    let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
+    content::package_for_targets(&paths, selector, dry_run, target_triples)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstallationCheck {
@@ -40,6 +54,141 @@ pub struct CompositionRunResult {
     pub composition: InstalledComposition,
     pub composition_graph_matches: bool,
     pub launch_error: Option<String>,
+}
+
+/// Execute one explicit Library lifecycle operation through Vapor's shared
+/// provider and return a concise user-facing summary.
+pub fn run_library_operation(
+    application_executable: &Path,
+    workspace_root: Option<&Path>,
+    action: &LibraryAction,
+) -> Result<String, String> {
+    let installation = InstallationPaths::from_application_executable(application_executable)?;
+    let needs_source = matches!(
+        action,
+        LibraryAction::Install { .. }
+            | LibraryAction::Acquire { .. }
+            | LibraryAction::ValidateArtifacts { .. }
+            | LibraryAction::Update { .. }
+            | LibraryAction::Repair { .. }
+    );
+    let paths = if needs_source {
+        workspace_root
+            .map(|root| {
+                EnvironmentPaths::from_installation_and_source_path(installation.clone(), root)
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    match action {
+        LibraryAction::Install {
+            selector,
+            account,
+            target_triples,
+            ..
+        } => {
+            let reports = content::install_with_account_for_targets(
+                &installation,
+                paths.as_ref(),
+                selector,
+                account.as_deref(),
+                target_triples,
+            )?;
+            Ok(format_install_summary("Installed", &reports))
+        }
+        LibraryAction::Acquire { selectors, .. } => {
+            let reports = content::download_many(&installation, paths.as_ref(), selectors, None)?;
+            let identities = reports
+                .iter()
+                .map(|report| report.artifact_id())
+                .collect::<Vec<_>>();
+            Ok(format!("Added {} to the Library.", identities.join(", ")))
+        }
+        LibraryAction::ValidateArtifacts { selector, .. } => {
+            let paths = paths
+                .as_ref()
+                .ok_or("Open a source workspace before validating content.")?;
+            let report = content::validate(paths, selector.as_deref())?;
+            let checked = report.checked().join(", ");
+            let diagnostics = if report.diagnostics().is_empty() {
+                String::new()
+            } else {
+                format!("\n{}", report.diagnostics().join("\n"))
+            };
+            Ok(format!(
+                "Validated {} content item(s): {checked}.{diagnostics}",
+                report.checked().len()
+            ))
+        }
+        LibraryAction::Update { selector, .. } => {
+            let reports = content::update(&installation, paths.as_ref(), selector.as_deref())?;
+            Ok(format_install_summary("Updated", &reports))
+        }
+        LibraryAction::Verify { selector } => {
+            let reports = content::verify(&installation, selector.as_deref())?;
+            if reports.is_empty() {
+                return Ok("No installed content to verify.".to_owned());
+            }
+            Ok(reports
+                .iter()
+                .map(|report| {
+                    format!(
+                        "{}: {} ({})",
+                        report.artifact_id(),
+                        if report.ok() { "verified" } else { "corrupt" },
+                        report.detail()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+        LibraryAction::Repair { selector, .. } => {
+            let reports = content::repair(&installation, paths.as_ref(), selector.as_deref())?;
+            if reports.is_empty() {
+                Ok("All checked content is already verified.".to_owned())
+            } else {
+                Ok(format_install_summary("Repaired", &reports))
+            }
+        }
+        LibraryAction::Disable { selector } => {
+            let report = content::disable(&installation, selector)?;
+            Ok(format!("Disabled {}.", report.artifact_id()))
+        }
+        LibraryAction::Enable { selector } => {
+            let report = content::enable(&installation, selector)?;
+            Ok(format!("Enabled {}.", report.artifact_id()))
+        }
+        LibraryAction::Uninstall { selector } => {
+            let report = content::uninstall(&installation, selector)?;
+            Ok(format!(
+                "Uninstalled {}{}.",
+                report.artifact_id(),
+                if report.removed() {
+                    ""
+                } else {
+                    " (no local files were present)"
+                }
+            ))
+        }
+        LibraryAction::SetAutoInstall { .. } => {
+            Err("Auto-Install policy changes are handled by the client state service.".to_owned())
+        }
+    }
+}
+
+fn format_install_summary(action: &str, reports: &[content::InstallReport]) -> String {
+    if reports.is_empty() {
+        return format!("{action} no content.");
+    }
+    let identities = reports
+        .iter()
+        .map(|report| match report.version() {
+            Some(version) => format!("{}@{version}", report.artifact_id()),
+            None => report.artifact_id().to_owned(),
+        })
+        .collect::<Vec<_>>();
+    format!("{action} {}.", identities.join(", "))
 }
 
 /// Compatibility aliases to the shared application install-plan contract.

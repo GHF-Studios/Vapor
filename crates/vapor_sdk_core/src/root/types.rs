@@ -51,6 +51,9 @@ pub struct RootPublishRequest {
     /// Optional beta branch to set live after upload. Steam does not allow
     /// automatically setting the default branch live from the build script.
     pub set_live: Option<String>,
+    /// Expected source-package fingerprint captured during review.
+    /// Publication aborts if the install payload changed after review.
+    pub expected_fingerprint: Option<String>,
 }
 
 /// Report for root package assembly.
@@ -70,6 +73,8 @@ pub struct RootPackageReport {
     pub app_build_script: PathBuf,
     pub included_roots: Vec<PathBuf>,
     pub copied_files: usize,
+    /// Stable fingerprint of the exact files selected for this package.
+    pub fingerprint: String,
 }
 
 /// Report for a SteamCMD root publish attempt.

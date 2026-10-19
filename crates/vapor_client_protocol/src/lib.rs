@@ -15,7 +15,7 @@ pub use catalog::{CatalogQuery, CatalogSearchSnapshot, CatalogStatus};
 pub use action::{
     AuthoringAction, CatalogAction, ClientAction, CompositionAction, CompositionDependency,
     DeveloperAction, LibraryAction, PublishingAction, SessionAction, WorkshopAction,
-    WorkshopMetadataDraft, WorkspaceAction,
+    WorkshopMetadataDraft, WorkspaceAction, WorkspaceProjectSelection, WorkspaceToolOperation,
 };
 pub use composition::{
     COMPOSITION_SCHEMA_VERSION, Composition, CompositionDocument, ContentReference,
@@ -23,22 +23,29 @@ pub use composition::{
     ResolvedCompositionGraph, ResolvedDependencyIdentity, ResolvedNodeIdentity,
     WorkspaceAssociation,
 };
-pub use vapor_client_domain::{ClientStateDocument, LibraryItemPolicy};
+pub use vapor_client_domain::{
+    ClientStateDocument, ContentKind, LibraryItemPolicy, ProfileAnalysisOptions, ProfileTraceSort,
+    dependent_composition_id,
+};
+pub use vapor_telemetry::{TelemetryEvent, TelemetryPayload};
 
 pub use message::{
     ClientRequest, ClientResponse, ClientResponseKind, PROTOCOL_VERSION, ProtocolFrame, RequestId,
     ServiceError, ServiceErrorCode,
 };
 pub use state::{
-    AuthoringCompositionLink, AuthoringResult, AuthoringResultKind, AvailableAction,
-    AvailableSuperworkspaceRepositorySnapshot, CatalogConflict, CatalogEntry, CatalogItemAction,
-    CatalogItemRole, CatalogLocation, CatalogLocationKind, ClientEvent, ClientRevision,
-    ClientSnapshot, CompositionPreviewDependency, CompositionPreviewNode,
-    CompositionPreviewSnapshot, CompositionPreviewSource, DurableStateSnapshot, HostSummary,
-    OperationEvent, OperationPhase, OperationStatus, OperationSummary, RootPublishingSnapshot,
+    ApplicationReleaseSnapshot, AuthoringCompositionLink, AuthoringResult, AuthoringResultKind,
+    AvailableAction, AvailableSuperworkspaceRepositorySnapshot, CatalogConflict, CatalogEntry,
+    CatalogItemAction, CatalogItemRole, CatalogLocation, CatalogLocationKind, ClientEvent,
+    ClientRevision, ClientSnapshot, CompositionPreviewDependency, CompositionPreviewNode,
+    CompositionPreviewSnapshot, CompositionPreviewSource, DevelopmentSessionSnapshot,
+    DurableStateSnapshot, HostSummary, OperationEvent, OperationPhase, OperationStatus,
+    OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot, ProfileZoneSnapshot,
+    RootDistributionIdentitySnapshot, RootPublishingSnapshot, SourceMetadataRepairAction,
     SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot, WorkshopAcquisitionBatchSnapshot,
-    WorkshopAcquisitionSnapshot, WorkshopItemSnapshot, WorkshopPackagePreviewSnapshot,
-    WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
+    WorkshopAcquisitionSnapshot, WorkshopBatchReviewSnapshot, WorkshopItemSnapshot,
+    WorkshopPackagePreviewSnapshot, WorkshopReviewItemSnapshot, WorkshopReviewSnapshot,
+    WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
     WorkspaceContentSnapshot, WorkspaceFileResult, WorkspaceProjectCandidate,
     WorkspaceSourceProject, WorkspaceWorkshopPolicy,
 };
@@ -103,6 +110,43 @@ mod tests {
                 editor_drafts: Some("{}".into()),
                 operation_history: Some("[]".into()),
             }),
+            ClientAction::Library(LibraryAction::Install {
+                selector: "moon@1.0.0".into(),
+                account: None,
+                workspace_root: None,
+                target_triples: vec![
+                    "x86_64-unknown-linux-gnu".into(),
+                    "x86_64-pc-windows-msvc".into(),
+                ],
+            }),
+            ClientAction::Library(LibraryAction::Acquire {
+                selectors: vec!["moon@1.0.0".into(), "mars-addon".into()],
+                workspace_root: Some("/workspace/content".into()),
+            }),
+            ClientAction::Library(LibraryAction::ValidateArtifacts {
+                selector: Some("moon@1.0.0".into()),
+                workspace_root: Some("/workspace/content".into()),
+            }),
+            ClientAction::Library(LibraryAction::Update {
+                selector: None,
+                workspace_root: None,
+            }),
+            ClientAction::Library(LibraryAction::Verify {
+                selector: Some("moon".into()),
+            }),
+            ClientAction::Library(LibraryAction::Repair {
+                selector: None,
+                workspace_root: None,
+            }),
+            ClientAction::Library(LibraryAction::Disable {
+                selector: "moon".into(),
+            }),
+            ClientAction::Library(LibraryAction::Enable {
+                selector: "moon".into(),
+            }),
+            ClientAction::Library(LibraryAction::Uninstall {
+                selector: "moon".into(),
+            }),
             ClientAction::Catalog(CatalogAction::Refresh),
             ClientAction::Catalog(CatalogAction::DiscoverContentProjects),
             ClientAction::Catalog(CatalogAction::Search {
@@ -141,6 +185,14 @@ mod tests {
             ClientAction::Workspace(WorkspaceAction::DiscoverWorkspace { root: ".".into() }),
             ClientAction::Workspace(WorkspaceAction::Open { root: ".".into() }),
             ClientAction::Workspace(WorkspaceAction::Validate),
+            ClientAction::Workspace(WorkspaceAction::RunTool {
+                operation: vapor_client_domain::WorkspaceToolOperation::Build,
+                project_selection: vapor_client_domain::WorkspaceProjectSelection::Installable,
+                target_triples: vec!["x86_64-unknown-linux-gnu".into()],
+            }),
+            ClientAction::Workspace(WorkspaceAction::Clean {
+                confirmed_workspace_root: "/tmp/workspace".into(),
+            }),
             ClientAction::Workspace(WorkspaceAction::Remember),
             ClientAction::Workspace(WorkspaceAction::Create {
                 root: "/tmp".into(),
@@ -169,6 +221,16 @@ mod tests {
                 project_id: "moon".into(),
             }),
             ClientAction::Authoring(AuthoringAction::ListRegisteredSources),
+            ClientAction::Authoring(AuthoringAction::RememberSource {
+                root: "/workspace".into(),
+            }),
+            ClientAction::Authoring(AuthoringAction::OpenSource {
+                root: "/workspace".into(),
+            }),
+            ClientAction::Authoring(AuthoringAction::ForgetSource {
+                root: "/workspace".into(),
+            }),
+            ClientAction::Authoring(AuthoringAction::CloseSource),
             ClientAction::Authoring(AuthoringAction::SaveComposition {
                 project_id: "moon".into(),
                 expected_fingerprint: "abc".into(),
@@ -193,6 +255,11 @@ mod tests {
             }),
             ClientAction::Authoring(AuthoringAction::ValidateContent {
                 project_id: "moon".into(),
+            }),
+            ClientAction::Authoring(AuthoringAction::PackageContent {
+                selector: "moon".into(),
+                target_triples: vec!["x86_64-unknown-linux-gnu".into()],
+                dry_run: true,
             }),
             ClientAction::Authoring(AuthoringAction::SaveRuntimeOutputs {
                 project_id: "moon".into(),
@@ -219,6 +286,16 @@ mod tests {
                 organization: "ghf".into(),
                 name: "Demo".into(),
             }),
+            ClientAction::Authoring(AuthoringAction::InitializeSourceWorkspace {
+                path: "/tmp/Demo".into(),
+                organization: "ghf".into(),
+                name: "Demo".into(),
+                app_id: None,
+            }),
+            ClientAction::Authoring(AuthoringAction::RepairSourceMetadata {
+                workspace_root: "/workspace".into(),
+                write_changes: false,
+            }),
             ClientAction::Workshop(WorkshopAction::Search {
                 query: "moon".into(),
                 page: 1,
@@ -235,6 +312,11 @@ mod tests {
             }),
             ClientAction::Workshop(WorkshopAction::Stage {
                 selector: "moon@1.0.0".into(),
+                target_triples: Vec::new(),
+            }),
+            ClientAction::Workshop(WorkshopAction::StageBatch {
+                selectors: vec!["moon@1.0.0".into(), "engine@1.0.0".into()],
+                target_triples: Vec::new(),
             }),
             ClientAction::Workshop(WorkshopAction::Publish {
                 review_id: "review-1".into(),
@@ -242,18 +324,50 @@ mod tests {
                 confirmation: "confirm".into(),
                 change_note: "Updated content".into(),
             }),
+            ClientAction::Workshop(WorkshopAction::PublishBatch {
+                review_id: "batch-review".into(),
+                account: "publisher".into(),
+                confirmation: "PUBLISH 2 ITEMS TO publisher".into(),
+                change_note: "Batch update".into(),
+            }),
             ClientAction::Workshop(WorkshopAction::DiscardReview),
             ClientAction::Publishing(PublishingAction::StageRoot {
                 account: "publisher".into(),
                 description: "release".into(),
                 set_live: None,
             }),
+            ClientAction::Publishing(PublishingAction::StageApplication {
+                account: "publisher".into(),
+                branch: Some("vapor-dev".into()),
+                description: "release".into(),
+                runtime_targets: vec!["x86_64-unknown-linux-gnu".into()],
+                build_release: true,
+            }),
             ClientAction::Publishing(PublishingAction::PublishRoot {
                 review_id: "root-review".into(),
                 confirmation: "confirm".into(),
             }),
+            ClientAction::Publishing(PublishingAction::PublishApplication {
+                review_id: "application-review".into(),
+                confirmation: "PUBLISH APPLICATION 2122620 TO vapor-dev".into(),
+            }),
             ClientAction::Publishing(PublishingAction::DiscardRootReview),
             ClientAction::Developer(DeveloperAction::Format),
+            ClientAction::Developer(DeveloperAction::SubscribeTelemetry { enabled: true }),
+            ClientAction::Developer(DeveloperAction::OpenProfiler),
+            ClientAction::Developer(DeveloperAction::RefreshProfileTraces),
+            ClientAction::Developer(DeveloperAction::ImportProfileTrace {
+                path: "/captures/run.tracy".into(),
+            }),
+            ClientAction::Developer(DeveloperAction::AnalyzeProfileTrace {
+                trace_id: "trace-1".into(),
+                options: ProfileAnalysisOptions {
+                    top: 25,
+                    sort: ProfileTraceSort::P95,
+                    name_filter: Some("frame".into()),
+                    self_time: true,
+                },
+            }),
             ClientAction::Developer(DeveloperAction::Check),
             ClientAction::Developer(DeveloperAction::Test),
             ClientAction::Developer(DeveloperAction::Build),
@@ -263,7 +377,7 @@ mod tests {
         ];
         assert_eq!(
             actions.len(),
-            62,
+            89,
             "update this catalog when adding/removing action variants"
         );
         for action in actions {
@@ -290,6 +404,45 @@ mod tests {
             expected_revision: Some(ClientRevision(3)),
             action: ClientAction::Catalog(CatalogAction::Refresh),
         });
+        assert_round_trip(ClientEvent::DevelopmentSessionChanged {
+            session: Some(DevelopmentSessionSnapshot {
+                id: "run-1".into(),
+                configuration: "default".into(),
+                workspace: "/workspace".into(),
+                address: "127.0.0.1:12345".into(),
+                state: "running".into(),
+                profiling: true,
+            }),
+            status: "Live".into(),
+        });
+        assert_round_trip(ClientEvent::Telemetry(
+            vapor_telemetry::TelemetryEvent::new(
+                "engine",
+                vapor_telemetry::TelemetryPayload::Metrics {
+                    values: std::collections::BTreeMap::from([("frame.fps".into(), 60.0)]),
+                },
+            ),
+        ));
+        assert_round_trip(ClientEvent::ProfileAnalysis(Ok(ProfileReportSnapshot {
+            trace: "/captures/run.tracy".into(),
+            self_time: false,
+            occurrence_count: 1,
+            zone_count: 1,
+            zones: vec![ProfileZoneSnapshot {
+                name: "frame".into(),
+                source: "src/main.rs".into(),
+                line: 12,
+                threads: vec![1],
+                count: 1,
+                total_ns: 42,
+                mean_ns: 42,
+                median_ns: 42,
+                p90_ns: 42,
+                p95_ns: 42,
+                p99_ns: 42,
+                max_ns: 42,
+            }],
+        })));
         assert_round_trip(ClientEvent::WorkspaceFileResult(Box::new(
             WorkspaceFileResult::Opened {
                 operation_id: "operation-1".into(),
@@ -330,6 +483,40 @@ mod tests {
                 },
             },
         })));
+        assert_round_trip(ClientEvent::AuthoringResult(Box::new(AuthoringResult {
+            operation_id: "operation-5".into(),
+            result: AuthoringResultKind::ContentPackaged {
+                id: "ghf.example.mod".into(),
+                root: "/app/output/packages/ghf.example.mod".into(),
+                target: "x86_64-unknown-linux-gnu".into(),
+                fingerprint: "sha256:abc123".into(),
+                files: 3,
+                bytes: 8192,
+                dry_run: false,
+                receipt: Some("/app/output/receipts/package.json".into()),
+            },
+        })));
+        assert_round_trip(ClientEvent::AuthoringResult(Box::new(AuthoringResult {
+            operation_id: "operation-6".into(),
+            result: AuthoringResultKind::SourceWorkspaceCreated {
+                root: "/tmp/Demo".into(),
+                workspace_id: "ghf/demo".into(),
+                packagepack_id: "ghf/demo/demo-packagepack".into(),
+                files: vec!["Workspace.vapor.toml".into()],
+            },
+        })));
+        assert_round_trip(ClientEvent::AuthoringResult(Box::new(AuthoringResult {
+            operation_id: "operation-7".into(),
+            result: AuthoringResultKind::SourceMetadataRepaired {
+                write_changes: true,
+                actions: vec![SourceMetadataRepairAction {
+                    manifest: "/workspace/crates/game/Vapor.toml".into(),
+                    section: "game.engine".into(),
+                    reference_id: "ghf/demo/engine".into(),
+                    workshop_id: "123".into(),
+                }],
+            },
+        })));
         assert_round_trip(ClientEvent::Snapshot(Box::new(ClientSnapshot {
             revision: ClientRevision(3),
             host: HostSummary {
@@ -338,6 +525,10 @@ mod tests {
                 mode: "production".into(),
                 platform: "linux".into(),
                 steam_client_available: true,
+            },
+            root_distribution: RootDistributionIdentitySnapshot {
+                app_id: 2_122_620,
+                depot_id: 2_122_621,
             },
             active_composition_id: None,
             durable_state: DurableStateSnapshot::default(),
@@ -404,6 +595,33 @@ mod tests {
             },
             superworkspace: SuperworkspaceSnapshot::default(),
             root_publishing: None,
+            application_release: Some(ApplicationReleaseSnapshot {
+                review_id: "application-review-1".into(),
+                planned: true,
+                app_id: 2122620,
+                depot_ids: vec![2122621, 2122622],
+                runtime_targets: vec!["x86_64-unknown-linux-gnu".into()],
+                branch: "vapor-dev".into(),
+                account: "builder".into(),
+                description: "release candidate".into(),
+                release_build_validated: true,
+                package_root: "/stage/application".into(),
+                build_script: "/stage/app_build.vdf".into(),
+                files: 12,
+                fingerprint: "fnv1a64:1234:12:2048".into(),
+                succeeded: false,
+                status: None,
+            }),
+            profile_traces: vec![ProfileTraceSnapshot {
+                id: "trace-1".into(),
+                path: "/captures/run.tracy".into(),
+                available: true,
+                added_unix_ms: 123,
+                workspace: Some("/workspace".into()),
+                session_id: Some("session-1".into()),
+                configuration: Some("dev".into()),
+            }],
+            profile_trace_error: None,
             workshop: WorkshopSnapshot {
                 search: Some(WorkshopSearchSnapshot {
                     revision: 4,
@@ -462,6 +680,7 @@ mod tests {
                         omitted_file_paths: 2,
                     },
                 }),
+                batch_review: None,
             },
             selected_content_id: None,
             available_actions: vec![AvailableAction {

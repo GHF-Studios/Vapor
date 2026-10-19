@@ -216,6 +216,16 @@ pub fn open_source(
     source_state(installation)
 }
 
+/// Clear the active authoring source without unregistering it.
+pub fn close_source(installation: &VaporInstallation) -> Result<SourceState, SourceError> {
+    let state_path = source_state_path(installation);
+    let mut persisted = load(&state_path)?;
+    if persisted.active.take().is_some() {
+        save(installation, &persisted)?;
+    }
+    source_state(installation)
+}
+
 /// Forget one canonical source root without deleting authored files.
 pub fn forget_source(
     installation: &VaporInstallation,

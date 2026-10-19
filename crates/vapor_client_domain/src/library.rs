@@ -3,11 +3,72 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use vapor_content::VaporId;
 
+/// Whether a cached catalog item can safely use automatic Library updates.
+///
+/// Auto-Install follows Workshop versions, so it requires a cached, unambiguous
+/// runtime artifact with a Workshop identity. Packagepacks and Rust crates use
+/// separate lifecycle workflows and are not eligible.
+pub fn can_auto_install_library_item(
+    kind: &str,
+    has_workshop_item: bool,
+    is_cached: bool,
+    is_unambiguous: bool,
+) -> bool {
+    let Ok(kind) = kind.parse::<vapor_content::ContentKind>() else {
+        return false;
+    };
+    has_workshop_item
+        && is_cached
+        && is_unambiguous
+        && !matches!(
+            kind,
+            vapor_content::ContentKind::Packagepack | vapor_content::ContentKind::Crate
+        )
+}
+
 /// Explicit user intent for automatic Library version following and collection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum LibraryAction {
-    SetAutoInstall { content_id: String, enabled: bool },
+    SetAutoInstall {
+        content_id: String,
+        enabled: bool,
+    },
+    Install {
+        selector: String,
+        account: Option<String>,
+        workspace_root: Option<String>,
+        #[serde(default)]
+        target_triples: Vec<String>,
+    },
+    Acquire {
+        selectors: Vec<String>,
+        workspace_root: Option<String>,
+    },
+    ValidateArtifacts {
+        selector: Option<String>,
+        workspace_root: Option<String>,
+    },
+    Update {
+        selector: Option<String>,
+        workspace_root: Option<String>,
+    },
+    Verify {
+        selector: Option<String>,
+    },
+    Repair {
+        selector: Option<String>,
+        workspace_root: Option<String>,
+    },
+    Disable {
+        selector: String,
+    },
+    Enable {
+        selector: String,
+    },
+    Uninstall {
+        selector: String,
+    },
 }
 
 /// User-owned policy for one non-Packagepack Library item.
@@ -68,6 +129,37 @@ pub fn library_constraints(
         }
     }
     Ok(constraints)
+}
+
+/// Find the first composition whose authored root or resolved graph uses a
+/// Library item. Direct install-state changes must not strand a composition.
+pub fn dependent_composition_id<'a>(
+    compositions: &'a CompositionDocument,
+    content_id: &VaporId,
+) -> Option<&'a str> {
+    let content_id = content_id.as_str();
+    compositions.compositions.iter().find_map(|composition| {
+        let root_matches = composition
+            .root_package
+            .as_ref()
+            .is_some_and(|root| root.id == content_id);
+        let graph_matches = composition.resolved_graph.as_ref().is_some_and(|graph| {
+            graph.root.id == content_id
+                || graph.effective_engine.id == content_id
+                || graph
+                    .effective_game
+                    .as_ref()
+                    .is_some_and(|game| game.id == content_id)
+                || graph.nodes.iter().any(|node| {
+                    node.content.id == content_id
+                        || node
+                            .dependencies
+                            .iter()
+                            .any(|dependency| dependency.content.id == content_id)
+                })
+        });
+        (root_matches || graph_matches).then_some(composition.id.as_str())
+    })
 }
 
 /// Select a version according to the item's Library policy and all active
@@ -146,5 +238,85 @@ pub fn set_library_auto_install(
             auto_install: true,
         });
         policies.sort_by(|left, right| left.content_id.cmp(&right.content_id));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{can_auto_install_library_item, dependent_composition_id};
+    use crate::{
+        Composition, CompositionDocument, ResolvedCompositionGraph, ResolvedDependencyIdentity,
+        ResolvedNodeIdentity,
+    };
+    use vapor_content::ContentReference;
+
+    #[test]
+    fn automatic_updates_require_cached_unambiguous_workshop_runtime_content() {
+        assert!(can_auto_install_library_item("game-mod", true, true, true));
+        assert!(!can_auto_install_library_item(
+            "packagepack",
+            true,
+            true,
+            true
+        ));
+        assert!(!can_auto_install_library_item("crate", true, true, true));
+        assert!(!can_auto_install_library_item(
+            "game-mod", false, true, true
+        ));
+        assert!(!can_auto_install_library_item(
+            "game-mod", true, false, true
+        ));
+        assert!(!can_auto_install_library_item(
+            "game-mod", true, true, false
+        ));
+        assert!(!can_auto_install_library_item("unknown", true, true, true));
+    }
+
+    #[test]
+    fn identifies_composition_root_as_a_library_dependency() {
+        let mut composition = Composition::default_composition();
+        composition.root_package = Some(ContentReference::parse("studio:demo", None).unwrap());
+        let document = CompositionDocument {
+            schema_version: 1,
+            compositions: vec![composition],
+        };
+
+        let demo = "studio:demo".parse().unwrap();
+        let other = "studio:other".parse().unwrap();
+        assert_eq!(dependent_composition_id(&document, &demo), Some("default"));
+        assert_eq!(dependent_composition_id(&document, &other), None);
+    }
+
+    #[test]
+    fn identifies_resolved_transitive_dependency_as_library_dependency() {
+        let mut composition = Composition::default_composition();
+        composition.resolved_graph = Some(ResolvedCompositionGraph {
+            root: ContentReference::parse("studio:root", Some("1.0.0".to_owned())).unwrap(),
+            effective_engine: ContentReference::parse("studio:engine", Some("1.0.0".to_owned()))
+                .unwrap(),
+            effective_game: None,
+            nodes: vec![ResolvedNodeIdentity {
+                content: ContentReference::parse("studio:root", Some("1.0.0".to_owned())).unwrap(),
+                kind: "packagepack".to_owned(),
+                fingerprint: None,
+                source: None,
+                dependencies: vec![ResolvedDependencyIdentity {
+                    binding: "engine".to_owned(),
+                    content: ContentReference::parse("studio:engine", Some("1.0.0".to_owned()))
+                        .unwrap(),
+                    version_requirement: Some("^1".to_owned()),
+                }],
+            }],
+        });
+        let document = CompositionDocument {
+            schema_version: 1,
+            compositions: vec![composition],
+        };
+
+        let engine = "studio:engine".parse().unwrap();
+        assert_eq!(
+            dependent_composition_id(&document, &engine),
+            Some("default")
+        );
     }
 }
