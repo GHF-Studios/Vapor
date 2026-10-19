@@ -144,8 +144,8 @@ pub use role::{
 
 pub use source::{
     ResolvedSourceContext, SourceContextSource, SourceError, SourceState, active_source,
-    configure_superworkspace, forget_source, open_source, remember_source,
-    resolve_source_context, source_state,
+    configure_superworkspace, forget_source, open_source, remember_source, resolve_source_context,
+    source_state,
 };
 
 pub use steam::{

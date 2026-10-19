@@ -1,6 +1,10 @@
 //! Resolved installation context shared by the client and service host.
 
-use std::{collections::HashMap, ffi::OsString, path::{Path, PathBuf}};
+use std::{
+    collections::HashMap,
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPlatform {

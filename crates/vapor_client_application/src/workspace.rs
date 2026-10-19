@@ -35,6 +35,15 @@ pub use vapor_client_provider::content::SourceRuntimeOutputs;
 pub use vapor_client_provider::content::SourceWorkshopMetadata;
 pub use vapor_client_provider::content::WorkshopPolicyDraft;
 
+/// Required and optional dependencies selected while authoring a content project.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ContentDependencyDraft {
+    /// Required dependencies that participate in the default resolved graph.
+    pub required: Vec<String>,
+    /// Optional dependencies available for later explicit selection.
+    pub optional: Vec<String>,
+}
+
 pub use vapor_client_provider::content::{
     CompositionLink as SourceCompositionLink, SourceComposition,
     SourceProjectCandidate as UnregisteredProjectCandidate,
@@ -281,8 +290,10 @@ pub fn create_content_workspace_with_workshop(
         id,
         version,
         kind,
-        dependency_selectors,
-        &[],
+        ContentDependencyDraft {
+            required: dependency_selectors.to_vec(),
+            optional: Vec::new(),
+        },
         workshop,
     )
 }
@@ -294,8 +305,7 @@ pub fn create_content_workspace_with_dependency_policies(
     id: &str,
     version: &str,
     kind: vapor_core::ContentKind,
-    dependency_selectors: &[String],
-    optional_dependency_selectors: &[String],
+    dependencies: ContentDependencyDraft,
     workshop: &WorkshopPolicyDraft,
 ) -> Result<PathBuf, String> {
     let kind = shell_content_kind(kind);
@@ -306,8 +316,8 @@ pub fn create_content_workspace_with_dependency_policies(
         id,
         version,
         kind,
-        dependency_selectors,
-        optional_dependency_selectors,
+        &dependencies.required,
+        &dependencies.optional,
         workshop,
     )
 }

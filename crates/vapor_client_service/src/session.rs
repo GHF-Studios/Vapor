@@ -1,33 +1,34 @@
-use crate::{catalog::CatalogState, host::ClientHostContext, persistence::{ClientPersistentState, ClientStateStore}};
-use vapor_client::ClientHostConfig;
+use crate::{
+    catalog::CatalogState,
+    host::ClientHostContext,
+    persistence::{ClientPersistentState, ClientStateStore},
+};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     thread,
 };
-use vapor_client_protocol::{
-    AuthoringAction, AuthoringCompositionLink, AuthoringResult, AuthoringResultKind,
-    AvailableAction, CatalogAction, CatalogConflict, CatalogEntry, CatalogItemAction,
-    CatalogItemRole, CatalogLocation,
-    LibraryAction,
-    CatalogLocationKind, ClientAction, ClientEvent, ClientRequest, ClientResponse,
-    ClientResponseKind, ClientRevision, ClientSnapshot, Composition, CompositionAction,
-    ContentReference, DurableStateSnapshot, HostSummary, InstallationState, LegacyStorageSeed,
-    OperationEvent, OperationPhase, OperationStatus, OperationSummary, PublishingAction,
-    RootPublishingSnapshot, ServiceError, ServiceErrorCode, SessionAction,
-    WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot, WorkshopAction,
-    WorkshopItemSnapshot, WorkshopMetadataDraft, WorkshopPackagePreviewSnapshot,
-    WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
-    AvailableSuperworkspaceRepositorySnapshot, SuperworkspaceRepositorySnapshot,
-    SuperworkspaceSnapshot, WorkspaceAction,
-    WorkspaceAssociation, WorkspaceContentSnapshot, WorkspaceFileResult,
-    WorkspaceProjectCandidate, WorkspaceSourceProject, WorkspaceWorkshopPolicy,
-};
+use vapor_client::ClientHostConfig;
 use vapor_client_application as application;
 use vapor_client_application::{
     CatalogContent, SourceContent, discover_content_catalog, discover_source_content,
     scan_unregistered_content_projects,
+};
+use vapor_client_protocol::{
+    AuthoringAction, AuthoringCompositionLink, AuthoringResult, AuthoringResultKind,
+    AvailableAction, AvailableSuperworkspaceRepositorySnapshot, CatalogAction, CatalogConflict,
+    CatalogEntry, CatalogItemAction, CatalogItemRole, CatalogLocation, CatalogLocationKind,
+    ClientAction, ClientEvent, ClientRequest, ClientResponse, ClientResponseKind, ClientRevision,
+    ClientSnapshot, Composition, CompositionAction, ContentReference, DurableStateSnapshot,
+    HostSummary, InstallationState, LegacyStorageSeed, LibraryAction, OperationEvent,
+    OperationPhase, OperationStatus, OperationSummary, PublishingAction, RootPublishingSnapshot,
+    ServiceError, ServiceErrorCode, SessionAction, SuperworkspaceRepositorySnapshot,
+    SuperworkspaceSnapshot, WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot,
+    WorkshopAction, WorkshopItemSnapshot, WorkshopMetadataDraft, WorkshopPackagePreviewSnapshot,
+    WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
+    WorkspaceAction, WorkspaceAssociation, WorkspaceContentSnapshot, WorkspaceFileResult,
+    WorkspaceProjectCandidate, WorkspaceSourceProject, WorkspaceWorkshopPolicy,
 };
 
 const MAX_WORKSPACE_PROJECTS: usize = 10_000;
@@ -251,11 +252,14 @@ enum WorkshopOperationResult {
     Subscriptions(Vec<vapor_client_application::WorkshopSubscription>),
     SubscriptionWithAcquisition {
         subscriptions: Vec<vapor_client_application::WorkshopSubscription>,
-        acquisition: Result<(
-            Vec<vapor_client_application::WorkshopAcquisition>,
-            usize,
-            Vec<AutoInstallCompositionUpdate>,
-        ), String>,
+        acquisition: Result<
+            (
+                Vec<vapor_client_application::WorkshopAcquisition>,
+                usize,
+                Vec<AutoInstallCompositionUpdate>,
+            ),
+            String,
+        >,
     },
     Acquisitions {
         items: Vec<vapor_client_application::WorkshopAcquisition>,
@@ -300,7 +304,11 @@ impl ClientSession {
             }
         }
         if bootstrap.workspace_root.is_none() {
-            bootstrap.workspace_root = loaded.state.authoring_workspace_root.as_deref().map(PathBuf::from);
+            bootstrap.workspace_root = loaded
+                .state
+                .authoring_workspace_root
+                .as_deref()
+                .map(PathBuf::from);
         }
         let superworkspace_setup_error = if bootstrap.fixture_mode {
             None
@@ -376,12 +384,18 @@ impl ClientSession {
             AvailableAction {
                 id: "workspace.initialize-superworkspace".to_owned(),
                 enabled: !self.bootstrap.fixture_mode,
-                reason: self.bootstrap.fixture_mode.then(|| "Unavailable in fixture mode.".to_owned()),
+                reason: self
+                    .bootstrap
+                    .fixture_mode
+                    .then(|| "Unavailable in fixture mode.".to_owned()),
             },
             AvailableAction {
                 id: "workspace.set-superworkspace-location".to_owned(),
                 enabled: !self.bootstrap.fixture_mode,
-                reason: self.bootstrap.fixture_mode.then(|| "Unavailable in fixture mode.".to_owned()),
+                reason: self
+                    .bootstrap
+                    .fixture_mode
+                    .then(|| "Unavailable in fixture mode.".to_owned()),
             },
             AvailableAction {
                 id: "workspace.discover-superworkspace-repositories".to_owned(),
@@ -542,9 +556,7 @@ impl ClientSession {
                 .catalog
                 .entries()
                 .iter()
-                .map(|entry| {
-                    catalog_projection(entry, &self.durable_state, self.catalog.entries())
-                })
+                .map(|entry| catalog_projection(entry, &self.durable_state, self.catalog.entries()))
                 .collect(),
             catalog_status: self.catalog.status().clone(),
             catalog_search: self.catalog.search(),
@@ -612,7 +624,8 @@ impl ClientSession {
                         response_kind = ClientResponseKind::Rejected;
                         error = Some(ServiceError {
                             code: ServiceErrorCode::ActionUnavailable,
-                            message: "Fixture sessions cannot initialize a real Superworkspace.".to_owned(),
+                            message: "Fixture sessions cannot initialize a real Superworkspace."
+                                .to_owned(),
                             retryable: false,
                         });
                     } else {
@@ -643,16 +656,21 @@ impl ClientSession {
                         response_kind = ClientResponseKind::Rejected;
                         error = Some(ServiceError {
                             code: ServiceErrorCode::ActionUnavailable,
-                            message: "Fixture sessions cannot change a real Superworkspace location.".to_owned(),
+                            message:
+                                "Fixture sessions cannot change a real Superworkspace location."
+                                    .to_owned(),
                             retryable: false,
                         });
                     } else {
                         let result = vapor_core::VaporInstallation::discover()
                             .map_err(|failure| failure.to_string())
                             .and_then(|installation| {
-                                vapor_core::configure_superworkspace(&installation, Path::new(&root))
-                                    .map(|_| ())
-                                    .map_err(|failure| failure.to_string())
+                                vapor_core::configure_superworkspace(
+                                    &installation,
+                                    Path::new(&root),
+                                )
+                                .map(|_| ())
+                                .map_err(|failure| failure.to_string())
                             });
                         match result {
                             Ok(()) => self.superworkspace_setup_error = None,
@@ -801,7 +819,10 @@ impl ClientSession {
                         error = Some(operation_error);
                     }
                 },
-                ClientAction::Library(LibraryAction::SetAutoInstall { content_id, enabled }) => {
+                ClientAction::Library(LibraryAction::SetAutoInstall {
+                    content_id,
+                    enabled,
+                }) => {
                     if self.active_operation.is_some() {
                         response_kind = ClientResponseKind::Rejected;
                         error = Some(ServiceError {
@@ -819,13 +840,11 @@ impl ClientSession {
                             error,
                         };
                     }
-                    let parsed = vapor_client_protocol::ContentReference::parse(
-                        content_id.clone(),
-                        None,
-                    )
-                    .and_then(|reference| {
-                        reference.vapor_id().map_err(|error| error.to_string())
-                    });
+                    let parsed =
+                        vapor_client_protocol::ContentReference::parse(content_id.clone(), None)
+                            .and_then(|reference| {
+                                reference.vapor_id().map_err(|error| error.to_string())
+                            });
                     match parsed {
                         Err(message) => {
                             response_kind = ClientResponseKind::Rejected;
@@ -1314,7 +1333,9 @@ impl ClientSession {
         if is_superworkspace_operation && self.bootstrap.fixture_mode {
             return Err(ServiceError {
                 code: ServiceErrorCode::ActionUnavailable,
-                message: "Fixture sessions cannot access the real source registry or Superworkspace.".to_owned(),
+                message:
+                    "Fixture sessions cannot access the real source registry or Superworkspace."
+                        .to_owned(),
                 retryable: false,
             });
         }
@@ -1348,9 +1369,9 @@ impl ClientSession {
             WorkspaceAction::AcquireSuperworkspaceRepositories { repository_names } => {
                 if repository_names.is_empty()
                     || repository_names.len() > 64
-                    || repository_names.iter().any(|name| {
-                        name.trim().is_empty() || name.len() > 128
-                    })
+                    || repository_names
+                        .iter()
+                        .any(|name| name.trim().is_empty() || name.len() > 128)
                 {
                     return Err(invalid_workspace_request(
                         "Choose between one and 64 valid source repositories.",
@@ -1540,7 +1561,10 @@ impl ClientSession {
             }
             Ok(WorkspaceOperationResult::AcquiredSourceRepositories(repository_ids)) => {
                 operation_succeeded = true;
-                format!("Added {} source repositories to the Vapor source folder.", repository_ids.len())
+                format!(
+                    "Added {} source repositories to the Vapor source folder.",
+                    repository_ids.len()
+                )
             }
             Ok(WorkspaceOperationResult::Listed(files)) => {
                 operation_succeeded = true;
@@ -2126,11 +2150,13 @@ impl ClientSession {
                 ));
             }
         };
-        let auto_install = self.auto_install_context(&kind).map_err(|message| ServiceError {
-            code: ServiceErrorCode::ActionUnavailable,
-            message,
-            retryable: true,
-        })?;
+        let auto_install = self
+            .auto_install_context(&kind)
+            .map_err(|message| ServiceError {
+                code: ServiceErrorCode::ActionUnavailable,
+                message,
+                retryable: true,
+            })?;
         let operation_id = application::OperationId::fresh();
         let id = operation_id.0.to_string();
         let action_id = workshop_operation_action_id(&kind);
@@ -2204,10 +2230,10 @@ impl ClientSession {
     ) -> Result<AutoInstallContext, String> {
         let requested_ids = match kind {
             WorkshopOperationKind::Acquire { ids } => ids.iter().cloned().collect::<BTreeSet<_>>(),
-            WorkshopOperationKind::ChangeSubscriptions { ids, subscribe: true } => ids
-                .iter()
-                .map(u64::to_string)
-                .collect::<BTreeSet<_>>(),
+            WorkshopOperationKind::ChangeSubscriptions {
+                ids,
+                subscribe: true,
+            } => ids.iter().map(u64::to_string).collect::<BTreeSet<_>>(),
             _ => return Ok(AutoInstallContext::default()),
         };
         let mut context = AutoInstallContext::default();
@@ -2242,16 +2268,17 @@ impl ClientSession {
                 constraints.iter().map(ToString::to_string).collect(),
             );
             for composition in &self.durable_state.compositions.compositions {
-                if composition.root_package.is_some()
-                    && composition.resolved_graph.is_none()
-                {
+                if composition.root_package.is_some() && composition.resolved_graph.is_none() {
                     return Err(format!(
                         "Auto-Install paused: composition '{}' has not been resolved, so Vapor cannot verify that this update is safe.",
                         composition.name
                     ));
                 }
                 let depends_on_item = composition.resolved_graph.as_ref().is_some_and(|graph| {
-                    graph.nodes.iter().any(|node| node.content.id == content_id.as_str())
+                    graph
+                        .nodes
+                        .iter()
+                        .any(|node| node.content.id == content_id.as_str())
                 });
                 if depends_on_item
                     && composition.root_package.is_some()
@@ -2296,7 +2323,10 @@ impl ClientSession {
                 .iter()
                 .find(|composition| composition.id == update.composition_id)
                 .map(|composition| {
-                    CompositionOperationInputs::capture(composition, CompositionOperationKind::Update)
+                    CompositionOperationInputs::capture(
+                        composition,
+                        CompositionOperationKind::Update,
+                    )
                 });
             if current.as_ref() != Some(&update.inputs) {
                 failures.push(format!(
@@ -2450,7 +2480,11 @@ impl ClientSession {
                     }
                 }
             }
-            Ok(WorkshopOperationResult::Acquisitions { items, requested, updates }) => {
+            Ok(WorkshopOperationResult::Acquisitions {
+                items,
+                requested,
+                updates,
+            }) => {
                 let revision = self
                     .workshop
                     .acquisition
@@ -2915,10 +2949,8 @@ impl ClientSession {
         let previous_state = self.durable_state.clone();
         let application_executable = self.bootstrap.application_executable.clone();
         let fixture_mode = self.bootstrap.fixture_mode;
-        let transition = vapor_client_domain::apply_composition_action(
-            &mut self.durable_state,
-            action,
-            || {
+        let transition =
+            vapor_client_domain::apply_composition_action(&mut self.durable_state, action, || {
                 if fixture_mode {
                     Ok("fixture.pack".to_owned())
                 } else {
@@ -2927,8 +2959,7 @@ impl ClientSession {
                         "default",
                     )
                 }
-            },
-        );
+            });
         if let Err(message) = transition {
             self.durable_state = previous_state;
             self.active_composition_id = Some(self.durable_state.active_composition_id.clone());
@@ -2952,9 +2983,7 @@ impl ClientSession {
                 retryable: true,
             });
         }
-        if may_release_content
-            && let Err(message) = self.collect_unreferenced_auto_install()
-        {
+        if may_release_content && let Err(message) = self.collect_unreferenced_auto_install() {
             self.catalog.fail(format!(
                 "The composition was removed, but automatic Library cleanup could not finish: {message}"
             ));
@@ -2966,9 +2995,15 @@ impl ClientSession {
         if self.bootstrap.fixture_mode {
             return Ok(Vec::new());
         }
-        if self.durable_state.compositions.compositions.iter().any(|composition| {
-            composition.root_package.is_some() && composition.resolved_graph.is_none()
-        }) {
+        if self
+            .durable_state
+            .compositions
+            .compositions
+            .iter()
+            .any(|composition| {
+                composition.root_package.is_some() && composition.resolved_graph.is_none()
+            })
+        {
             return Ok(Vec::new());
         }
         let policies = self.durable_state.library_policies.clone();
@@ -3001,8 +3036,6 @@ impl ClientSession {
         }
         Ok(collected)
     }
-
-
 }
 
 fn default_superworkspace_path() -> Option<PathBuf> {
@@ -3013,7 +3046,8 @@ fn default_superworkspace_path() -> Option<PathBuf> {
 }
 
 fn configured_superworkspace_root() -> Result<PathBuf, String> {
-    let installation = vapor_core::VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let installation =
+        vapor_core::VaporInstallation::discover().map_err(|error| error.to_string())?;
     let configured = vapor_core::source_state(&installation)
         .map_err(|error| error.to_string())?
         .superworkspace;
@@ -3134,14 +3168,13 @@ fn execute_authoring_operation(
     use AuthoringAction as Action;
     match action {
         Action::ListRegisteredSources => {
-            let installation = vapor_core::VaporInstallation::discover()
-                .map_err(|error| error.to_string())?;
-            let state = vapor_core::source_state(&installation)
-                .map_err(|error| error.to_string())?;
+            let installation =
+                vapor_core::VaporInstallation::discover().map_err(|error| error.to_string())?;
+            let state =
+                vapor_core::source_state(&installation).map_err(|error| error.to_string())?;
             let mut roots = state.known.into_iter().collect::<BTreeSet<_>>();
             if let Some(start) = active_workspace.or(state.active.as_deref())
-                && let Ok(superworkspace) =
-                    vapor_core::VaporSuperworkspace::discover_from(start)
+                && let Ok(superworkspace) = vapor_core::VaporSuperworkspace::discover_from(start)
             {
                 roots.extend(
                     superworkspace
@@ -3160,8 +3193,8 @@ fn execute_authoring_operation(
         }
         Action::LoadComposition { project_id } => {
             let workspace = active_workspace.ok_or("Open a workspace before editing content.")?;
-            vapor_client_application::load_source_composition(executable, workspace, &project_id).map(
-                |value| AuthoringResultKind::Composition {
+            vapor_client_application::load_source_composition(executable, workspace, &project_id)
+                .map(|value| AuthoringResultKind::Composition {
                     id: value.id,
                     version: value.version,
                     kind: value.kind,
@@ -3179,8 +3212,7 @@ fn execute_authoring_operation(
                             reason: link.reason,
                         })
                         .collect(),
-                },
-            )
+                })
         }
         Action::SaveComposition {
             project_id,
@@ -3228,15 +3260,19 @@ fn execute_authoring_operation(
         }
         Action::LoadWorkshopMetadata { project_id } => {
             let workspace = active_workspace.ok_or("Open a workspace before editing content.")?;
-            vapor_client_application::load_source_workshop_metadata(executable, workspace, &project_id)
-                .map(|value| AuthoringResultKind::WorkshopMetadata {
-                    id: value.id,
-                    version: value.version,
-                    kind: value.kind,
-                    manifest: value.manifest.to_string_lossy().into_owned(),
-                    source: value.source,
-                    policy: workshop_policy_to_protocol(value.policy),
-                })
+            vapor_client_application::load_source_workshop_metadata(
+                executable,
+                workspace,
+                &project_id,
+            )
+            .map(|value| AuthoringResultKind::WorkshopMetadata {
+                id: value.id,
+                version: value.version,
+                kind: value.kind,
+                manifest: value.manifest.to_string_lossy().into_owned(),
+                source: value.source,
+                policy: workshop_policy_to_protocol(value.policy),
+            })
         }
         Action::SaveWorkshopMetadata {
             project_id,
@@ -3276,27 +3312,33 @@ fn execute_authoring_operation(
         }
         Action::LoadRuntimeOutputs { project_id } => {
             let workspace = active_workspace.ok_or("Open a workspace before editing content.")?;
-            vapor_client_application::load_source_runtime_outputs(executable, workspace, &project_id).map(
-                |value| AuthoringResultKind::RuntimeOutputs {
-                    id: value.id,
-                    version: value.version,
-                    kind: value.kind,
-                    manifest: value.manifest.to_string_lossy().into_owned(),
-                    source: value.source,
-                    binaries: value.binaries,
-                    libraries: value.libraries,
-                },
+            vapor_client_application::load_source_runtime_outputs(
+                executable,
+                workspace,
+                &project_id,
             )
+            .map(|value| AuthoringResultKind::RuntimeOutputs {
+                id: value.id,
+                version: value.version,
+                kind: value.kind,
+                manifest: value.manifest.to_string_lossy().into_owned(),
+                source: value.source,
+                binaries: value.binaries,
+                libraries: value.libraries,
+            })
         }
         Action::ValidateContent { project_id } => {
             let workspace =
                 active_workspace.ok_or("Open a workspace before validating content.")?;
-            vapor_client_application::validate_composition_source(executable, workspace, &project_id).map(
-                |summary| AuthoringResultKind::ContentValidated {
-                    id: project_id,
-                    summary,
-                },
+            vapor_client_application::validate_composition_source(
+                executable,
+                workspace,
+                &project_id,
             )
+            .map(|summary| AuthoringResultKind::ContentValidated {
+                id: project_id,
+                summary,
+            })
         }
         Action::SaveRuntimeOutputs {
             project_id,
@@ -3350,16 +3392,19 @@ fn execute_authoring_operation(
                 tags: workshop.tags,
                 change_note: workshop.change_note,
             };
-            let manifest = vapor_client_application::create_content_workspace_with_dependency_policies(
-                executable,
-                &active,
-                &id,
-                &version,
-                kind,
-                &dependencies,
-                &optional_dependencies,
-                &policy,
-            )?;
+            let manifest =
+                vapor_client_application::create_content_workspace_with_dependency_policies(
+                    executable,
+                    &active,
+                    &id,
+                    &version,
+                    kind,
+                    vapor_client_application::ContentDependencyDraft {
+                        required: dependencies,
+                        optional: optional_dependencies,
+                    },
+                    &policy,
+                )?;
             let contents = std::fs::read_to_string(&manifest)
                 .map_err(|error| format!("{}: {error}", manifest.display()))?;
             let files = vapor_client_application::discover_workspace_files(&active)?
@@ -3391,7 +3436,10 @@ fn execute_authoring_operation(
                 return Err("Content forks must target the currently open workspace.".to_owned());
             }
             if !valid_workspace_slug(&name) {
-                return Err("Fork name must use lowercase letters, digits, and internal hyphens.".to_owned());
+                return Err(
+                    "Fork name must use lowercase letters, digits, and internal hyphens."
+                        .to_owned(),
+                );
             }
             let manifest = vapor_client_application::fork_acquired_content(
                 executable,
@@ -3604,8 +3652,8 @@ fn execute_workspace_operation(
     }
     match kind {
         WorkspaceOperationKind::DiscoverSuperworkspaceRepositories => {
-            let installation = vapor_core::VaporInstallation::discover()
-                .map_err(|error| error.to_string())?;
+            let installation =
+                vapor_core::VaporInstallation::discover().map_err(|error| error.to_string())?;
             let ecosystem = vapor_core::discover_ecosystem_repositories(&installation)
                 .map_err(|error| error.to_string())?;
             Ok(WorkspaceOperationResult::SourceRepositories(
@@ -3623,21 +3671,26 @@ fn execute_workspace_operation(
             ))
         }
         WorkspaceOperationKind::AcquireSuperworkspaceRepositories(repository_names) => {
-            let installation = vapor_core::VaporInstallation::discover()
-                .map_err(|error| error.to_string())?;
-            let repository_names = repository_names.iter().map(String::as_str).collect::<Vec<_>>();
-            let report = vapor_core::acquire_ecosystem_repositories(
-                &installation,
-                root,
-                &repository_names,
-            )
-            .map_err(|error| error.to_string())?;
+            let installation =
+                vapor_core::VaporInstallation::discover().map_err(|error| error.to_string())?;
+            let repository_names = repository_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let report =
+                vapor_core::acquire_ecosystem_repositories(&installation, root, &repository_names)
+                    .map_err(|error| error.to_string())?;
             Ok(WorkspaceOperationResult::AcquiredSourceRepositories(
-                report.repositories.into_iter().map(|repository| repository.id).collect(),
+                report
+                    .repositories
+                    .into_iter()
+                    .map(|repository| repository.id)
+                    .collect(),
             ))
         }
         WorkspaceOperationKind::ListFiles => {
-            vapor_client_application::discover_workspace_files(root).map(WorkspaceOperationResult::Listed)
+            vapor_client_application::discover_workspace_files(root)
+                .map(WorkspaceOperationResult::Listed)
         }
         WorkspaceOperationKind::OpenFile(path) => {
             vapor_client_application::read_workspace_file_with_fingerprint(root, &path).map(
@@ -3670,9 +3723,8 @@ fn execute_workspace_operation(
             vapor_client_application::validate_workspace_source(executable, root)
                 .map(|_| WorkspaceOperationResult::Completed)
         }
-        WorkspaceOperationKind::Remember => {
-            vapor_client_application::remember_workspace(root).map(WorkspaceOperationResult::Remembered)
-        }
+        WorkspaceOperationKind::Remember => vapor_client_application::remember_workspace(root)
+            .map(WorkspaceOperationResult::Remembered),
         WorkspaceOperationKind::AdoptProject(path) => {
             vapor_client_application::adopt_workspace_content_project(executable, root, &path)
                 .map(|_| WorkspaceOperationResult::Completed)
@@ -3698,14 +3750,12 @@ fn workspace_result_outcome(
     result: &Result<WorkspaceOperationResult, String>,
 ) -> Result<String, String> {
     match result {
-        Ok(WorkspaceOperationResult::SourceRepositories(repositories)) => Ok(format!(
-            "Found {} source repositories.",
-            repositories.len()
-        )),
-        Ok(WorkspaceOperationResult::AcquiredSourceRepositories(repositories)) => Ok(format!(
-            "Added {} source repositories.",
-            repositories.len()
-        )),
+        Ok(WorkspaceOperationResult::SourceRepositories(repositories)) => {
+            Ok(format!("Found {} source repositories.", repositories.len()))
+        }
+        Ok(WorkspaceOperationResult::AcquiredSourceRepositories(repositories)) => {
+            Ok(format!("Added {} source repositories.", repositories.len()))
+        }
         Ok(WorkspaceOperationResult::Listed(files)) => {
             Ok(format!("Found {} workspace files.", files.len()))
         }
@@ -3770,7 +3820,9 @@ fn workshop_result_outcome(
         }) => Err(format!(
             "Subscription is active, but Vapor Client could not add the item to the Library: {error}"
         )),
-        Ok(WorkshopOperationResult::Acquisitions { items, requested, .. }) => {
+        Ok(WorkshopOperationResult::Acquisitions {
+            items, requested, ..
+        }) => {
             if items.len() == *requested {
                 Ok(format!(
                     "Added {} Workshop items to the local cache.",
@@ -3858,17 +3910,13 @@ fn execute_workshop_operation(
         }
         WorkshopOperationKind::Acquire { ids } => {
             let requested = ids.len();
-            download_with_auto_install(
-                application_executable,
-                &ids,
-                requested,
-                &auto_install,
+            download_with_auto_install(application_executable, &ids, requested, &auto_install).map(
+                |(items, _, updates)| WorkshopOperationResult::Acquisitions {
+                    items,
+                    requested,
+                    updates,
+                },
             )
-            .map(|(items, _, updates)| WorkshopOperationResult::Acquisitions {
-                items,
-                requested,
-                updates,
-            })
         }
         WorkshopOperationKind::Stage {
             selector,
@@ -3906,11 +3954,14 @@ fn download_with_auto_install(
     ids: &[String],
     requested: usize,
     context: &AutoInstallContext,
-) -> Result<(
-    Vec<vapor_client_application::WorkshopAcquisition>,
-    usize,
-    Vec<AutoInstallCompositionUpdate>,
-), String> {
+) -> Result<
+    (
+        Vec<vapor_client_application::WorkshopAcquisition>,
+        usize,
+        Vec<AutoInstallCompositionUpdate>,
+    ),
+    String,
+> {
     let items = vapor_client_application::download_workshop_items_with_constraints(
         application_executable,
         ids,
@@ -4482,13 +4533,13 @@ fn fixture_composition_result(
                 launch_error: None,
             }))
         }
-        CompositionOperationKind::RunSource => {
-            CompositionOperationResult::RunSource(Ok(vapor_client_application::CompositionRunResult {
+        CompositionOperationKind::RunSource => CompositionOperationResult::RunSource(Ok(
+            vapor_client_application::CompositionRunResult {
                 composition,
                 composition_graph_matches: true,
                 launch_error: None,
-            }))
-        }
+            },
+        )),
     }
 }
 
@@ -4516,10 +4567,9 @@ fn apply_operation_result_to_composition(
         | CompositionOperationResult::Update(Ok(installed)) => {
             let graph = installed.graph;
             if matches!(kind, CompositionOperationKind::Repair)
-                && composition
-                    .resolved_graph
-                    .as_ref()
-                    .is_some_and(|saved| !vapor_client_application::resolved_graph_matches(saved, &graph))
+                && composition.resolved_graph.as_ref().is_some_and(|saved| {
+                    !vapor_client_application::resolved_graph_matches(saved, &graph)
+                })
             {
                 composition.installation = InstallationState::OutOfDate {
                     detail: "Repair restored valid content, but its graph differs from this composition's saved setup.".into(),
@@ -4540,11 +4590,9 @@ fn apply_operation_result_to_composition(
                     artifacts,
                 };
             } else if let Some(graph) = check.graph {
-                if composition
-                    .resolved_graph
-                    .as_ref()
-                    .is_some_and(|saved| !vapor_client_application::resolved_graph_matches(saved, &graph))
-                {
+                if composition.resolved_graph.as_ref().is_some_and(|saved| {
+                    !vapor_client_application::resolved_graph_matches(saved, &graph)
+                }) {
                     composition.installation = InstallationState::OutOfDate {
                         detail:
                             "Verified installed content differs from this composition's saved setup."
@@ -4557,7 +4605,9 @@ fn apply_operation_result_to_composition(
                     composition.resolved_graph = Some(graph.clone());
                     composition.installation = InstallationState::Installed {
                         artifacts,
-                        graph_fingerprint: vapor_client_application::fingerprint_resolved_graph(&graph),
+                        graph_fingerprint: vapor_client_application::fingerprint_resolved_graph(
+                            &graph,
+                        ),
                     };
                 }
             } else {
@@ -4746,7 +4796,9 @@ fn catalog_entry(entry: CatalogContent) -> CatalogEntry {
                     vapor_client_application::CatalogLocationKind::Workspace => {
                         CatalogLocationKind::Workspace
                     }
-                    vapor_client_application::CatalogLocationKind::Cache => CatalogLocationKind::Cache,
+                    vapor_client_application::CatalogLocationKind::Cache => {
+                        CatalogLocationKind::Cache
+                    }
                     vapor_client_application::CatalogLocationKind::Installed => {
                         CatalogLocationKind::Installed
                     }
@@ -4786,14 +4838,18 @@ fn catalog_projection(
                     .collect::<Vec<_>>();
                 if matching.is_empty() {
                     vec![CatalogItemAction::CreateComposition]
-                } else if matching.iter().any(|composition| {
-                    state.active_composition_id == composition.id
-                }) {
-                    let active = matching.iter().find(|composition| {
-                        state.active_composition_id == composition.id
-                    });
+                } else if matching
+                    .iter()
+                    .any(|composition| state.active_composition_id == composition.id)
+                {
+                    let active = matching
+                        .iter()
+                        .find(|composition| state.active_composition_id == composition.id);
                     if active.is_some_and(|composition| {
-                        matches!(&composition.installation, InstallationState::Installed { .. })
+                        matches!(
+                            &composition.installation,
+                            InstallationState::Installed { .. }
+                        )
                     }) {
                         vec![CatalogItemAction::Play]
                     } else if active.is_some_and(|composition| {
@@ -4830,7 +4886,8 @@ fn catalog_projection(
                             }) else {
                                 return false;
                             };
-                            let Ok(parent_kind) = root_entry.kind.parse::<vapor_core::ContentKind>()
+                            let Ok(parent_kind) =
+                                root_entry.kind.parse::<vapor_core::ContentKind>()
                             else {
                                 return false;
                             };
@@ -4848,17 +4905,21 @@ fn catalog_projection(
                 if addable {
                     actions.push(CatalogItemAction::AddToComposition);
                 }
-                if projected.locations.iter().any(|location| {
-                    location.kind == CatalogLocationKind::Workspace
-                }) {
+                if projected
+                    .locations
+                    .iter()
+                    .any(|location| location.kind == CatalogLocationKind::Workspace)
+                {
                     actions.push(CatalogItemAction::OpenForAuthoring);
                 }
                 actions
             }
             CatalogItemRole::CreatorCrate => {
-                if projected.locations.iter().any(|location| {
-                    location.kind == CatalogLocationKind::Workspace
-                }) {
+                if projected
+                    .locations
+                    .iter()
+                    .any(|location| location.kind == CatalogLocationKind::Workspace)
+                {
                     vec![CatalogItemAction::OpenForAuthoring]
                 } else {
                     Vec::new()
@@ -4954,62 +5015,64 @@ mod tests {
     #[test]
     fn auto_install_download_context_carries_all_dependent_constraints_and_compositions() {
         use vapor_client_protocol::{
-            CatalogEntry, CatalogLocation, CatalogLocationKind, CatalogItemRole,
+            CatalogEntry, CatalogItemRole, CatalogLocation, CatalogLocationKind,
             ResolvedCompositionGraph, ResolvedDependencyIdentity, ResolvedNodeIdentity,
         };
         let mut session = session();
         let content_id = "publisher/project/movement";
         let content = ContentReference::parse(content_id.to_owned(), Some("1.0.0".to_owned()))
             .expect("valid content reference");
-        let root = ContentReference::parse(
-            "author/game/pack".to_owned(),
-            Some("1.0.0".to_owned()),
-        )
-        .expect("valid Packagepack reference");
-        session.durable_state.library_policies.push(
-            vapor_client_protocol::LibraryItemPolicy {
+        let root = ContentReference::parse("author/game/pack".to_owned(), Some("1.0.0".to_owned()))
+            .expect("valid Packagepack reference");
+        session
+            .durable_state
+            .library_policies
+            .push(vapor_client_protocol::LibraryItemPolicy {
                 content_id: content.vapor_id().expect("valid Vapor ID"),
                 auto_install: true,
-            },
-        );
+            });
         session.durable_state.compositions.compositions[0].root_package = Some(root.clone());
         session.durable_state.compositions.compositions[0].installation =
             InstallationState::Installed {
                 artifacts: Vec::new(),
                 graph_fingerprint: None,
             };
-        session.durable_state.compositions.compositions[0].resolved_graph = Some(
-            ResolvedCompositionGraph {
+        session.durable_state.compositions.compositions[0].resolved_graph =
+            Some(ResolvedCompositionGraph {
                 root: root.clone(),
                 effective_engine: ContentReference::parse(
                     "author/engine/core".to_owned(),
                     Some("1.0.0".to_owned()),
                 )
                 .unwrap(),
-                effective_game: Some(ContentReference::parse(
-                    "author/game/main".to_owned(),
-                    Some("1.0.0".to_owned()),
-                )
-                .unwrap()),
-                nodes: vec![ResolvedNodeIdentity {
-                    content: root,
-                    kind: "packagepack".to_owned(),
-                    fingerprint: None,
-                    source: None,
-                    dependencies: vec![ResolvedDependencyIdentity {
-                        binding: "movement".to_owned(),
+                effective_game: Some(
+                    ContentReference::parse(
+                        "author/game/main".to_owned(),
+                        Some("1.0.0".to_owned()),
+                    )
+                    .unwrap(),
+                ),
+                nodes: vec![
+                    ResolvedNodeIdentity {
+                        content: root,
+                        kind: "packagepack".to_owned(),
+                        fingerprint: None,
+                        source: None,
+                        dependencies: vec![ResolvedDependencyIdentity {
+                            binding: "movement".to_owned(),
+                            content: content.clone(),
+                            version_requirement: Some("^1.0".to_owned()),
+                        }],
+                    },
+                    ResolvedNodeIdentity {
                         content: content.clone(),
-                        version_requirement: Some("^1.0".to_owned()),
-                    }],
-                }, ResolvedNodeIdentity {
-                    content: content.clone(),
-                    kind: "game-mod".to_owned(),
-                    fingerprint: None,
-                    source: None,
-                    dependencies: Vec::new(),
-                }],
-            },
-        );
+                        kind: "game-mod".to_owned(),
+                        fingerprint: None,
+                        source: None,
+                        dependencies: Vec::new(),
+                    },
+                ],
+            });
         session.catalog.replace(vec![CatalogEntry {
             id: content_id.to_owned(),
             name: Some("Movement".to_owned()),
@@ -5037,21 +5100,36 @@ mod tests {
             .expect("safe update context can be constructed");
         assert_eq!(context.constraints[content_id], vec!["^1.0".to_owned()]);
         assert_eq!(context.compositions[content_id].len(), 1);
-        assert_eq!(context.compositions[content_id][0].composition.id, "default");
+        assert_eq!(
+            context.compositions[content_id][0].composition.id,
+            "default"
+        );
 
-        session.durable_state.compositions.compositions.push(Composition {
-            id: "unresolved".to_owned(),
-            name: "Unresolved composition".to_owned(),
-            root_package: Some(ContentReference::parse(
-                "author/game/other-pack".to_owned(),
-                Some("1.0.0".to_owned()),
-            ).unwrap()),
-            resolved_graph: None,
-            workspace: None,
-            launch: vapor_client_application::LaunchSettings::default(),
-            installation: InstallationState::Unknown,
-        });
-        assert!(session.auto_install_context(&kind).unwrap_err().contains("has not been resolved"));
+        session
+            .durable_state
+            .compositions
+            .compositions
+            .push(Composition {
+                id: "unresolved".to_owned(),
+                name: "Unresolved composition".to_owned(),
+                root_package: Some(
+                    ContentReference::parse(
+                        "author/game/other-pack".to_owned(),
+                        Some("1.0.0".to_owned()),
+                    )
+                    .unwrap(),
+                ),
+                resolved_graph: None,
+                workspace: None,
+                launch: vapor_client_application::LaunchSettings::default(),
+                installation: InstallationState::Unknown,
+            });
+        assert!(
+            session
+                .auto_install_context(&kind)
+                .unwrap_err()
+                .contains("has not been resolved")
+        );
     }
 
     #[test]
@@ -5418,12 +5496,14 @@ mod tests {
                 composition,
                 CompositionOperationKind::Verify,
             ),
-            result: CompositionOperationResult::Verify(Ok(vapor_client_application::InstallationCheck {
-                ok: false,
-                detail: vec!["packagepack payload is missing".to_owned()],
-                artifacts: Vec::new(),
-                graph: None,
-            })),
+            result: CompositionOperationResult::Verify(Ok(
+                vapor_client_application::InstallationCheck {
+                    ok: false,
+                    detail: vec!["packagepack payload is missing".to_owned()],
+                    artifacts: Vec::new(),
+                    graph: None,
+                },
+            )),
         });
 
         assert!(session.active_operation.is_none());
@@ -5752,7 +5832,11 @@ mod tests {
             composition_revision_before
         );
         assert_eq!(
-            opened.snapshot.durable_state.authoring_workspace_root.as_deref(),
+            opened
+                .snapshot
+                .durable_state
+                .authoring_workspace_root
+                .as_deref(),
             Some(root.to_string_lossy().as_ref())
         );
         std::fs::remove_dir_all(root).expect("remove fixture workspace");
@@ -5784,7 +5868,11 @@ mod tests {
 
         assert_eq!(selected.kind, ClientResponseKind::Applied);
         assert_eq!(
-            selected.snapshot.durable_state.authoring_workspace_root.as_deref(),
+            selected
+                .snapshot
+                .durable_state
+                .authoring_workspace_root
+                .as_deref(),
             Some(authoring_root.to_string_lossy().as_ref())
         );
         assert_eq!(
@@ -5838,7 +5926,11 @@ mod tests {
             .expect("new composition is active");
         assert!(composition.workspace.is_none());
         assert_eq!(
-            created.snapshot.durable_state.authoring_workspace_root.as_deref(),
+            created
+                .snapshot
+                .durable_state
+                .authoring_workspace_root
+                .as_deref(),
             Some(authoring_root.to_string_lossy().as_ref())
         );
         std::fs::remove_dir_all(authoring_root).expect("remove authoring workspace");

@@ -1,12 +1,11 @@
 //! Transport exports for Vapor Client composition domain records.
 
+use serde::{Deserialize, Serialize};
 pub use vapor_client_domain::{
     COMPOSITION_SCHEMA_VERSION, Composition, CompositionDocument, ContentReference,
-    InstallationState, InstalledArtifactRecord, LaunchSettings,
-    ResolvedCompositionGraph,
+    InstallationState, InstalledArtifactRecord, LaunchSettings, ResolvedCompositionGraph,
     ResolvedDependencyIdentity, ResolvedNodeIdentity, WorkspaceAssociation,
 };
-use serde::{Deserialize, Serialize};
 
 /// Values the GUI's former eframe store may offer during the first service startup.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

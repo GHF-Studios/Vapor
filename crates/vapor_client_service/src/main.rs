@@ -1,10 +1,10 @@
 use std::{env, path::PathBuf, process};
-use vapor_client_service::{
-    ClientHostArguments, ClientHostConfig, ClientHostContext, HostPlatform,
-    run_local_service, run_simulator, run_stdio_service,
-};
 use vapor_client::Client;
 use vapor_client_protocol::LegacyStorageSeed;
+use vapor_client_service::{
+    ClientHostArguments, ClientHostConfig, ClientHostContext, HostPlatform, run_local_service,
+    run_simulator, run_stdio_service,
+};
 
 fn main() {
     let mut args = env::args_os().skip(1);
@@ -23,10 +23,12 @@ fn main() {
             }
         }
         match env::current_exe() {
-            Ok(executable) => if let Err(error) = run_simulator(&executable, scenario.as_deref()) {
-                eprintln!("Vapor Client simulator failed: {error}");
-                process::exit(1);
-            },
+            Ok(executable) => {
+                if let Err(error) = run_simulator(&executable, scenario.as_deref()) {
+                    eprintln!("Vapor Client simulator failed: {error}");
+                    process::exit(1);
+                }
+            }
             Err(error) => {
                 eprintln!("could not resolve simulator executable: {error}");
                 process::exit(1);
@@ -35,9 +37,16 @@ fn main() {
         return;
     }
 
-    let mode = first.as_deref().map(|arg| arg.to_string_lossy().into_owned());
-    if mode.as_deref().is_some_and(|arg| arg == "--help" || arg == "-h") {
-        println!("vapor-client-service (--ensure | --serve | --stdio) --application-executable PATH [--workshop-app-id ID] [--workspace PATH] [--state-dir PATH] [--active-composition ID] [--fixture]");
+    let mode = first
+        .as_deref()
+        .map(|arg| arg.to_string_lossy().into_owned());
+    if mode
+        .as_deref()
+        .is_some_and(|arg| arg == "--help" || arg == "-h")
+    {
+        println!(
+            "vapor-client-service (--ensure | --serve | --stdio) --application-executable PATH [--workshop-app-id ID] [--workspace PATH] [--state-dir PATH] [--active-composition ID] [--fixture]"
+        );
         return;
     }
     let mut application_executable = None;
@@ -56,12 +65,18 @@ fn main() {
             "--stdio" => stdio_mode = true,
             "--fixture" => fixture_mode = true,
             "--application-executable" => application_executable = args.next().map(PathBuf::from),
-            "--workshop-app-id" => workshop_app_id = args.next().and_then(|id| id.to_string_lossy().parse().ok()),
+            "--workshop-app-id" => {
+                workshop_app_id = args.next().and_then(|id| id.to_string_lossy().parse().ok())
+            }
             "--workspace" => workspace_root = args.next().map(PathBuf::from),
             "--state-dir" => state_directory = args.next().map(PathBuf::from),
-            "--active-composition" | "--active-profile" => active_composition_id = args.next().map(|id| id.to_string_lossy().into_owned()),
+            "--active-composition" | "--active-profile" => {
+                active_composition_id = args.next().map(|id| id.to_string_lossy().into_owned())
+            }
             "--help" | "-h" => {
-                println!("vapor-client-service (--ensure | --serve | --stdio) --application-executable PATH [--workshop-app-id ID] [--workspace PATH] [--state-dir PATH] [--active-composition ID] [--fixture]");
+                println!(
+                    "vapor-client-service (--ensure | --serve | --stdio) --application-executable PATH [--workshop-app-id ID] [--workspace PATH] [--state-dir PATH] [--active-composition ID] [--fixture]"
+                );
                 return;
             }
             unknown => {
@@ -70,7 +85,12 @@ fn main() {
             }
         }
     }
-    if [ensure_mode, serve_mode, stdio_mode].into_iter().filter(|mode| *mode).count() != 1 {
+    if [ensure_mode, serve_mode, stdio_mode]
+        .into_iter()
+        .filter(|mode| *mode)
+        .count()
+        != 1
+    {
         eprintln!("select exactly one of --ensure, --serve, or --stdio");
         process::exit(2);
     }
@@ -80,12 +100,19 @@ fn main() {
     };
     let environment = env::vars_os().collect();
     let host_context = match ClientHostContext::resolve(
-        ClientHostArguments { application_executable: application_executable.clone(), workspace_root: workspace_root.clone(), state_directory: state_directory.clone() },
+        ClientHostArguments {
+            application_executable: application_executable.clone(),
+            workspace_root: workspace_root.clone(),
+            state_directory: state_directory.clone(),
+        },
         &environment,
         HostPlatform::current(),
     ) {
         Ok(context) => context,
-        Err(error) => { eprintln!("Vapor Client service could not resolve its host context: {error}"); process::exit(2); }
+        Err(error) => {
+            eprintln!("Vapor Client service could not resolve its host context: {error}");
+            process::exit(2);
+        }
     };
     let bootstrap = ClientHostConfig {
         application_executable,
@@ -99,7 +126,10 @@ fn main() {
     let result = if ensure_mode {
         let executable = match env::current_exe() {
             Ok(executable) => executable,
-            Err(error) => { eprintln!("could not resolve service executable: {error}"); process::exit(2); }
+            Err(error) => {
+                eprintln!("could not resolve service executable: {error}");
+                process::exit(2);
+            }
         };
         Client::ensure_service(&executable, bootstrap)
     } else if serve_mode {

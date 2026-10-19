@@ -1,4 +1,8 @@
-use crate::{local_socket, transport::{encode_frame, read_frame}};
+use crate::{
+    local_socket,
+    transport::{encode_frame, read_frame},
+};
+use interprocess::local_socket::traits::{RecvHalf as _, Stream as _};
 use std::{
     env,
     ffi::OsString,
@@ -9,7 +13,6 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use interprocess::local_socket::traits::{RecvHalf as _, Stream as _};
 use vapor_client_protocol::{
     ClientAction, ClientEvent, ClientRequest, ClientRevision, ClientSnapshot, LegacyStorageSeed,
     PROTOCOL_VERSION, ProtocolFrame, RequestId,
@@ -42,10 +45,19 @@ pub enum ClientError {
 impl std::fmt::Display for ClientError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Spawn(message) => write!(formatter, "could not start Vapor Client service: {message}"),
-            Self::Protocol(message) => write!(formatter, "Vapor Client service protocol error: {message}"),
-            Self::ServiceExited(code) => write!(formatter, "Vapor Client service exited unexpectedly ({code:?})"),
-            Self::Timeout(phase) => write!(formatter, "Vapor Client service timed out during {phase}"),
+            Self::Spawn(message) => {
+                write!(formatter, "could not start Vapor Client service: {message}")
+            }
+            Self::Protocol(message) => {
+                write!(formatter, "Vapor Client service protocol error: {message}")
+            }
+            Self::ServiceExited(code) => write!(
+                formatter,
+                "Vapor Client service exited unexpectedly ({code:?})"
+            ),
+            Self::Timeout(phase) => {
+                write!(formatter, "Vapor Client service timed out during {phase}")
+            }
             Self::Io(message) => write!(formatter, "Vapor Client service I/O failed: {message}"),
         }
     }
@@ -65,12 +77,18 @@ pub struct Client {
 
 impl Client {
     /// Connects to this installation's shared service, starting it once if needed.
-    pub fn connect_or_start(service_path: &Path, bootstrap: ClientHostConfig) -> Result<Self, ClientError> {
+    pub fn connect_or_start(
+        service_path: &Path,
+        bootstrap: ClientHostConfig,
+    ) -> Result<Self, ClientError> {
         if bootstrap.fixture_mode {
-            return Err(ClientError::Protocol("fixture clients cannot attach to the shared production service".into()));
+            return Err(ClientError::Protocol(
+                "fixture clients cannot attach to the shared production service".into(),
+            ));
         }
         let context = resolve_host_context(&bootstrap)?;
-        let endpoint = local_socket::endpoint_name(context.app_root.as_deref(), &context.state_directory);
+        let endpoint =
+            local_socket::endpoint_name(context.app_root.as_deref(), &context.state_directory);
         match Self::connect_existing(&endpoint, Some(bootstrap.legacy_storage.clone())) {
             Ok(mut client) => {
                 client.shared_service = Some((service_path.to_path_buf(), bootstrap));
@@ -79,7 +97,8 @@ impl Client {
             Err(error @ ClientError::Protocol(_)) => Err(error),
             Err(_) => {
                 ensure_service(service_path, &bootstrap, &context, &endpoint)?;
-                let mut client = Self::connect_existing(&endpoint, Some(bootstrap.legacy_storage.clone()))?;
+                let mut client =
+                    Self::connect_existing(&endpoint, Some(bootstrap.legacy_storage.clone()))?;
                 client.shared_service = Some((service_path.to_path_buf(), bootstrap));
                 Ok(client)
             }
@@ -87,20 +106,27 @@ impl Client {
     }
 
     /// Starts or finds the shared service and waits until it accepts a local connection.
-    pub fn ensure_service(service_path: &Path, bootstrap: ClientHostConfig) -> Result<(), ClientError> {
+    pub fn ensure_service(
+        service_path: &Path,
+        bootstrap: ClientHostConfig,
+    ) -> Result<(), ClientError> {
         if bootstrap.fixture_mode {
-            return Err(ClientError::Protocol("fixture mode cannot start the shared production service".into()));
+            return Err(ClientError::Protocol(
+                "fixture mode cannot start the shared production service".into(),
+            ));
         }
         let context = resolve_host_context(&bootstrap)?;
-        let endpoint = local_socket::endpoint_name(context.app_root.as_deref(), &context.state_directory);
+        let endpoint =
+            local_socket::endpoint_name(context.app_root.as_deref(), &context.state_directory);
         ensure_service(service_path, &bootstrap, &context, &endpoint)
     }
 
     /// Reconnects after service loss and refreshes this client's snapshot.
     /// Pending requests are never replayed because their prior outcome may be unknown.
     pub fn reconnect(&mut self) -> Result<&ClientSnapshot, ClientError> {
-        let (service_path, bootstrap) = self.shared_service.clone()
-            .ok_or_else(|| ClientError::Protocol("this client is not attached to a shared service".into()))?;
+        let (service_path, bootstrap) = self.shared_service.clone().ok_or_else(|| {
+            ClientError::Protocol("this client is not attached to a shared service".into())
+        })?;
         let mut replacement = Self::connect_or_start(&service_path, bootstrap)?;
         self.child = replacement.child.take();
         self.writer = replacement.writer.take();
@@ -135,20 +161,39 @@ impl Client {
         if let Some(state_directory) = bootstrap.state_directory.as_ref() {
             command.arg("--state-dir").arg(state_directory);
         }
-        if bootstrap.fixture_mode { command.arg("--fixture"); }
-        let mut child = command.spawn().map_err(|error| ClientError::Spawn(error.to_string()))?;
-        let stdin = child.stdin.take().ok_or_else(|| ClientError::Spawn("service stdin was not piped".into()))?;
+        if bootstrap.fixture_mode {
+            command.arg("--fixture");
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|error| ClientError::Spawn(error.to_string()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| ClientError::Spawn("service stdin was not piped".into()))?;
         let mut writer = BufWriter::new(stdin);
-        write_frame(&mut writer, &ProtocolFrame::Initialize {
-            protocol_version: PROTOCOL_VERSION,
-            legacy_storage: bootstrap.legacy_storage,
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| ClientError::Spawn("service stdout was not piped".into()))?;
-        let stderr = child.stderr.take().ok_or_else(|| ClientError::Spawn("service stderr was not piped".into()))?;
-        thread::Builder::new().name("client-service-stderr".into()).spawn(move || drain_stderr(stderr))
+        write_frame(
+            &mut writer,
+            &ProtocolFrame::Initialize {
+                protocol_version: PROTOCOL_VERSION,
+                legacy_storage: bootstrap.legacy_storage,
+            },
+        )?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ClientError::Spawn("service stdout was not piped".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ClientError::Spawn("service stderr was not piped".into()))?;
+        thread::Builder::new()
+            .name("client-service-stderr".into())
+            .spawn(move || drain_stderr(stderr))
             .map_err(|error| ClientError::Spawn(error.to_string()))?;
         let (sender, incoming) = mpsc::sync_channel(64);
-        thread::Builder::new().name("client-service-protocol".into())
+        thread::Builder::new()
+            .name("client-service-protocol".into())
             .spawn(move || read_protocol(stdout, sender))
             .map_err(|error| ClientError::Spawn(error.to_string()))?;
         let mut client = Self::new(Some(child), Box::new(writer), incoming);
@@ -156,16 +201,31 @@ impl Client {
         Ok(client)
     }
 
-    fn connect_existing(endpoint: &str, legacy_storage: Option<LegacyStorageSeed>) -> Result<Self, ClientError> {
-        let stream = local_socket::connect(endpoint).map_err(|error| ClientError::Io(error.to_string()))?;
+    fn connect_existing(
+        endpoint: &str,
+        legacy_storage: Option<LegacyStorageSeed>,
+    ) -> Result<Self, ClientError> {
+        let stream =
+            local_socket::connect(endpoint).map_err(|error| ClientError::Io(error.to_string()))?;
         Self::connect_stream(stream, legacy_storage)
     }
 
-    fn connect_stream(stream: local_socket::Stream, legacy_storage: Option<LegacyStorageSeed>) -> Result<Self, ClientError> {
-        stream.set_recv_timeout(Some(START_TIMEOUT)).map_err(|error| ClientError::Io(error.to_string()))?;
+    fn connect_stream(
+        stream: local_socket::Stream,
+        legacy_storage: Option<LegacyStorageSeed>,
+    ) -> Result<Self, ClientError> {
+        stream
+            .set_recv_timeout(Some(START_TIMEOUT))
+            .map_err(|error| ClientError::Io(error.to_string()))?;
         let (reader, writer) = stream.split();
         let mut writer = BufWriter::new(Box::new(writer) as Box<dyn Write + Send>);
-        write_frame(&mut writer, &ProtocolFrame::Connect { protocol_version: PROTOCOL_VERSION, legacy_storage })?;
+        write_frame(
+            &mut writer,
+            &ProtocolFrame::Connect {
+                protocol_version: PROTOCOL_VERSION,
+                legacy_storage,
+            },
+        )?;
         let mut reader = BufReader::new(reader);
         let mut ready = false;
         let mut snapshot = None;
@@ -183,25 +243,44 @@ impl Client {
                     ready = true;
                 }
                 ProtocolFrame::Event(ClientEvent::Snapshot(value)) => snapshot = Some(*value),
-                ProtocolFrame::Event(ClientEvent::ProtocolError(error)) => return Err(ClientError::Protocol(error.message)),
-                _ => return Err(ClientError::Protocol("service sent an unexpected frame during connection".into())),
+                ProtocolFrame::Event(ClientEvent::ProtocolError(error)) => {
+                    return Err(ClientError::Protocol(error.message));
+                }
+                _ => {
+                    return Err(ClientError::Protocol(
+                        "service sent an unexpected frame during connection".into(),
+                    ));
+                }
             }
             if ready {
-                reader.get_ref().set_timeout(None).map_err(|error| ClientError::Io(error.to_string()))?;
+                reader
+                    .get_ref()
+                    .set_timeout(None)
+                    .map_err(|error| ClientError::Io(error.to_string()))?;
                 let read = reader.into_inner();
                 let (sender, incoming) = mpsc::sync_channel(64);
-                thread::Builder::new().name("client-service-protocol".into())
+                thread::Builder::new()
+                    .name("client-service-protocol".into())
                     .spawn(move || read_protocol(read, sender))
                     .map_err(|error| ClientError::Spawn(error.to_string()))?;
                 let mut client = Self::new(None, Box::new(writer), incoming);
-                if let Some(snapshot) = snapshot { client.latest_snapshot = snapshot; }
+                if let Some(snapshot) = snapshot {
+                    client.latest_snapshot = snapshot;
+                }
                 return Ok(client);
             }
         }
     }
 
-    fn new(child: Option<Child>, writer: Box<dyn Write + Send>, incoming: Receiver<Result<ProtocolFrame, ClientError>>) -> Self {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    fn new(
+        child: Option<Child>,
+        writer: Box<dyn Write + Send>,
+        incoming: Receiver<Result<ProtocolFrame, ClientError>>,
+    ) -> Self {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         Self {
             child,
             writer: Some(BufWriter::new(writer)),
@@ -213,9 +292,15 @@ impl Client {
         }
     }
 
-    pub fn latest_snapshot(&self) -> &ClientSnapshot { &self.latest_snapshot }
+    pub fn latest_snapshot(&self) -> &ClientSnapshot {
+        &self.latest_snapshot
+    }
 
-    pub fn send(&mut self, action: ClientAction, expected_revision: Option<ClientRevision>) -> Result<RequestId, ClientError> {
+    pub fn send(
+        &mut self,
+        action: ClientAction,
+        expected_revision: Option<ClientRevision>,
+    ) -> Result<RequestId, ClientError> {
         let request_id = RequestId(format!("{}-{}", self.request_prefix, self.next_request));
         self.next_request = self.next_request.saturating_add(1);
         let frame = ProtocolFrame::Request(ClientRequest {
@@ -233,10 +318,16 @@ impl Client {
             Ok(frame) => self.accept_frame(frame).map(Some),
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => {
-                let status = self.child.as_mut().and_then(|child| child.try_wait().ok().flatten()).and_then(|status| status.code());
+                let status = self
+                    .child
+                    .as_mut()
+                    .and_then(|child| child.try_wait().ok().flatten())
+                    .and_then(|status| status.code());
                 if self.shared_service.is_some() {
                     let snapshot = self.reconnect()?.clone();
-                    return Ok(Some(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(snapshot)))));
+                    return Ok(Some(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(
+                        snapshot,
+                    )))));
                 }
                 Err(ClientError::ServiceExited(status))
             }
@@ -248,10 +339,16 @@ impl Client {
             Ok(frame) => self.accept_frame(frame),
             Err(RecvTimeoutError::Timeout) => Err(ClientError::Timeout("waiting for a response")),
             Err(RecvTimeoutError::Disconnected) => {
-                let status = self.child.as_mut().and_then(|child| child.try_wait().ok().flatten()).and_then(|status| status.code());
+                let status = self
+                    .child
+                    .as_mut()
+                    .and_then(|child| child.try_wait().ok().flatten())
+                    .and_then(|status| status.code());
                 if self.shared_service.is_some() {
                     let snapshot = self.reconnect()?.clone();
-                    return Ok(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(snapshot))));
+                    return Ok(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(
+                        snapshot,
+                    ))));
                 }
                 Err(ClientError::ServiceExited(status))
             }
@@ -260,14 +357,25 @@ impl Client {
 
     pub fn shutdown(mut self, timeout: Duration) -> Result<(), ClientError> {
         self.writer.take();
-        let Some(child) = self.child.as_mut() else { return Ok(()); };
+        let Some(child) = self.child.as_mut() else {
+            return Ok(());
+        };
         let deadline = Instant::now() + timeout.min(SHUTDOWN_TIMEOUT);
         loop {
-            if let Some(status) = child.try_wait().map_err(|error| ClientError::Io(error.to_string()))? {
-                return if status.success() { Ok(()) } else { Err(ClientError::ServiceExited(status.code())) };
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|error| ClientError::Io(error.to_string()))?
+            {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(ClientError::ServiceExited(status.code()))
+                };
             }
             if Instant::now() >= deadline {
-                child.kill().map_err(|error| ClientError::Io(error.to_string()))?;
+                child
+                    .kill()
+                    .map_err(|error| ClientError::Io(error.to_string()))?;
                 let _ = child.wait();
                 return Err(ClientError::Timeout("fixture service shutdown"));
             }
@@ -281,48 +389,69 @@ impl Client {
         let mut snapshot = None;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() { return Err(ClientError::Timeout("service startup")); }
+            if remaining.is_zero() {
+                return Err(ClientError::Timeout("service startup"));
+            }
             let frame = self.recv_timeout(remaining)?;
             match frame {
                 ProtocolFrame::Event(ClientEvent::ServiceReady { protocol_version }) => {
                     if protocol_version != PROTOCOL_VERSION {
-                        return Err(ClientError::Protocol(format!("service protocol {protocol_version} does not match client protocol {PROTOCOL_VERSION}")));
+                        return Err(ClientError::Protocol(format!(
+                            "service protocol {protocol_version} does not match client protocol {PROTOCOL_VERSION}"
+                        )));
                     }
                     ready = true;
                 }
                 ProtocolFrame::Event(ClientEvent::Snapshot(value)) => snapshot = Some(value),
-                ProtocolFrame::Event(ClientEvent::ProtocolError(error)) => return Err(ClientError::Protocol(error.message)),
+                ProtocolFrame::Event(ClientEvent::ProtocolError(error)) => {
+                    return Err(ClientError::Protocol(error.message));
+                }
                 _ => {}
             }
-            if ready && let Some(snapshot) = snapshot { self.latest_snapshot = *snapshot; return Ok(()); }
+            if ready && let Some(snapshot) = snapshot {
+                self.latest_snapshot = *snapshot;
+                return Ok(());
+            }
         }
     }
 
-    fn accept_frame(&mut self, frame: Result<ProtocolFrame, ClientError>) -> Result<ProtocolFrame, ClientError> {
+    fn accept_frame(
+        &mut self,
+        frame: Result<ProtocolFrame, ClientError>,
+    ) -> Result<ProtocolFrame, ClientError> {
         let frame = frame?;
-        if let ProtocolFrame::Event(ClientEvent::Snapshot(snapshot)) = &frame { self.latest_snapshot = snapshot.as_ref().clone(); }
-        if let ProtocolFrame::Response(response) = &frame { self.latest_snapshot = response.snapshot.clone(); }
+        if let ProtocolFrame::Event(ClientEvent::Snapshot(snapshot)) = &frame {
+            self.latest_snapshot = snapshot.as_ref().clone();
+        }
+        if let ProtocolFrame::Response(response) = &frame {
+            self.latest_snapshot = response.snapshot.clone();
+        }
         Ok(frame)
     }
 
     fn write_frame(&mut self, frame: &ProtocolFrame) -> Result<(), ClientError> {
-        let writer = self.writer.as_mut().ok_or(ClientError::ServiceExited(None))?;
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or(ClientError::ServiceExited(None))?;
         write_frame(writer, frame)
     }
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        if let Some(child) = self.child.as_mut()
+            && child.try_wait().ok().flatten().is_none()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
 
-fn resolve_host_context(bootstrap: &ClientHostConfig) -> Result<crate::ClientHostContext, ClientError> {
+fn resolve_host_context(
+    bootstrap: &ClientHostConfig,
+) -> Result<crate::ClientHostContext, ClientError> {
     let environment = env::vars_os().collect();
     crate::ClientHostContext::resolve(
         crate::ClientHostArguments {
@@ -332,36 +461,63 @@ fn resolve_host_context(bootstrap: &ClientHostConfig) -> Result<crate::ClientHos
         },
         &environment,
         crate::HostPlatform::current(),
-    ).map_err(ClientError::Io)
+    )
+    .map_err(ClientError::Io)
 }
 
-fn ensure_service(service_path: &Path, bootstrap: &ClientHostConfig, context: &crate::ClientHostContext, endpoint: &str) -> Result<(), ClientError> {
-    let lock = local_socket::startup_lock(&context.state_directory).map_err(|error| ClientError::Io(error.to_string()))?;
+fn ensure_service(
+    service_path: &Path,
+    bootstrap: &ClientHostConfig,
+    context: &crate::ClientHostContext,
+    endpoint: &str,
+) -> Result<(), ClientError> {
+    let lock = local_socket::startup_lock(&context.state_directory)
+        .map_err(|error| ClientError::Io(error.to_string()))?;
     match Client::connect_existing(endpoint, None) {
-        Ok(client) => { drop(client); drop(lock); return Ok(()); }
-        Err(error @ ClientError::Protocol(_)) => { drop(lock); return Err(error); }
+        Ok(client) => {
+            drop(client);
+            drop(lock);
+            return Ok(());
+        }
+        Err(error @ ClientError::Protocol(_)) => {
+            drop(lock);
+            return Err(error);
+        }
         Err(_) => {}
     }
     if !endpoint_unavailable(endpoint) {
         drop(lock);
-        return Err(ClientError::Io("the local service endpoint exists but is not connectable".into()));
+        return Err(ClientError::Io(
+            "the local service endpoint exists but is not connectable".into(),
+        ));
     }
-    local_socket::remove_stale_endpoint(endpoint).map_err(|error| ClientError::Io(error.to_string()))?;
+    local_socket::remove_stale_endpoint(endpoint)
+        .map_err(|error| ClientError::Io(error.to_string()))?;
     let mut spawned_service = Some(spawn_shared_service(service_path, bootstrap)?);
     drop(lock);
 
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
         match Client::connect_existing(endpoint, None) {
-            Ok(client) => { drop(client); drop(spawned_service.take()); return Ok(()); }
+            Ok(client) => {
+                drop(client);
+                drop(spawned_service.take());
+                return Ok(());
+            }
             Err(error @ ClientError::Protocol(_)) => return Err(error),
-            Err(error) if Instant::now() >= deadline => return Err(match error {
-                ClientError::Io(_) | ClientError::ServiceExited(_) => ClientError::Timeout("shared service startup"),
-                other => other,
-            }),
+            Err(error) if Instant::now() >= deadline => {
+                return Err(match error {
+                    ClientError::Io(_) | ClientError::ServiceExited(_) => {
+                        ClientError::Timeout("shared service startup")
+                    }
+                    other => other,
+                });
+            }
             Err(_) => {
                 if let Some(child) = spawned_service.as_mut()
-                    && let Some(status) = child.try_wait().map_err(|error| ClientError::Io(error.to_string()))?
+                    && let Some(status) = child
+                        .try_wait()
+                        .map_err(|error| ClientError::Io(error.to_string()))?
                 {
                     return Err(ClientError::ServiceExited(status.code()));
                 }
@@ -371,10 +527,12 @@ fn ensure_service(service_path: &Path, bootstrap: &ClientHostConfig, context: &c
     }
 }
 
-
 fn endpoint_unavailable(endpoint: &str) -> bool {
     match local_socket::connect(endpoint) {
-        Ok(stream) => { drop(stream); false }
+        Ok(stream) => {
+            drop(stream);
+            false
+        }
         Err(error) => matches!(
             error.kind(),
             std::io::ErrorKind::NotFound
@@ -385,7 +543,10 @@ fn endpoint_unavailable(endpoint: &str) -> bool {
     }
 }
 
-fn spawn_shared_service(service_path: &Path, bootstrap: &ClientHostConfig) -> Result<Child, ClientError> {
+fn spawn_shared_service(
+    service_path: &Path,
+    bootstrap: &ClientHostConfig,
+) -> Result<Child, ClientError> {
     let mut command = Command::new(service_path);
     command
         .arg("--serve")
@@ -394,16 +555,29 @@ fn spawn_shared_service(service_path: &Path, bootstrap: &ClientHostConfig) -> Re
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
-    if let Some(app_id) = bootstrap.workshop_app_id { command.arg("--workshop-app-id").arg(app_id.to_string()); }
-    if let Some(workspace) = bootstrap.workspace_root.as_ref() { command.arg("--workspace").arg(workspace); }
-    if let Some(composition_id) = bootstrap.active_composition_id.as_ref() { command.arg("--active-composition").arg(composition_id); }
-    if let Some(state_directory) = bootstrap.state_directory.as_ref() { command.arg("--state-dir").arg(state_directory); }
-    command.spawn().map_err(|error| ClientError::Spawn(error.to_string()))
+    if let Some(app_id) = bootstrap.workshop_app_id {
+        command.arg("--workshop-app-id").arg(app_id.to_string());
+    }
+    if let Some(workspace) = bootstrap.workspace_root.as_ref() {
+        command.arg("--workspace").arg(workspace);
+    }
+    if let Some(composition_id) = bootstrap.active_composition_id.as_ref() {
+        command.arg("--active-composition").arg(composition_id);
+    }
+    if let Some(state_directory) = bootstrap.state_directory.as_ref() {
+        command.arg("--state-dir").arg(state_directory);
+    }
+    command
+        .spawn()
+        .map_err(|error| ClientError::Spawn(error.to_string()))
 }
 
 fn write_frame(writer: &mut impl Write, frame: &ProtocolFrame) -> Result<(), ClientError> {
     let bytes = encode_frame(frame).map_err(ClientError::Protocol)?;
-    writer.write_all(&bytes).and_then(|()| writer.flush()).map_err(|error| ClientError::Io(error.to_string()))
+    writer
+        .write_all(&bytes)
+        .and_then(|()| writer.flush())
+        .map_err(|error| ClientError::Io(error.to_string()))
 }
 
 pub fn service_sibling_path(gui_executable: &Path) -> PathBuf {
@@ -412,17 +586,29 @@ pub fn service_sibling_path(gui_executable: &Path) -> PathBuf {
 
 fn service_sibling_path_for(gui_executable: &Path, windows: bool) -> PathBuf {
     let mut filename: OsString = "vapor-client-service".into();
-    if windows { filename.push(".exe"); }
-    gui_executable.parent().unwrap_or_else(|| Path::new(".")).join(filename)
+    if windows {
+        filename.push(".exe");
+    }
+    gui_executable
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(filename)
 }
 
 fn read_protocol(input: impl Read, sender: SyncSender<Result<ProtocolFrame, ClientError>>) {
     let mut input = BufReader::new(input);
     loop {
         match read_frame(&mut input) {
-            Ok(Some(frame)) => if sender.send(Ok(frame)).is_err() { return; },
+            Ok(Some(frame)) => {
+                if sender.send(Ok(frame)).is_err() {
+                    return;
+                }
+            }
             Ok(None) => return,
-            Err(error) => { let _ = sender.send(Err(ClientError::Protocol(error))); return; }
+            Err(error) => {
+                let _ = sender.send(Err(ClientError::Protocol(error)));
+                return;
+            }
         }
     }
 }
@@ -440,7 +626,13 @@ fn empty_snapshot() -> ClientSnapshot {
     use vapor_client_protocol::{ClientRevision, HostSummary};
     ClientSnapshot {
         revision: ClientRevision(0),
-        host: HostSummary { app_root: None, workspace: None, mode: "starting".into(), platform: String::new(), steam_client_available: false },
+        host: HostSummary {
+            app_root: None,
+            workspace: None,
+            mode: "starting".into(),
+            platform: String::new(),
+            steam_client_available: false,
+        },
         active_composition_id: None,
         durable_state: vapor_client_protocol::DurableStateSnapshot::default(),
         active_operation: None,

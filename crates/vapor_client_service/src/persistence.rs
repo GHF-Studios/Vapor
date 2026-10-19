@@ -4,8 +4,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-use vapor_client_protocol::LegacyStorageSeed;
 pub use vapor_client_domain::ClientStateDocument as ClientPersistentState;
+use vapor_client_protocol::LegacyStorageSeed;
 
 const STATE_SCHEMA_VERSION: u32 = vapor_client_domain::CLIENT_STATE_SCHEMA_VERSION;
 const STATE_FILE_NAME: &str = "studio-state.json";
@@ -88,10 +88,14 @@ impl ClientStateStore {
                 .write(true)
                 .create_new(true)
                 .open(&temporary)
-                .map_err(|error| format!("could not prepare Vapor Client state replacement: {error}"))?;
+                .map_err(|error| {
+                    format!("could not prepare Vapor Client state replacement: {error}")
+                })?;
             file.write_all(&bytes)
                 .and_then(|()| file.sync_all())
-                .map_err(|error| format!("could not write Vapor Client state replacement: {error}"))?;
+                .map_err(|error| {
+                    format!("could not write Vapor Client state replacement: {error}")
+                })?;
             fs::rename(&temporary, self.state_path())
                 .map_err(|error| format!("could not replace saved Vapor Client state: {error}"))?;
             sync_directory(&self.directory)

@@ -47,7 +47,10 @@ impl ContentCandidates {
     }
 
     /// All exact versions of one stable content identity.
-    pub fn versions<'a>(&'a self, id: &'a VaporId) -> impl Iterator<Item = &'a ContentCandidate> + 'a {
+    pub fn versions<'a>(
+        &'a self,
+        id: &'a VaporId,
+    ) -> impl Iterator<Item = &'a ContentCandidate> + 'a {
         self.entries
             .iter()
             .filter(move |(identity, _)| &identity.id == id)

@@ -89,7 +89,11 @@ pub fn download_workshop_items(
     application_executable: &Path,
     published_file_ids: &[String],
 ) -> Result<Vec<WorkshopAcquisition>, String> {
-    download_workshop_items_with_constraints(application_executable, published_file_ids, &Default::default())
+    download_workshop_items_with_constraints(
+        application_executable,
+        published_file_ids,
+        &Default::default(),
+    )
 }
 
 /// Download Workshop items while preserving Auto-Install composition
@@ -147,14 +151,13 @@ pub fn download_workshop_items_with_constraints(
             &ids,
             |published_file_id, root| {
                 let id = published_file_id.to_string();
-                let report =
-                    content::import_workshop_item_from_provider_with_constraints(
-                        &installation,
-                        app_id,
-                        &id,
-                        root,
-                        constraints,
-                    )?;
+                let report = content::import_workshop_item_from_provider_with_constraints(
+                    &installation,
+                    app_id,
+                    &id,
+                    root,
+                    constraints,
+                )?;
                 let cached = content::cached_artifact(&installation, report.artifact_id())?;
                 Ok((
                     *positions.get(&published_file_id).ok_or_else(|| {
@@ -362,7 +365,10 @@ pub fn update_composition(
 
 /// Remove one unreferenced cached artifact from the local Library while
 /// preserving any installed runtime copy.
-pub fn collect_library_item(application_executable: &Path, content_id: &str) -> Result<bool, String> {
+pub fn collect_library_item(
+    application_executable: &Path,
+    content_id: &str,
+) -> Result<bool, String> {
     let installation = InstallationPaths::from_application_executable(application_executable)?;
     content::collect_cached_artifact(&installation, content_id)
 }

@@ -11,14 +11,6 @@ use crate::{
     steam,
     workspace::WorkspaceManifest,
 };
-use vapor_content::{ContentCandidate, ContentCandidates, ContentVersionId, DependencySpec, VaporId};
-pub use vapor_client_domain::{
-    InstallCandidateAvailability, InstallPlan, InstallPlanDependency, InstallPlanNode,
-    InstallPlanSource, SelectedInstallCandidate,
-};
-use vapor_content::authored_manifest::{
-    AuthoredContentManifest, AuthoredVersion, AuthoredWorkshopPolicy, AuthoredReference,
-};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -27,6 +19,16 @@ use std::{
     path::{Component, Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
+};
+pub use vapor_client_domain::{
+    InstallCandidateAvailability, InstallPlan, InstallPlanDependency, InstallPlanNode,
+    InstallPlanSource, SelectedInstallCandidate,
+};
+use vapor_content::authored_manifest::{
+    AuthoredContentManifest, AuthoredReference, AuthoredVersion, AuthoredWorkshopPolicy,
+};
+use vapor_content::{
+    ContentCandidate, ContentCandidates, ContentVersionId, DependencySpec, VaporId,
 };
 
 const CONTENT_STATE_SCHEMA: u32 = 1;
@@ -397,10 +399,7 @@ impl From<&ContentReference> for CompositionLink {
 }
 
 impl ContentReference {
-    fn from_authored(
-        reference: &AuthoredReference,
-        relationship: &str,
-    ) -> Self {
+    fn from_authored(reference: &AuthoredReference, relationship: &str) -> Self {
         Self {
             id: reference.id.to_string(),
             relationship: relationship.to_owned(),
@@ -1548,7 +1547,10 @@ fn source_candidates(artifacts: &[ContentArtifact]) -> Result<ContentCandidates,
                 .parse::<VaporId>()
                 .map_err(|error| format!("invalid content ID '{}': {error}", artifact.id()))?,
             version: semver::Version::parse(version).map_err(|error| {
-                format!("invalid content version '{version}' for '{}': {error}", artifact.id())
+                format!(
+                    "invalid content version '{version}' for '{}': {error}",
+                    artifact.id()
+                )
             })?,
         };
         let mut dependencies = BTreeMap::new();
@@ -1962,10 +1964,16 @@ pub fn fork_cached_artifact(
 
     let cached = cached_artifact(paths.installation(), selector)?;
     let source_id = cached.artifact_id.clone();
-    let kind = cached.kind.parse::<ContentKind>()
+    let kind = cached
+        .kind
+        .parse::<ContentKind>()
         .map_err(|error| format!("cached content has an unsupported type: {error}"))?;
     let new_id = format!("{}/{new_name}", workspace.id());
-    if workspace.projects().iter().any(|project| project.id() == new_id) {
+    if workspace
+        .projects()
+        .iter()
+        .any(|project| project.id() == new_id)
+    {
         return Err(format!("content project is already registered: {new_id}"));
     }
 
@@ -1999,22 +2007,34 @@ pub fn fork_cached_artifact(
     let content_directory = source_root.join("content");
     match fs::symlink_metadata(&content_directory) {
         Ok(metadata) if metadata.file_type().is_dir() => {}
-        Ok(_) => return Err(format!("{} is not a regular directory", content_directory.display())),
+        Ok(_) => {
+            return Err(format!(
+                "{} is not a regular directory",
+                content_directory.display()
+            ));
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir(&content_directory)
                 .map_err(io("create workspace content directory", &content_directory))?;
         }
         Err(error) => return Err(format!("{}: {error}", content_directory.display())),
     }
-    let content_directory = fs::canonicalize(&content_directory)
-        .map_err(io("resolve workspace content directory", &content_directory))?;
+    let content_directory = fs::canonicalize(&content_directory).map_err(io(
+        "resolve workspace content directory",
+        &content_directory,
+    ))?;
     if !content_directory.starts_with(&source_root) {
-        return Err("workspace content directory resolves outside the selected workspace".to_owned());
+        return Err(
+            "workspace content directory resolves outside the selected workspace".to_owned(),
+        );
     }
     let relative_project = PathBuf::from("content").join(new_name);
     let output = source_root.join(&relative_project);
     if fs::symlink_metadata(&output).is_ok() {
-        return Err(format!("fork destination already exists: {}", output.display()));
+        return Err(format!(
+            "fork destination already exists: {}",
+            output.display()
+        ));
     }
     fs::create_dir(&output).map_err(io("create fork destination", &output))?;
     let cargo_workspace_path = source_root.join("Cargo.toml");
@@ -2055,16 +2075,16 @@ pub fn fork_cached_artifact(
         Ok(())
     })();
     if let Err(error) = prepare {
-        if let Some((cargo_path, original, updated)) = &cargo_transaction {
-            if fs::read_to_string(cargo_path).is_ok_and(|current| current == *updated) {
-                let _ = replace_source_manifest(
-                    cargo_path,
-                    updated,
-                    original,
-                    "Cargo workspace membership rollback for content fork",
-                    || Ok(()),
-                );
-            }
+        if let Some((cargo_path, original, updated)) = &cargo_transaction
+            && fs::read_to_string(cargo_path).is_ok_and(|current| current == *updated)
+        {
+            let _ = replace_source_manifest(
+                cargo_path,
+                updated,
+                original,
+                "Cargo workspace membership rollback for content fork",
+                || Ok(()),
+            );
         }
         let _ = fs::remove_dir_all(&output);
         return Err(error);
@@ -2081,12 +2101,16 @@ fn is_workspace_slug(value: &str) -> bool {
 
 fn read_package_name(path: &Path) -> Result<String, String> {
     let source = fs::read_to_string(path).map_err(io("read content Cargo manifest", path))?;
-    let document = source.parse::<toml_edit::DocumentMut>()
+    let document = source
+        .parse::<toml_edit::DocumentMut>()
         .map_err(|error| format!("content Cargo.toml is invalid: {error}"))?;
     if document.get("workspace").is_some() {
-        return Err("nested Cargo workspaces cannot be forked into another Cargo workspace".to_owned());
+        return Err(
+            "nested Cargo workspaces cannot be forked into another Cargo workspace".to_owned(),
+        );
     }
-    document.get("package")
+    document
+        .get("package")
         .and_then(toml_edit::Item::as_table)
         .and_then(|package| package.get("name"))
         .and_then(toml_edit::Item::as_str)
@@ -2096,17 +2120,24 @@ fn read_package_name(path: &Path) -> Result<String, String> {
 
 fn copy_fork_tree(source: &Path, target: &Path, root: &Path) -> Result<(), String> {
     let relative = source.strip_prefix(root).unwrap_or(Path::new(""));
-    if [".git", "target", "output"].iter().any(|name| relative.starts_with(name)) {
+    if [".git", "target", "output"]
+        .iter()
+        .any(|name| relative.starts_with(name))
+    {
         return Ok(());
     }
     let metadata = fs::symlink_metadata(source).map_err(io("inspect fork source", source))?;
     if metadata.file_type().is_symlink() {
-        return Err(format!("source fork refuses symlinks in the acquired package: {}", source.display()));
+        return Err(format!(
+            "source fork refuses symlinks in the acquired package: {}",
+            source.display()
+        ));
     }
     if metadata.is_dir() {
         fs::create_dir_all(target).map_err(io("create fork folder", target))?;
         for entry in fs::read_dir(source).map_err(io("read fork source", source))? {
-            let entry = entry.map_err(|error| format!("failed to read fork source entry: {error}"))?;
+            let entry =
+                entry.map_err(|error| format!("failed to read fork source entry: {error}"))?;
             copy_fork_tree(&entry.path(), &target.join(entry.file_name()), root)?;
         }
     } else if metadata.is_file() {
@@ -2129,7 +2160,9 @@ fn rewrite_fork_source(
     collect_files(root, root, &mut files)?;
     for relative_path in files {
         let path = root.join(relative_path);
-        let Ok(source) = fs::read_to_string(&path) else { continue };
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
         let mut updated = source.replace(source_id, new_id);
         if !old_crate.is_empty() && old_crate != new_crate {
             updated = updated.replace(old_crate, new_crate);
@@ -2267,20 +2300,20 @@ fn adopt_source_project_impl(
 
     let updated = document.to_string();
     let register = || {
-            WorkspaceManifest::load(paths)?;
-            vapor_core::VaporWorkspace::load(&source_root).map_err(|error| error.to_string())?;
-            let catalog = discover(paths)?;
-            if !catalog
-                .artifacts()
-                .iter()
-                .any(|artifact| artifact.id() == id && artifact.kind() == kind)
-            {
-                return Err(format!(
-                    "adopted content project {id} is not visible after registration"
-                ));
-            }
-            Ok(())
-        };
+        WorkspaceManifest::load(paths)?;
+        vapor_core::VaporWorkspace::load(&source_root).map_err(|error| error.to_string())?;
+        let catalog = discover(paths)?;
+        if !catalog
+            .artifacts()
+            .iter()
+            .any(|artifact| artifact.id() == id && artifact.kind() == kind)
+        {
+            return Err(format!(
+                "adopted content project {id} is not visible after registration"
+            ));
+        }
+        Ok(())
+    };
     if workspace_lock_held {
         replace_workspace_manifest_locked(
             &workspace_manifest,
@@ -4082,9 +4115,13 @@ fn import_workshop_item_with_constraints(
             let _ = fs::rename(&backup, &cache_root);
         }
         let _ = fs::remove_dir_all(&staging);
-        return Err(io("activate downloaded Workshop artifact", &cache_root)(error));
+        return Err(io("activate downloaded Workshop artifact", &cache_root)(
+            error,
+        ));
     }
-    index.caches.retain(|_, record| record.workshop_id.as_deref() != Some(published_file_id));
+    index
+        .caches
+        .retain(|_, record| record.workshop_id.as_deref() != Some(published_file_id));
     index.caches.insert(
         artifact.id().to_owned(),
         CacheRecord {
@@ -5243,7 +5280,8 @@ pub fn collect_cached_artifact(
 
     let packages = layout.cache().join("packages");
     fs::create_dir_all(&packages).map_err(io("create content cache", &packages))?;
-    let packages_root = fs::canonicalize(&packages).map_err(io("resolve content cache", &packages))?;
+    let packages_root =
+        fs::canonicalize(&packages).map_err(io("resolve content cache", &packages))?;
     let record_metadata = fs::symlink_metadata(&record.cache_root)
         .map_err(io("inspect cached artifact", &record.cache_root))?;
     if !record_metadata.file_type().is_dir() || record_metadata.file_type().is_symlink() {
@@ -5265,7 +5303,8 @@ pub fn collect_cached_artifact(
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
     let quarantine = packages.join(format!(".collect-{}-{nonce}", slug(content_id)));
-    fs::rename(&cache_root, &quarantine).map_err(io("stage cached artifact collection", &cache_root))?;
+    fs::rename(&cache_root, &quarantine)
+        .map_err(io("stage cached artifact collection", &cache_root))?;
     index.caches.remove(content_id);
     if let Err(error) = save_index(&layout, &index) {
         let restore = fs::rename(&quarantine, &cache_root);
@@ -5459,10 +5498,7 @@ impl LocalInstallProvider<'_> {
 }
 
 impl vapor_client_domain::InstallContentProvider for LocalInstallProvider<'_> {
-    fn select_root(
-        &mut self,
-        selector: &str,
-    ) -> Result<InstallCandidateAvailability, String> {
+    fn select_root(&mut self, selector: &str) -> Result<InstallCandidateAvailability, String> {
         let installed_key = resolve_installed_selector(&self.index, selector).ok();
         let installed = installed_key
             .as_ref()
@@ -5534,16 +5570,22 @@ impl vapor_client_domain::InstallContentProvider for LocalInstallProvider<'_> {
             return Err(format!("resolved parent '{parent}' has no provider record"));
         };
         let Some((_, index)) = binding.rsplit_once('#') else {
-            return Err(format!("dependency binding '{binding}' has no source index"));
+            return Err(format!(
+                "dependency binding '{binding}' has no source index"
+            ));
         };
         let index = index
             .parse::<usize>()
             .map_err(|error| format!("invalid dependency binding '{binding}': {error}"))?;
         let Some(reference) = parent_artifact.dependencies().get(index).cloned() else {
-            return Err(format!("dependency binding '{binding}' is not present in its authored artifact"));
+            return Err(format!(
+                "dependency binding '{binding}' is not present in its authored artifact"
+            ));
         };
         if reference.id() != requirement.id.as_str() {
-            return Err(format!("dependency binding '{binding}' does not match its shared identity"));
+            return Err(format!(
+                "dependency binding '{binding}' does not match its shared identity"
+            ));
         }
         let local_closure = parent_source == InstallPlanSource::Workspace;
         let id = requirement.id.as_str();
@@ -5592,18 +5634,14 @@ impl vapor_client_domain::InstallContentProvider for LocalInstallProvider<'_> {
                 });
             }
             if version_satisfies(artifact.version(), Some(&requirement.version)) {
-                let already_installed = self
-                    .index
-                    .installed
-                    .get(artifact.id())
-                    .is_some_and(|record| {
-                        record.enabled && record.version.as_deref() == artifact.version()
-                    });
-                return self.retain_artifact(
-                    artifact,
-                    InstallPlanSource::Cache,
-                    already_installed,
-                );
+                let already_installed =
+                    self.index
+                        .installed
+                        .get(artifact.id())
+                        .is_some_and(|record| {
+                            record.enabled && record.version.as_deref() == artifact.version()
+                        });
+                return self.retain_artifact(artifact, InstallPlanSource::Cache, already_installed);
             }
         }
 
@@ -6264,9 +6302,11 @@ fn read_authored_content(path: &Path, kind: ContentKind) -> Result<AuthoredConte
             .iter()
             .map(|edge| ContentReference::from_authored(&edge.reference, &edge.relationship))
             .collect(),
-        conflicts: authored.conflicts.iter().map(|reference| {
-            ContentReference::from_authored(reference, &reference.relationship)
-        }).collect(),
+        conflicts: authored
+            .conflicts
+            .iter()
+            .map(|reference| ContentReference::from_authored(reference, &reference.relationship))
+            .collect(),
     };
     Ok(content)
 }
@@ -6375,7 +6415,6 @@ impl DeployedManifest {
             crate_content: None,
         }
     }
-
 }
 
 fn stage_deployed_artifact(
@@ -6707,9 +6746,7 @@ fn read_deployed_manifest(package_root: &Path) -> Result<ContentArtifact, String
     let kind = ContentKind::ALL
         .into_iter()
         .find(|kind| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                == Some(kind.manifest_file_name())
+            path.file_name().and_then(|name| name.to_str()) == Some(kind.manifest_file_name())
         })
         .ok_or_else(|| {
             format!(
@@ -6735,14 +6772,12 @@ fn read_deployed_manifest(package_root: &Path) -> Result<ContentArtifact, String
             path.display()
         ));
     }
-    let authored = manifest
-        .content(kind)
-        .ok_or_else(|| {
-            format!(
-                "deployed content manifest '{}' does not match its filename role",
-                path.display()
-            )
-        })?;
+    let authored = manifest.content(kind).ok_or_else(|| {
+        format!(
+            "deployed content manifest '{}' does not match its filename role",
+            path.display()
+        )
+    })?;
     let id = authored
         .id
         .as_ref()
@@ -7022,7 +7057,12 @@ fn acquire_content_index_lock(layout: &ContentLayout) -> Result<ContentIndexLock
         .write(true)
         .create_new(true)
         .open(&path)
-        .map_err(|error| format!("cannot acquire content index lock '{}': {error}", path.display()))?;
+        .map_err(|error| {
+            format!(
+                "cannot acquire content index lock '{}': {error}",
+                path.display()
+            )
+        })?;
     Ok(ContentIndexLock { path })
 }
 
@@ -7711,7 +7751,8 @@ published-file-id = "3762162548"
 title = "Movement"
 "#;
 
-        let source = source_manifest_for_fork(deployed, ContentKind::GameMod, "nebula-movement").unwrap();
+        let source =
+            source_manifest_for_fork(deployed, ContentKind::GameMod, "nebula-movement").unwrap();
         let document = source.parse::<toml_edit::DocumentMut>().unwrap();
         assert!(document.get("schema").is_none());
         let role = document.get("game-mod").unwrap().as_table().unwrap();
@@ -7720,8 +7761,16 @@ title = "Movement"
         assert_eq!(role.get("name").unwrap().as_str(), Some("nebula-movement"));
         assert_eq!(role.get("version").unwrap().as_str(), Some("2.3.0"));
         assert_eq!(
-            role.get("dependencies").unwrap().as_array_of_tables().unwrap().iter().next().unwrap()
-                .get("id").unwrap().as_str(),
+            role.get("dependencies")
+                .unwrap()
+                .as_array_of_tables()
+                .unwrap()
+                .iter()
+                .next()
+                .unwrap()
+                .get("id")
+                .unwrap()
+                .as_str(),
             Some("community/shared/math")
         );
         let steam = role.get("steam").unwrap().as_table().unwrap();
@@ -7762,9 +7811,11 @@ title = "Movement"
         assert!(source.contains("local/workspace/new-mod"));
         assert!(source.contains("vapor_local_workspace_new_mod::run"));
         assert!(!source.contains("author/old/mod"));
-        assert!(fs::read_to_string(root.join("Cargo.toml"))
-            .unwrap()
-            .contains("vapor_local_workspace_new_mod"));
+        assert!(
+            fs::read_to_string(root.join("Cargo.toml"))
+                .unwrap()
+                .contains("vapor_local_workspace_new_mod")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -7855,28 +7906,37 @@ title = "Movement"
         }
         save_index(&layout, &index).unwrap();
 
-        let manifest_path = fork_cached_artifact(&paths, "publisher/project/movement@2.3.0", "movement-copy")
-            .expect("source-backed package can be forked");
+        let manifest_path =
+            fork_cached_artifact(&paths, "publisher/project/movement@2.3.0", "movement-copy")
+                .expect("source-backed package can be forked");
         let fork_root = manifest_path.parent().unwrap();
         assert!(manifest_path.is_file());
         let source = fs::read_to_string(&manifest_path).unwrap();
         assert!(!source.contains("published-file-id"));
         assert!(!source.contains("id = \"publisher/project/movement\""));
         assert!(source.contains("name = \"movement-copy\""));
-        assert!(fs::read_to_string(fork_root.join("Cargo.toml"))
-            .unwrap()
-            .contains("vapor_author_workspace_movement_copy"));
-        assert!(fs::read_to_string(fork_root.join("src/lib.rs"))
-            .unwrap()
-            .contains("author/workspace/movement-copy"));
-        assert!(fs::read_to_string(workspace_root.join("Cargo.toml"))
-            .unwrap()
-            .contains("content/movement-copy"));
-        assert!(discover(&paths)
-            .unwrap()
-            .artifacts()
-            .iter()
-            .any(|artifact| artifact.id() == "author/workspace/movement-copy"));
+        assert!(
+            fs::read_to_string(fork_root.join("Cargo.toml"))
+                .unwrap()
+                .contains("vapor_author_workspace_movement_copy")
+        );
+        assert!(
+            fs::read_to_string(fork_root.join("src/lib.rs"))
+                .unwrap()
+                .contains("author/workspace/movement-copy")
+        );
+        assert!(
+            fs::read_to_string(workspace_root.join("Cargo.toml"))
+                .unwrap()
+                .contains("content/movement-copy")
+        );
+        assert!(
+            discover(&paths)
+                .unwrap()
+                .artifacts()
+                .iter()
+                .any(|artifact| artifact.id() == "author/workspace/movement-copy")
+        );
 
         let error = fork_cached_artifact(&paths, binary_only_id, "binary-copy").unwrap_err();
         assert!(error.contains("no complete Rust source project"));
@@ -7925,7 +7985,10 @@ title = "Movement"
 
         assert!(collect_cached_artifact(&installation, content_id).unwrap());
         assert!(!cache_root.exists());
-        assert_eq!(fs::read_to_string(installed_root.join("payload.txt")).unwrap(), "installed");
+        assert_eq!(
+            fs::read_to_string(installed_root.join("payload.txt")).unwrap(),
+            "installed"
+        );
         assert!(!load_index(&layout).unwrap().caches.contains_key(content_id));
         assert!(!collect_cached_artifact(&installation, content_id).unwrap());
         fs::remove_dir_all(root).unwrap();
@@ -7988,8 +8051,16 @@ title = "Movement"
         )
         .unwrap_err();
         assert!(error.contains("does not satisfy every dependent composition"));
-        assert_eq!(fs::read_to_string(cache_root.join("payload.txt")).unwrap(), "old-version");
-        assert_eq!(load_index(&layout).unwrap().caches[content_id].version.as_deref(), Some("1.5.0"));
+        assert_eq!(
+            fs::read_to_string(cache_root.join("payload.txt")).unwrap(),
+            "old-version"
+        );
+        assert_eq!(
+            load_index(&layout).unwrap().caches[content_id]
+                .version
+                .as_deref(),
+            Some("1.5.0")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

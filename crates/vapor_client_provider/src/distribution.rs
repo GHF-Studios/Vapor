@@ -1,8 +1,6 @@
 //! Declarative assembly of the self-hosting Steam application payload.
 
-use crate::{
-    discovery::{EnvironmentPaths, ensure_contained},
-};
+use crate::discovery::{EnvironmentPaths, ensure_contained};
 use serde::Deserialize;
 use std::{
     collections::BTreeSet,
@@ -573,6 +571,10 @@ fn host_runtime_target() -> String {
         ("aarch64", "windows", _) => "aarch64-pc-windows-msvc".to_owned(),
         ("x86_64", "macos", _) => "x86_64-apple-darwin".to_owned(),
         ("aarch64", "macos", _) => "aarch64-apple-darwin".to_owned(),
-        _ => format!("{arch}-{}-{}", std::env::consts::OS, std::env::consts::FAMILY),
+        _ => format!(
+            "{arch}-{}-{}",
+            std::env::consts::OS,
+            std::env::consts::FAMILY
+        ),
     }
 }

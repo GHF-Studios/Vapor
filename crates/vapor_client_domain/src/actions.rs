@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 pub use crate::{CompositionAction, LibraryAction};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "family", content = "action", rename_all = "kebab-case")]
@@ -264,9 +264,15 @@ impl ClientAction {
             },
             Self::Workspace(action) => match action {
                 WorkspaceAction::InitializeSuperworkspace => "workspace.initialize-superworkspace",
-                WorkspaceAction::SetSuperworkspaceLocation { .. } => "workspace.set-superworkspace-location",
-                WorkspaceAction::DiscoverSuperworkspaceRepositories => "workspace.discover-superworkspace-repositories",
-                WorkspaceAction::AcquireSuperworkspaceRepositories { .. } => "workspace.acquire-superworkspace-repositories",
+                WorkspaceAction::SetSuperworkspaceLocation { .. } => {
+                    "workspace.set-superworkspace-location"
+                }
+                WorkspaceAction::DiscoverSuperworkspaceRepositories => {
+                    "workspace.discover-superworkspace-repositories"
+                }
+                WorkspaceAction::AcquireSuperworkspaceRepositories { .. } => {
+                    "workspace.acquire-superworkspace-repositories"
+                }
                 WorkspaceAction::Discover { .. } => "workspace.discover",
                 WorkspaceAction::DiscoverWorkspace { .. } => "workspace.discover-workspace",
                 WorkspaceAction::Open { .. } => "workspace.open",

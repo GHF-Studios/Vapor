@@ -1,8 +1,5 @@
 use crate::ContentReference;
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, path::PathBuf};
 
 /// Source that currently makes one exact content version available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

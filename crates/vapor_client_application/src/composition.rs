@@ -1,12 +1,10 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 pub use vapor_client_domain::{
-    COMPOSITION_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION, Composition, CompositionDocument,
-    ContentReference,
-    InstallationState, InstalledArtifactRecord, LaunchSettings, ResolvedCompositionGraph,
-    ResolvedDependencyIdentity, ResolvedNodeIdentity, WorkspaceAssociation,
-    add_composition, duplicate_composition, fingerprint_resolved_graph, remove_composition,
-    rename_composition, resolved_graph_matches,
+    CURRENT_SCHEMA_VERSION, Composition, CompositionDocument, ContentReference, InstallationState,
+    InstalledArtifactRecord, LaunchSettings, ResolvedCompositionGraph, ResolvedDependencyIdentity,
+    ResolvedNodeIdentity, WorkspaceAssociation, add_composition, duplicate_composition,
+    fingerprint_resolved_graph, remove_composition, rename_composition, resolved_graph_matches,
 };
 
 #[cfg(test)]

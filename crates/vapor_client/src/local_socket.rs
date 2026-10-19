@@ -1,9 +1,7 @@
 //! Cross-platform local IPC used by all Vapor Client frontends.
 
 use interprocess::local_socket::{
-    GenericNamespaced, ListenerOptions,
-    ToNsName,
-    traits::Stream as _,
+    GenericNamespaced, ListenerOptions, ToNsName, traits::Stream as _,
 };
 pub use interprocess::local_socket::{Listener, Stream};
 use std::{
@@ -50,13 +48,11 @@ fn bind_with_local_permissions(name: interprocess::local_socket::Name<'_>) -> io
 #[cfg(windows)]
 fn bind_with_local_permissions(name: interprocess::local_socket::Name<'_>) -> io::Result<Listener> {
     use interprocess::os::windows::{
-        local_socket::ListenerOptionsExt as _,
-        security_descriptor::SecurityDescriptor,
+        local_socket::ListenerOptionsExt as _, security_descriptor::SecurityDescriptor,
     };
     use widestring::U16CString;
 
-    let sddl = U16CString::from_str("D:P(A;;GA;;;SY)(A;;GA;;;OW)")
-        .map_err(io::Error::other)?;
+    let sddl = U16CString::from_str("D:P(A;;GA;;;SY)(A;;GA;;;OW)").map_err(io::Error::other)?;
     let security = SecurityDescriptor::deserialize(&sddl)?;
     ListenerOptions::new()
         .name(name)

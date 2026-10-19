@@ -99,14 +99,22 @@ impl TryFrom<&ResolvedCompositionGraph> for ResolvedComposition {
             let kind = ContentKind::ALL
                 .into_iter()
                 .find(|kind| kind.as_str() == node.kind.as_str())
-                .ok_or_else(|| format!("unknown content kind '{}' in composition snapshot", node.kind))?;
+                .ok_or_else(|| {
+                    format!(
+                        "unknown content kind '{}' in composition snapshot",
+                        node.kind
+                    )
+                })?;
             let mut dependencies = BTreeMap::new();
             let mut dependency_requirements = BTreeMap::new();
             for dependency in &node.dependencies {
                 let target = exact(&dependency.content)?;
                 if let Some(requirement) = dependency.version_requirement.as_deref() {
                     let requirement: semver::VersionReq = requirement.parse().map_err(|error| {
-                        format!("invalid version requirement '{requirement}' for '{}': {error}", dependency.content.id)
+                        format!(
+                            "invalid version requirement '{requirement}' for '{}': {error}",
+                            dependency.content.id
+                        )
                     })?;
                     if !requirement.matches(&target.version) {
                         return Err(format!(
@@ -116,7 +124,10 @@ impl TryFrom<&ResolvedCompositionGraph> for ResolvedComposition {
                     }
                     dependency_requirements.insert(dependency.binding.clone(), requirement);
                 }
-                if dependencies.insert(dependency.binding.clone(), target).is_some() {
+                if dependencies
+                    .insert(dependency.binding.clone(), target)
+                    .is_some()
+                {
                     return Err(format!(
                         "duplicate dependency binding '{}' on '{}'",
                         dependency.binding, node.content.id
@@ -147,7 +158,9 @@ impl TryFrom<&ResolvedCompositionGraph> for ResolvedComposition {
             return Err(format!("resolved composition root '{root}' is absent"));
         }
         if nodes.get(&root).map(|node| node.kind) != Some(ContentKind::Packagepack) {
-            return Err(format!("resolved composition root '{root}' is not a Packagepack"));
+            return Err(format!(
+                "resolved composition root '{root}' is not a Packagepack"
+            ));
         }
         if nodes.get(&effective_engine).map(|node| node.kind) != Some(ContentKind::Engine) {
             return Err(format!(
@@ -221,28 +234,66 @@ pub enum InstallationState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum CompositionAction {
-    Create { name: String },
-    Duplicate { composition_id: String, name: String },
-    Rename { composition_id: String, name: String },
-    Remove { composition_id: String },
-    Select { composition_id: String },
+    Create {
+        name: String,
+    },
+    Duplicate {
+        composition_id: String,
+        name: String,
+    },
+    Rename {
+        composition_id: String,
+        name: String,
+    },
+    Remove {
+        composition_id: String,
+    },
+    Select {
+        composition_id: String,
+    },
     SetRoot {
         composition_id: String,
         content_id: Option<String>,
         content_version: Option<String>,
         workspace_root: Option<String>,
     },
-    ResolveDefaultRoot { composition_id: String },
-    SetLaunchArguments { composition_id: String, arguments: Vec<String> },
-    AdoptVerifiedGraph { composition_id: String },
-    InvalidateContent { content_id: String, content_version: Option<String> },
-    Preview { composition_id: String, #[serde(default)] selector: Option<String> },
-    Install { composition_id: String },
-    Verify { composition_id: String },
-    Repair { composition_id: String },
-    Update { composition_id: String },
-    Launch { composition_id: String },
-    RunSource { composition_id: String },
+    ResolveDefaultRoot {
+        composition_id: String,
+    },
+    SetLaunchArguments {
+        composition_id: String,
+        arguments: Vec<String>,
+    },
+    AdoptVerifiedGraph {
+        composition_id: String,
+    },
+    InvalidateContent {
+        content_id: String,
+        content_version: Option<String>,
+    },
+    Preview {
+        composition_id: String,
+        #[serde(default)]
+        selector: Option<String>,
+    },
+    Install {
+        composition_id: String,
+    },
+    Verify {
+        composition_id: String,
+    },
+    Repair {
+        composition_id: String,
+    },
+    Update {
+        composition_id: String,
+    },
+    Launch {
+        composition_id: String,
+    },
+    RunSource {
+        composition_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,7 +398,11 @@ pub fn fingerprint_resolved_graph(graph: &ResolvedCompositionGraph) -> Option<St
                     dependency.binding,
                     target.len(),
                     target,
-                    dependency.version_requirement.as_deref().unwrap_or("").len(),
+                    dependency
+                        .version_requirement
+                        .as_deref()
+                        .unwrap_or("")
+                        .len(),
                     dependency.version_requirement.as_deref().unwrap_or("")
                 )
             })
@@ -394,13 +449,15 @@ pub fn resolved_graph_matches(
         expected.kind == actual.kind
             && expected.dependencies.len() == actual.dependencies.len()
             && expected.dependencies.iter().zip(&actual.dependencies).all(
-                |((expected_binding, expected_content, expected_requirement),
-                  (actual_binding, actual_content, actual_requirement))| {
+                |(
+                    (expected_binding, expected_content, expected_requirement),
+                    (actual_binding, actual_content, actual_requirement),
+                )| {
                     expected_binding == actual_binding
                         && expected_content == actual_content
-                        && expected_requirement
-                            .as_ref()
-                            .is_none_or(|requirement| actual_requirement.as_ref() == Some(requirement))
+                        && expected_requirement.as_ref().is_none_or(|requirement| {
+                            actual_requirement.as_ref() == Some(requirement)
+                        })
                 },
             )
             && expected
@@ -618,7 +675,10 @@ where
         }
         CompositionAction::ResolveDefaultRoot { composition_id } => {
             let index = composition_index(state, &composition_id)?;
-            if state.compositions.compositions[index].root_package.is_some() {
+            if state.compositions.compositions[index]
+                .root_package
+                .is_some()
+            {
                 return Err("This composition already has a selected composition root.".to_owned());
             }
             let content_id = resolve_default_root().map_err(|error| {
@@ -695,7 +755,10 @@ where
     Ok(())
 }
 
-fn composition_index(state: &crate::ClientStateDocument, composition_id: &str) -> Result<usize, String> {
+fn composition_index(
+    state: &crate::ClientStateDocument,
+    composition_id: &str,
+) -> Result<usize, String> {
     state
         .compositions
         .compositions
@@ -731,4 +794,3 @@ fn unique_composition_name(compositions: &[Composition], base: &str) -> String {
         })
         .expect("composition name space exhausted")
 }
-

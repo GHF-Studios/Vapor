@@ -115,9 +115,7 @@ pub fn validate_content_graph(graph: &ResolvedContentGraph) -> Result<(), Resolu
 
 /// Validate graph integrity and content-kind relationships without applying
 /// root-pack cardinality rules.
-pub fn validate_content_relationships(
-    graph: &ResolvedContentGraph,
-) -> Result<(), ResolutionError> {
+pub fn validate_content_relationships(graph: &ResolvedContentGraph) -> Result<(), ResolutionError> {
     if !graph.nodes.contains_key(&graph.root) {
         return Err(ResolutionError::RootNodeMissing {
             identity: graph.root.clone(),
@@ -127,8 +125,8 @@ pub fn validate_content_relationships(
         for dependency in node.dependencies.values() {
             if !graph.nodes.contains_key(dependency) {
                 return Err(ResolutionError::DependencyNodeMissing {
-                    parent: node.identity.clone(),
-                    dependency: dependency.clone(),
+                    parent: Box::new(node.identity.clone()),
+                    dependency: Box::new(dependency.clone()),
                 });
             }
         }
@@ -208,7 +206,11 @@ fn validate_pack_shape(graph: &ResolvedContentGraph) -> Result<(), ResolutionErr
         ContentKind::Enginepack => require_exactly_one(graph, ContentKind::Engine)?,
         ContentKind::Gamepack => require_exactly_one(graph, ContentKind::Game)?,
         ContentKind::Modpack => {
-            let count = graph.nodes.values().filter(|node| is_mod(node.kind)).count();
+            let count = graph
+                .nodes
+                .values()
+                .filter(|node| is_mod(node.kind))
+                .count();
             if count == 0 {
                 return Err(ResolutionError::ModpackContainsNoMods {
                     modpack: graph.root.clone(),
@@ -282,7 +284,9 @@ fn validate_target_relationships(
                     .dependencies
                     .values()
                     .filter(|dependency| {
-                        nodes.get(*dependency).is_some_and(|target| is_mod(target.kind))
+                        nodes
+                            .get(*dependency)
+                            .is_some_and(|target| is_mod(target.kind))
                     })
                     .count();
                 if count != 1 {
@@ -325,12 +329,13 @@ pub fn resolve_exact(
     candidates: &ContentCandidates,
     root: &ContentVersionId,
 ) -> Result<ResolvedContentGraph, ResolutionError> {
-    let root_candidate = candidates
-        .get(root)
-        .cloned()
-        .ok_or_else(|| ResolutionError::RootNotFound {
-            id: root.id.clone(),
-        })?;
+    let root_candidate =
+        candidates
+            .get(root)
+            .cloned()
+            .ok_or_else(|| ResolutionError::RootNotFound {
+                id: root.id.clone(),
+            })?;
     resolve_from(root_candidate, |_, _, dependency| {
         candidates
             .latest_matching(&dependency.id, &dependency.version)
@@ -358,10 +363,7 @@ where
 /// Resolve as much of a graph as possible and retain missing-edge or cycle
 /// diagnostics alongside the known nodes. This is suitable for install
 /// previews that need to show available content even when blocked.
-pub fn resolve_report_from<F>(
-    root: ContentCandidate,
-    select_dependency: F,
-) -> ResolutionReport
+pub fn resolve_report_from<F>(root: ContentCandidate, select_dependency: F) -> ResolutionReport
 where
     F: FnMut(&ContentCandidate, &str, &DependencySpec) -> Option<ContentCandidate>,
 {
@@ -438,8 +440,8 @@ where
             if dependency.optional {
                 continue;
             }
-            let selected = (self.select_dependency)(&candidate, binding, dependency)
-                .filter(|selected| {
+            let selected =
+                (self.select_dependency)(&candidate, binding, dependency).filter(|selected| {
                     selected.identity.id == dependency.id
                         && dependency.version.matches(&selected.identity.version)
                 });
@@ -497,8 +499,8 @@ pub enum ResolutionError {
     RootNodeMissing { identity: ContentVersionId },
     /// A graph edge references a node absent from the graph.
     DependencyNodeMissing {
-        parent: ContentVersionId,
-        dependency: ContentVersionId,
+        parent: Box<ContentVersionId>,
+        dependency: Box<ContentVersionId>,
     },
     /// A graph root has a different kind than requested.
     RootKindMismatch {
@@ -514,19 +516,37 @@ pub enum ResolutionError {
         child_kind: ContentKind,
     },
     /// The graph does not contain exactly one effective Engine.
-    EffectiveEngineCount { count: usize, engines: Vec<ContentVersionId> },
+    EffectiveEngineCount {
+        count: usize,
+        engines: Vec<ContentVersionId>,
+    },
     /// The graph does not contain exactly one effective Game.
-    EffectiveGameCount { count: usize, games: Vec<ContentVersionId> },
+    EffectiveGameCount {
+        count: usize,
+        games: Vec<ContentVersionId>,
+    },
     /// A Modpack resolves no mod content.
     ModpackContainsNoMods { modpack: ContentVersionId },
     /// A Game does not target exactly one Engine.
-    GameEngineTargetCount { game: ContentVersionId, count: usize },
+    GameEngineTargetCount {
+        game: ContentVersionId,
+        count: usize,
+    },
     /// An Engine Mod does not target exactly one Engine.
-    EngineModEngineTargetCount { engine_mod: ContentVersionId, count: usize },
+    EngineModEngineTargetCount {
+        engine_mod: ContentVersionId,
+        count: usize,
+    },
     /// A Game Mod does not target exactly one Game.
-    GameModGameTargetCount { game_mod: ContentVersionId, count: usize },
+    GameModGameTargetCount {
+        game_mod: ContentVersionId,
+        count: usize,
+    },
     /// An Extension Mod does not target exactly one other Mod.
-    ExtensionModTargetCount { extension_mod: ContentVersionId, count: usize },
+    ExtensionModTargetCount {
+        extension_mod: ContentVersionId,
+        count: usize,
+    },
 }
 
 impl std::fmt::Display for ResolutionError {
@@ -545,8 +565,13 @@ impl std::fmt::Display for ResolutionError {
                 formatter,
                 "`{depender}` dependency `{binding}` requires `{id}` `{requirement}`, but no matching local version is available"
             ),
-            Self::DependencyCycle { cycle } => write!(formatter, "content dependency cycle: {cycle:?}"),
-            Self::RootNotPackagepack { identity, actual_kind } => write!(
+            Self::DependencyCycle { cycle } => {
+                write!(formatter, "content dependency cycle: {cycle:?}")
+            }
+            Self::RootNotPackagepack {
+                identity,
+                actual_kind,
+            } => write!(
                 formatter,
                 "resolution root `{identity}` is `{actual_kind}`, not a Packagepack"
             ),
@@ -557,10 +582,22 @@ impl std::fmt::Display for ResolutionError {
                 formatter,
                 "resolved node {parent} references missing dependency {dependency}"
             ),
-            Self::RootKindMismatch { identity, expected_kind, actual_kind } => {
-                write!(formatter, "`{identity}` is `{actual_kind}`, not `{expected_kind}`")
+            Self::RootKindMismatch {
+                identity,
+                expected_kind,
+                actual_kind,
+            } => {
+                write!(
+                    formatter,
+                    "`{identity}` is `{actual_kind}`, not `{expected_kind}`"
+                )
             }
-            Self::PackChildKindNotAllowed { parent, parent_kind, child, child_kind } => write!(
+            Self::PackChildKindNotAllowed {
+                parent,
+                parent_kind,
+                child,
+                child_kind,
+            } => write!(
                 formatter,
                 "{parent_kind} `{parent}` cannot contain {child_kind} `{child}`"
             ),
@@ -573,7 +610,10 @@ impl std::fmt::Display for ResolutionError {
                 "resolved pack must contain exactly one effective Game, but found {count}"
             ),
             Self::ModpackContainsNoMods { modpack } => {
-                write!(formatter, "resolved Modpack `{modpack}` does not contain any Mods")
+                write!(
+                    formatter,
+                    "resolved Modpack `{modpack}` does not contain any Mods"
+                )
             }
             Self::GameEngineTargetCount { game, count } => write!(
                 formatter,
@@ -587,7 +627,10 @@ impl std::fmt::Display for ResolutionError {
                 formatter,
                 "Game Mod `{game_mod}` must directly target exactly one Game, but found {count}"
             ),
-            Self::ExtensionModTargetCount { extension_mod, count } => write!(
+            Self::ExtensionModTargetCount {
+                extension_mod,
+                count,
+            } => write!(
                 formatter,
                 "Extension Mod `{extension_mod}` must directly target exactly one Mod, but found {count}"
             ),

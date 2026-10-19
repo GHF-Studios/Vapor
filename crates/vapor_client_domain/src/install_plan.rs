@@ -107,10 +107,7 @@ pub struct SelectedInstallCandidate {
 /// readiness.
 pub trait InstallContentProvider {
     /// Select the requested root from eligible local sources.
-    fn select_root(
-        &mut self,
-        selector: &str,
-    ) -> Result<InstallCandidateAvailability, String>;
+    fn select_root(&mut self, selector: &str) -> Result<InstallCandidateAvailability, String>;
 
     /// Select one dependency candidate using the authored requirement and the
     /// selected parent's provider outcome.
@@ -199,10 +196,11 @@ pub fn resolve_install_plan(
                 push_unique(&mut builder.blockers, issue.to_string());
             }
             vapor_content::ContentResolutionError::DependencyNotFound {
-                depender,
-                binding,
-                ..
-            } if !builder.diagnosed_missing.contains(&(depender.clone(), binding.clone())) => {
+                depender, binding, ..
+            } if !builder
+                .diagnosed_missing
+                .contains(&(depender.clone(), binding.clone())) =>
+            {
                 push_unique(&mut builder.blockers, issue.to_string());
             }
             _ => {}
@@ -217,10 +215,11 @@ pub fn resolve_install_plan(
                 report.graph.root.id, root_kind,
             ),
         );
-    } else if graph_complete && builder.blockers.is_empty() {
-        if let Err(error) = validate_content_graph(&report.graph) {
-            push_unique(&mut builder.blockers, error.to_string());
-        }
+    } else if graph_complete
+        && builder.blockers.is_empty()
+        && let Err(error) = validate_content_graph(&report.graph)
+    {
+        push_unique(&mut builder.blockers, error.to_string());
     }
 
     let selected_ids: BTreeSet<_> = report
@@ -322,10 +321,10 @@ impl InstallPlanBuilder {
         warning: bool,
         seed: Option<InstallPlanNode>,
     ) {
-        if let Some(seed) = seed {
-            if !self.nodes.contains(&seed) {
-                self.nodes.push(seed);
-            }
+        if let Some(seed) = seed
+            && !self.nodes.contains(&seed)
+        {
+            self.nodes.push(seed);
         }
         if let Some(message) = message {
             let messages = if warning {

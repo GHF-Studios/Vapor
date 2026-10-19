@@ -4,13 +4,13 @@
 //!
 //! Vapor deliberately separates app-owned machinery from authored source:
 //!
-//! - [`InstallationPaths`] is anchored to the running executable. It contains
+//! - [`InstallationPaths`](crate::discovery::InstallationPaths) is anchored to the running executable. It contains
 //!   bundled setup tools, binaries, libraries, and installed content.
-//! - [`SourceWorkspace`] is anchored to an explicitly selected external source
+//! - [`SourceWorkspace`](crate::discovery::SourceWorkspace) is anchored to an explicitly selected external source
 //!   path. It contains critical authored source and must be outside the
 //!   installation.
 //!
-//! [`EnvironmentPaths`] pairs both roots and rejects overlapping layouts.
+//! [`EnvironmentPaths`](crate::discovery::EnvironmentPaths) pairs both roots and rejects overlapping layouts.
 //! User navigation is confined to the source root; installation paths are
 //! resources that commands may inspect or execute explicitly.
 

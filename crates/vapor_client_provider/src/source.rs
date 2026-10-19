@@ -1,13 +1,11 @@
 //! Source workspace initialization and source-owned metadata repair.
 
 use crate::{
-    content::{self, ContentReference},
-    discovery::{EnvironmentPaths, InstallationPaths},
+    discovery::InstallationPaths,
     manifest::{self, ContentKind},
 };
 use serde::Deserialize;
 use std::{
-    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -25,55 +23,12 @@ pub(crate) struct BasicContentInit {
 #[derive(Debug, Clone)]
 pub(crate) struct InitReport {
     root: PathBuf,
-    workspace_id: String,
-    packagepack_id: String,
 }
 
 impl InitReport {
     pub(crate) fn root(&self) -> &Path {
         &self.root
     }
-
-    pub(crate) fn workspace_id(&self) -> &str {
-        &self.workspace_id
-    }
-
-    pub(crate) fn packagepack_id(&self) -> &str {
-        &self.packagepack_id
-    }
-}
-
-/// One source metadata repair action.
-#[derive(Debug, Clone)]
-pub(crate) struct SourceRepairAction {
-    manifest: PathBuf,
-    section: String,
-    reference_id: String,
-    workshop_id: String,
-}
-
-impl SourceRepairAction {
-    pub(crate) fn manifest(&self) -> &Path {
-        &self.manifest
-    }
-
-    pub(crate) fn section(&self) -> &str {
-        &self.section
-    }
-
-    pub(crate) fn reference_id(&self) -> &str {
-        &self.reference_id
-    }
-
-    pub(crate) fn workshop_id(&self) -> &str {
-        &self.workshop_id
-    }
-}
-
-/// Source metadata repair summary.
-#[derive(Debug, Clone)]
-pub(crate) struct SourceRepairReport {
-    actions: Vec<SourceRepairAction>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,12 +45,6 @@ pub(crate) enum GeneratedContentProject {
         output: GeneratedOutputKind,
     },
     MetadataOnly,
-}
-
-impl SourceRepairReport {
-    pub(crate) fn actions(&self) -> &[SourceRepairAction] {
-        &self.actions
-    }
 }
 
 /// Read the current app's Steam AppID for content templates.
@@ -396,134 +345,7 @@ change-note = "Initial Vapor content upload."
         ),
     )?;
 
-    Ok(InitReport {
-        root: options.path,
-        workspace_id,
-        packagepack_id,
-    })
-}
-
-/// Repair source-authored dependency Workshop IDs from sibling publish metadata.
-pub(crate) fn repair_source_metadata(
-    paths: &EnvironmentPaths,
-    write_changes: bool,
-) -> Result<SourceRepairReport, String> {
-    let catalog = content::discover(paths)?;
-    let workshop_ids = catalog
-        .artifacts()
-        .iter()
-        .filter_map(|artifact| {
-            artifact
-                .workshop()
-                .published_file_id()
-                .map(|id| (artifact.id().to_owned(), id.to_owned()))
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    let mut actions = Vec::new();
-    for artifact in catalog.artifacts() {
-        let mut source = fs::read_to_string(artifact.manifest())
-            .map_err(io("read source manifest", artifact.manifest()))?;
-        let mut changed = false;
-        for dependency in artifact.dependencies() {
-            let Some(workshop_id) = workshop_ids.get(dependency.id()) else {
-                continue;
-            };
-            let Some(section) = dependency_section(artifact.kind(), dependency) else {
-                continue;
-            };
-            let (updated, repaired) =
-                repair_section_workshop_id(&source, &section, dependency.id(), workshop_id)?;
-            if repaired {
-                source = updated;
-                changed = true;
-                actions.push(SourceRepairAction {
-                    manifest: artifact.manifest().to_path_buf(),
-                    section,
-                    reference_id: dependency.id().to_owned(),
-                    workshop_id: workshop_id.clone(),
-                });
-            }
-        }
-        if changed && write_changes {
-            write(artifact.manifest(), &source)?;
-        }
-    }
-
-    Ok(SourceRepairReport { actions })
-}
-
-fn dependency_section(kind: ContentKind, reference: &ContentReference) -> Option<String> {
-    match (kind, reference.relationship()) {
-        (ContentKind::Game, "engine") => Some("game.engine".to_owned()),
-        (ContentKind::Packagepack, "engine") => Some("packagepack.engine".to_owned()),
-        (ContentKind::Packagepack, "game") => Some("packagepack.game".to_owned()),
-        _ => None,
-    }
-}
-
-fn repair_section_workshop_id(
-    source: &str,
-    section: &str,
-    reference_id: &str,
-    workshop_id: &str,
-) -> Result<(String, bool), String> {
-    let lines = source.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
-    let mut section_start = None;
-    let mut section_end = lines.len();
-    let header = format!("[{section}]");
-
-    for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            if section_start.is_some() {
-                section_end = index;
-                break;
-            }
-            if trimmed == header {
-                section_start = Some(index);
-            }
-        }
-    }
-
-    let Some(start) = section_start else {
-        return Ok((source.to_owned(), false));
-    };
-
-    let mut id_line = None;
-    let mut existing_workshop_line = None;
-    for (index, line) in lines.iter().enumerate().take(section_end).skip(start + 1) {
-        let trimmed = line.trim();
-        if let Some((key, value)) = trimmed.split_once('=') {
-            match key.trim() {
-                "id" if unquote(value.trim()) == Some(reference_id) => id_line = Some(index),
-                "workshop-id" => existing_workshop_line = Some(index),
-                _ => {}
-            }
-        }
-    }
-
-    let Some(id_index) = id_line else {
-        return Ok((source.to_owned(), false));
-    };
-
-    let mut updated = lines;
-    let replacement = format!("workshop-id = \"{workshop_id}\"");
-    if let Some(index) = existing_workshop_line {
-        if updated[index].trim() == replacement {
-            return Ok((source.to_owned(), false));
-        }
-        updated[index] = replacement;
-    } else {
-        updated.insert(id_index + 1, replacement);
-    }
-    let mut text = updated.join("\n");
-    if source.ends_with('\n') {
-        text.push('\n');
-    }
-    toml::from_str::<toml::Value>(&text)
-        .map_err(|error| format!("source metadata repair produced invalid TOML: {error}"))?;
-    Ok((text, true))
+    Ok(InitReport { root: options.path })
 }
 
 fn write_package_manifest(
@@ -651,10 +473,6 @@ fn title_case(value: &str) -> String {
 
 fn crate_name(value: &str) -> String {
     value.replace('-', "_")
-}
-
-fn unquote(value: &str) -> Option<&str> {
-    value.strip_prefix('"')?.strip_suffix('"')
 }
 
 fn write(path: &Path, source: &str) -> Result<(), String> {

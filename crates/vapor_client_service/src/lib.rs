@@ -9,8 +9,8 @@ mod server;
 mod session;
 mod simulator;
 
-pub use host::{HostPlatform, ClientHostArguments, ClientHostContext};
+pub use host::{ClientHostArguments, ClientHostContext, HostPlatform};
 pub use server::{run_local_service, run_stdio_service};
 pub use session::ClientSession;
-pub use vapor_client::ClientHostConfig;
 pub use simulator::run_simulator;
+pub use vapor_client::ClientHostConfig;

@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
+pub use vapor_client_domain::ClientStateDocument as DurableStateSnapshot;
 use vapor_client_domain::WorkshopMetadataDraft;
 pub use vapor_client_domain::{
     InstallPlanDependency as CompositionPreviewDependency,
-    InstallPlanNode as CompositionPreviewNode,
-    InstallPlanSource as CompositionPreviewSource,
+    InstallPlanNode as CompositionPreviewNode, InstallPlanSource as CompositionPreviewSource,
 };
-pub use vapor_client_domain::ClientStateDocument as DurableStateSnapshot;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]

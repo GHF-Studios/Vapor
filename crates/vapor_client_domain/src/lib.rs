@@ -10,6 +10,13 @@ mod install_plan;
 mod library;
 mod state;
 
+pub use actions::{
+    AuthoringAction, CatalogAction, ClientAction, CompositionDependency, DeveloperAction,
+    PublishingAction, SessionAction, WorkshopAction, WorkshopMetadataDraft, WorkspaceAction,
+};
+pub use catalog::{
+    CatalogConflict, CatalogContent, CatalogLocation, CatalogLocationKind, merge_catalog_entries,
+};
 pub use composition::{
     COMPOSITION_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION, Composition, CompositionAction,
     CompositionDocument, InstallationState, InstalledArtifactRecord, LaunchSettings,
@@ -17,21 +24,14 @@ pub use composition::{
     WorkspaceAssociation, add_composition, apply_composition_action, duplicate_composition,
     fingerprint_resolved_graph, remove_composition, rename_composition, resolved_graph_matches,
 };
-pub use catalog::{
-    CatalogConflict, CatalogContent, CatalogLocation, CatalogLocationKind, merge_catalog_entries,
-};
-pub use actions::{
-    AuthoringAction, CatalogAction, ClientAction, CompositionDependency, DeveloperAction,
-    PublishingAction, SessionAction, WorkshopAction, WorkshopMetadataDraft, WorkspaceAction,
+pub use install_plan::{
+    InstallCandidateAvailability, InstallContentProvider, InstallPlan, InstallPlanDependency,
+    InstallPlanNode, InstallPlanSource, SelectedInstallCandidate, resolve_install_plan,
 };
 pub use library::{
     LibraryAction, LibraryItemPolicy, MissingLibraryConstraint, can_collect_library_item,
     library_auto_install_enabled, library_constraints, select_library_version,
     select_library_version_for_compositions, set_library_auto_install,
-};
-pub use install_plan::{
-    InstallCandidateAvailability, InstallContentProvider, InstallPlan, InstallPlanDependency,
-    InstallPlanNode, InstallPlanSource, SelectedInstallCandidate, resolve_install_plan,
 };
 pub use state::{CLIENT_STATE_SCHEMA_VERSION, ClientStateDocument};
 pub use vapor_content::ContentReference;

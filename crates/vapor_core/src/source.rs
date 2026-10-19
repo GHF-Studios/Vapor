@@ -86,14 +86,12 @@ pub fn configure_superworkspace(
     installation: &VaporInstallation,
     root: &Path,
 ) -> Result<VaporSuperworkspace, SourceError> {
-    let installation_root = fs::canonicalize(&installation.root)
-        .unwrap_or_else(|_| installation.root.clone());
+    let installation_root =
+        fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
     let user_data = installation.user_data_root();
     let user_data_root = fs::canonicalize(&user_data).unwrap_or(user_data);
     let candidate = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    if roots_overlap(&candidate, &installation_root)
-        || roots_overlap(&candidate, &user_data_root)
-    {
+    if roots_overlap(&candidate, &installation_root) || roots_overlap(&candidate, &user_data_root) {
         return Err(SourceError::UnsafeSuperworkspace {
             path: candidate,
             installation: installation_root,
@@ -402,7 +400,9 @@ impl fmt::Display for SourceError {
             } => write!(
                 formatter,
                 "Superworkspace `{}` must not overlap the Vapor Installation `{}` or user data `{}`",
-                path.display(), installation.display(), user_data.display()
+                path.display(),
+                installation.display(),
+                user_data.display()
             ),
 
             Self::Superworkspace(message) => formatter.write_str(message),

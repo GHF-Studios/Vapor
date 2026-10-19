@@ -1,6 +1,6 @@
 use crate::persistence::ClientPersistentState;
-use vapor_client_protocol::LegacyStorageSeed;
 use vapor_client_application::decode_compositions;
+use vapor_client_protocol::LegacyStorageSeed;
 
 pub struct LegacyImport {
     pub state: ClientPersistentState,

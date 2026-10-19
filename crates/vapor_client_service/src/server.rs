@@ -14,9 +14,11 @@ use vapor_client_protocol::{
 
 const MAX_FRAME_BYTES: usize = MAX_PROTOCOL_FRAME_BYTES;
 
-
 const SERVICE_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 
+// Protocol frames carry heap-backed request payloads; keeping this local event
+// value inline avoids one allocation for every message on the service channel.
+#[allow(clippy::large_enum_variant)]
 enum LocalInput {
     Accepted(vapor_client::local_socket::Stream),
     Frame(u64, Result<ProtocolFrame, String>),
@@ -32,7 +34,10 @@ pub fn run_local_service(
     if bootstrap.fixture_mode {
         return Err("fixture mode is restricted to the isolated stdio simulator".to_owned());
     }
-    let endpoint = vapor_client::endpoint_name(host_context.app_root.as_deref(), &host_context.state_directory);
+    let endpoint = vapor_client::endpoint_name(
+        host_context.app_root.as_deref(),
+        &host_context.state_directory,
+    );
     let lock = vapor_client::local_socket::startup_lock(&host_context.state_directory)
         .map_err(|error| format!("could not lock Vapor Client startup: {error}"))?;
     if vapor_client::local_socket::connect(&endpoint).is_ok() {
@@ -61,14 +66,18 @@ fn serve_local(
     let accept_listener = listener.clone();
     thread::Builder::new()
         .name("vapor-client-service-accept".to_owned())
-        .spawn(move || loop {
-            match accept_listener.accept() {
-                Ok(stream) => {
-                    if accept_sender.send(LocalInput::Accepted(stream)).is_err() { return; }
-                }
-                Err(error) => {
-                    let _ = accept_sender.send(LocalInput::ListenerFailed(error.to_string()));
-                    return;
+        .spawn(move || {
+            loop {
+                match accept_listener.accept() {
+                    Ok(stream) => {
+                        if accept_sender.send(LocalInput::Accepted(stream)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = accept_sender.send(LocalInput::ListenerFailed(error.to_string()));
+                        return;
+                    }
                 }
             }
         })
@@ -96,7 +105,8 @@ fn serve_local(
                         let mut writer = writer;
                         while let Ok(frame) = outbound_receiver.recv() {
                             if let Err(error) = write_frame(&mut writer, &frame) {
-                                let _ = writer_sender.send(LocalInput::Frame(client_id, Err(error)));
+                                let _ =
+                                    writer_sender.send(LocalInput::Frame(client_id, Err(error)));
                                 break;
                             }
                         }
@@ -113,10 +123,22 @@ fn serve_local(
                     .map_err(|error| format!("could not start local client reader: {error}"))?;
                 idle_since = None;
             }
-            Ok(LocalInput::Frame(client_id, Ok(ProtocolFrame::Connect { protocol_version, legacy_storage }))) => {
-                if !clients.contains_key(&client_id) || authenticated.contains(&client_id) { continue; }
-                let Some(client) = clients.get(&client_id) else { continue; };
-                let _ = client.try_send(ProtocolFrame::Event(ClientEvent::ServiceReady { protocol_version: PROTOCOL_VERSION }));
+            Ok(LocalInput::Frame(
+                client_id,
+                Ok(ProtocolFrame::Connect {
+                    protocol_version,
+                    legacy_storage,
+                }),
+            )) => {
+                if !clients.contains_key(&client_id) || authenticated.contains(&client_id) {
+                    continue;
+                }
+                let Some(client) = clients.get(&client_id) else {
+                    continue;
+                };
+                let _ = client.try_send(ProtocolFrame::Event(ClientEvent::ServiceReady {
+                    protocol_version: PROTOCOL_VERSION,
+                }));
                 if protocol_version != PROTOCOL_VERSION {
                     let _ = client.try_send(ProtocolFrame::Event(ClientEvent::ProtocolError(ServiceError {
                         code: ServiceErrorCode::UnsupportedProtocol,
@@ -127,7 +149,9 @@ fn serve_local(
                     authenticated.remove(&client_id);
                     continue;
                 }
-                if session.is_none() && let Some(legacy_storage) = legacy_storage {
+                if session.is_none()
+                    && let Some(legacy_storage) = legacy_storage
+                {
                     match ClientSession::with_persistent_state(
                         bootstrap.clone(),
                         host_context.clone(),
@@ -136,11 +160,13 @@ fn serve_local(
                     ) {
                         Ok(initialized) => session = Some(initialized),
                         Err(error) => {
-                            let _ = client.try_send(ProtocolFrame::Event(ClientEvent::ProtocolError(ServiceError {
-                                code: ServiceErrorCode::PersistenceFailure,
-                                message: error,
-                                retryable: true,
-                            })));
+                            let _ = client.try_send(ProtocolFrame::Event(
+                                ClientEvent::ProtocolError(ServiceError {
+                                    code: ServiceErrorCode::PersistenceFailure,
+                                    message: error,
+                                    retryable: true,
+                                }),
+                            ));
                             clients.remove(&client_id);
                             continue;
                         }
@@ -152,14 +178,22 @@ fn serve_local(
                     continue;
                 };
                 authenticated.insert(client_id);
-                let _ = client.try_send(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(session.snapshot()))));
+                let _ = client.try_send(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(
+                    session.snapshot(),
+                ))));
             }
             Ok(LocalInput::Frame(client_id, Ok(ProtocolFrame::Request(request)))) => {
                 if !authenticated.contains(&client_id) {
-                    send_protocol_error(&clients, client_id, "client must negotiate the service protocol before sending requests");
+                    send_protocol_error(
+                        &clients,
+                        client_id,
+                        "client must negotiate the service protocol before sending requests",
+                    );
                     continue;
                 }
-                let Some(session) = session.as_mut() else { continue; };
+                let Some(session) = session.as_mut() else {
+                    continue;
+                };
                 let response = if request.protocol_version != PROTOCOL_VERSION {
                     vapor_client_protocol::ClientResponse {
                         protocol_version: PROTOCOL_VERSION,
@@ -169,7 +203,10 @@ fn serve_local(
                         snapshot: session.snapshot(),
                         error: Some(ServiceError {
                             code: ServiceErrorCode::UnsupportedProtocol,
-                            message: format!("client protocol {} is unsupported; service protocol is {}", request.protocol_version, PROTOCOL_VERSION),
+                            message: format!(
+                                "client protocol {} is unsupported; service protocol is {}",
+                                request.protocol_version, PROTOCOL_VERSION
+                            ),
                             retryable: false,
                         }),
                     }
@@ -179,10 +216,17 @@ fn serve_local(
                 if let Some(client) = clients.get(&client_id) {
                     let _ = client.try_send(ProtocolFrame::Response(Box::new(response)));
                 }
-                broadcast(&clients, ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(session.snapshot()))));
+                broadcast(
+                    &clients,
+                    ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(session.snapshot()))),
+                );
             }
             Ok(LocalInput::Frame(client_id, Ok(_))) => {
-                send_protocol_error(&clients, client_id, "service accepts Connect and Request frames only");
+                send_protocol_error(
+                    &clients,
+                    client_id,
+                    "service accepts Connect and Request frames only",
+                );
             }
             Ok(LocalInput::Frame(client_id, Err(message))) => {
                 send_protocol_error(&clients, client_id, &message);
@@ -192,9 +236,13 @@ fn serve_local(
             Ok(LocalInput::Disconnected(client_id)) => {
                 clients.remove(&client_id);
                 authenticated.remove(&client_id);
-                if clients.is_empty() { idle_since = Some(Instant::now()); }
+                if clients.is_empty() {
+                    idle_since = Some(Instant::now());
+                }
             }
-            Ok(LocalInput::ListenerFailed(error)) => return Err(format!("local service listener failed: {error}")),
+            Ok(LocalInput::ListenerFailed(error)) => {
+                return Err(format!("local service listener failed: {error}"));
+            }
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
             Err(RecvTimeoutError::Timeout) => {}
         }
@@ -202,13 +250,24 @@ fn serve_local(
         if let Some(session) = session.as_mut() {
             let events = session.poll_background_operations();
             if !events.is_empty() {
-                for event in events { broadcast(&clients, ProtocolFrame::Event(event)); }
-                broadcast(&clients, ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(session.snapshot()))));
+                for event in events {
+                    broadcast(&clients, ProtocolFrame::Event(event));
+                }
+                broadcast(
+                    &clients,
+                    ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(session.snapshot()))),
+                );
             }
         }
-        if clients.is_empty() && session.as_ref().is_none_or(|session| !session.has_active_operation()) {
+        if clients.is_empty()
+            && session
+                .as_ref()
+                .is_none_or(|session| !session.has_active_operation())
+        {
             let idle = idle_since.get_or_insert_with(Instant::now);
-            if idle.elapsed() >= SERVICE_IDLE_TIMEOUT { return Ok(()); }
+            if idle.elapsed() >= SERVICE_IDLE_TIMEOUT {
+                return Ok(());
+            }
         } else {
             idle_since = None;
         }
@@ -224,20 +283,49 @@ fn read_local_frames(
     let mut buffer = Vec::new();
     loop {
         buffer.clear();
-        let read = match reader.by_ref().take((MAX_FRAME_BYTES + 1) as u64).read_until(b'\n', &mut buffer) {
+        let read = match reader
+            .by_ref()
+            .take((MAX_FRAME_BYTES + 1) as u64)
+            .read_until(b'\n', &mut buffer)
+        {
             Ok(read) => read,
-            Err(error) => { let _ = sender.send(LocalInput::Frame(client_id, Err(error.to_string()))); return; }
+            Err(error) => {
+                let _ = sender.send(LocalInput::Frame(client_id, Err(error.to_string())));
+                return;
+            }
         };
-        if read == 0 { return; }
-        if buffer.len() > MAX_FRAME_BYTES {
-            let _ = sender.send(LocalInput::Frame(client_id, Err("protocol frame exceeds the 32 MiB limit".to_owned())));
+        if read == 0 {
             return;
         }
-        if buffer.last() == Some(&b'\n') { buffer.pop(); }
-        if buffer.last() == Some(&b'\r') { buffer.pop(); }
+        if buffer.len() > MAX_FRAME_BYTES {
+            let _ = sender.send(LocalInput::Frame(
+                client_id,
+                Err("protocol frame exceeds the 32 MiB limit".to_owned()),
+            ));
+            return;
+        }
+        if buffer.last() == Some(&b'\n') {
+            buffer.pop();
+        }
+        if buffer.last() == Some(&b'\r') {
+            buffer.pop();
+        }
         match serde_json::from_slice(&buffer) {
-            Ok(frame) => if sender.send(LocalInput::Frame(client_id, Ok(frame))).is_err() { return; },
-            Err(error) => { let _ = sender.send(LocalInput::Frame(client_id, Err(format!("invalid protocol frame: {error}")))); return; }
+            Ok(frame) => {
+                if sender
+                    .send(LocalInput::Frame(client_id, Ok(frame)))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Err(error) => {
+                let _ = sender.send(LocalInput::Frame(
+                    client_id,
+                    Err(format!("invalid protocol frame: {error}")),
+                ));
+                return;
+            }
         }
     }
 }
@@ -248,11 +336,13 @@ fn send_protocol_error(
     message: &str,
 ) {
     if let Some(client) = clients.get(&client_id) {
-        let _ = client.try_send(ProtocolFrame::Event(ClientEvent::ProtocolError(ServiceError {
-            code: ServiceErrorCode::InvalidRequest,
-            message: message.to_owned(),
-            retryable: false,
-        })));
+        let _ = client.try_send(ProtocolFrame::Event(ClientEvent::ProtocolError(
+            ServiceError {
+                code: ServiceErrorCode::InvalidRequest,
+                message: message.to_owned(),
+                retryable: false,
+            },
+        )));
     }
 }
 
@@ -260,9 +350,10 @@ fn broadcast(
     clients: &std::collections::HashMap<u64, std::sync::mpsc::SyncSender<ProtocolFrame>>,
     frame: ProtocolFrame,
 ) {
-    for client in clients.values() { let _ = client.try_send(frame.clone()); }
+    for client in clients.values() {
+        let _ = client.try_send(frame.clone());
+    }
 }
-
 
 pub fn run_stdio_service(
     bootstrap: ClientHostConfig,

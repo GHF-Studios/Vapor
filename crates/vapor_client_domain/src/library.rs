@@ -1,7 +1,7 @@
+use crate::CompositionDocument;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use vapor_content::VaporId;
-use crate::CompositionDocument;
 
 /// Explicit user intent for automatic Library version following and collection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,8 +39,8 @@ pub struct MissingLibraryConstraint {
 /// A matching legacy edge without its authored range is an error: automatic
 /// updates must wait until that composition is resolved again rather than
 /// guessing from its previously selected version.
-pub fn library_constraints<'a>(
-    compositions: &'a CompositionDocument,
+pub fn library_constraints(
+    compositions: &CompositionDocument,
     content_id: &VaporId,
 ) -> Result<Vec<VersionReq>, MissingLibraryConstraint> {
     let mut constraints = Vec::new();
@@ -124,7 +124,6 @@ pub const fn can_collect_library_item(
 ) -> bool {
     policy.auto_install && dependent_compositions == 0
 }
-
 
 /// Read the durable Auto-Install preference; absence means user-managed retention.
 pub fn library_auto_install_enabled(policies: &[LibraryItemPolicy], content_id: &VaporId) -> bool {

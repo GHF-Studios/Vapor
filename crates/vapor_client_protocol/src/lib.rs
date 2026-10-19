@@ -31,15 +31,14 @@ pub use message::{
 };
 pub use state::{
     AuthoringCompositionLink, AuthoringResult, AuthoringResultKind, AvailableAction,
-    CatalogConflict, CatalogEntry, CatalogItemAction, CatalogItemRole, CatalogLocation, CatalogLocationKind, ClientEvent,
-    ClientRevision, ClientSnapshot, CompositionPreviewDependency, CompositionPreviewNode,
+    AvailableSuperworkspaceRepositorySnapshot, CatalogConflict, CatalogEntry, CatalogItemAction,
+    CatalogItemRole, CatalogLocation, CatalogLocationKind, ClientEvent, ClientRevision,
+    ClientSnapshot, CompositionPreviewDependency, CompositionPreviewNode,
     CompositionPreviewSnapshot, CompositionPreviewSource, DurableStateSnapshot, HostSummary,
     OperationEvent, OperationPhase, OperationStatus, OperationSummary, RootPublishingSnapshot,
-    AvailableSuperworkspaceRepositorySnapshot, SuperworkspaceRepositorySnapshot,
-    SuperworkspaceSnapshot,
-    WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot, WorkshopItemSnapshot,
-    WorkshopPackagePreviewSnapshot, WorkshopReviewSnapshot,
-    WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
+    SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot, WorkshopAcquisitionBatchSnapshot,
+    WorkshopAcquisitionSnapshot, WorkshopItemSnapshot, WorkshopPackagePreviewSnapshot,
+    WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
     WorkspaceContentSnapshot, WorkspaceFileResult, WorkspaceProjectCandidate,
     WorkspaceSourceProject, WorkspaceWorkshopPolicy,
 };
