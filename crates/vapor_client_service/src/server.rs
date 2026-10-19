@@ -17,6 +17,7 @@ const MAX_FRAME_BYTES: usize = MAX_PROTOCOL_FRAME_BYTES;
 
 const SERVICE_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_PENDING_LOCAL_INPUTS: usize = 8;
+const MAX_LOCAL_CLIENTS: usize = 8;
 // A service poll can release the session's full output window in one batch.
 // Keep extra outbound capacity for lifecycle and snapshot frames so healthy
 // frontends do not get disconnected mid-operation.
@@ -102,6 +103,12 @@ fn serve_local(
     loop {
         match receiver.recv_timeout(Duration::from_millis(25)) {
             Ok(LocalInput::Accepted(stream)) => {
+                if clients.len() >= MAX_LOCAL_CLIENTS {
+                    // Local clients are user processes, but each accepted peer
+                    // owns a reader and writer thread plus a bounded output queue.
+                    drop(stream);
+                    continue;
+                }
                 let client_id = next_client_id;
                 next_client_id = next_client_id.saturating_add(1);
                 let (reader, writer) = stream.split();
