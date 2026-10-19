@@ -333,6 +333,13 @@ enum WorkspaceOperationKind {
         name: String,
         profiling: bool,
     },
+    DeployApplication {
+        target_triples: Vec<String>,
+        skip_documentation: bool,
+    },
+    PackageApplication {
+        target_triples: Vec<String>,
+    },
     Clean,
     Remember,
     AdoptProject(PathBuf),
@@ -354,6 +361,7 @@ enum WorkspaceOperationResult {
     Saved { path: PathBuf, fingerprint: String },
     Created(PathBuf),
     Completed,
+    CompletedWithSummary(String),
     Remembered(Vec<PathBuf>),
     Unregistered(vapor_client_application::ContentReference),
 }
@@ -805,6 +813,8 @@ impl ClientSession {
                     | WorkspaceAction::Validate
                     | WorkspaceAction::RunTool { .. }
                     | WorkspaceAction::RunConfiguration { .. }
+                    | WorkspaceAction::DeployApplication { .. }
+                    | WorkspaceAction::PackageApplication { .. }
                     | WorkspaceAction::Clean { .. }
                     | WorkspaceAction::Remember
                     | WorkspaceAction::AdoptProject { .. }
@@ -1308,6 +1318,7 @@ impl ClientSession {
                 | "workspace.test"
                 | "workspace.build"
                 | "workspace.run-configuration"
+                | "workspace.package-application"
         ) && !self.bootstrap.fixture_mode;
         let cancellation = application::OperationCancellation::default();
         self.active_operation_cancellation = Some(cancellation.clone());

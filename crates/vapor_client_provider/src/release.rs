@@ -1,5 +1,8 @@
 //! Managed validation, release builds, and installation promotion.
 
+/// Promotion of already-built application artifacts into the local installation.
+pub mod promotion;
+
 use crate::{
     cross_toolchain,
     discovery::{EnvironmentPaths, ensure_contained},

@@ -6,6 +6,7 @@
 mod catalog;
 mod composition;
 mod content;
+mod deployment;
 mod operation;
 mod publishing;
 mod workspace;
@@ -30,6 +31,7 @@ pub use content::{
     run_installed_composition, run_library_operation, run_source_composition, update_composition,
     verify_installation,
 };
+pub use deployment::{deploy_application_with_context, package_application_with_context};
 pub use operation::{
     CoreOperationEvent, CoreOperationRequest, OperationCancellation, OperationContext,
     OperationEvent, OperationEventSink, OperationId, OperationKind, OperationOutput,

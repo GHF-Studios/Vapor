@@ -80,6 +80,18 @@ pub enum WorkspaceAction {
         #[serde(default)]
         profiling: bool,
     },
+    /// Promote already-built application outputs into the local Vapor installation.
+    DeployApplication {
+        #[serde(default)]
+        target_triples: Vec<String>,
+        #[serde(default)]
+        skip_documentation: bool,
+    },
+    /// Build release outputs and stage the local first-party application package.
+    PackageApplication {
+        #[serde(default)]
+        target_triples: Vec<String>,
+    },
     Clean {
         confirmed_workspace_root: String,
     },
@@ -407,6 +419,8 @@ impl ClientAction {
                     WorkspaceToolOperation::Validate => "workspace.validate",
                 },
                 WorkspaceAction::RunConfiguration { .. } => "workspace.run-configuration",
+                WorkspaceAction::DeployApplication { .. } => "workspace.deploy-application",
+                WorkspaceAction::PackageApplication { .. } => "workspace.package-application",
                 WorkspaceAction::Clean { .. } => "workspace.clean",
                 WorkspaceAction::Remember => "workspace.remember",
                 WorkspaceAction::Create { .. } => "workspace.create",

@@ -198,6 +198,13 @@ mod tests {
                 configuration: "default".into(),
                 profiling: true,
             }),
+            ClientAction::Workspace(WorkspaceAction::DeployApplication {
+                target_triples: vec!["x86_64-unknown-linux-gnu".into()],
+                skip_documentation: true,
+            }),
+            ClientAction::Workspace(WorkspaceAction::PackageApplication {
+                target_triples: vec!["x86_64-unknown-linux-gnu".into()],
+            }),
             ClientAction::Workspace(WorkspaceAction::Clean {
                 confirmed_workspace_root: "/tmp/workspace".into(),
             }),
@@ -378,7 +385,7 @@ mod tests {
         ];
         assert_eq!(
             actions.len(),
-            86,
+            88,
             "update this catalog when adding/removing action variants"
         );
         for action in actions {

@@ -18,7 +18,11 @@ use vapor_client_protocol::{
     PROTOCOL_VERSION, ProtocolFrame, RequestId,
 };
 
-const START_TIMEOUT: Duration = Duration::from_secs(8);
+// The first production connection may need to initialize durable state and
+// project the local Superworkspace before its initial snapshot is available.
+// Keep that bootstrap bounded, but allow a cold start more than a fixed
+// eight-second network-style handshake window.
+const START_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECT_RETRY: Duration = Duration::from_millis(40);
 

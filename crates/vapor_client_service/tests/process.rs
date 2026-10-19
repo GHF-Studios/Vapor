@@ -309,6 +309,47 @@ fn fixture_service_rejects_workspace_run_configuration_requests() {
             .is_some_and(|error| error.message.contains("cannot run source workspaces"))
     );
     client
+        .send(
+            ClientAction::Workspace(WorkspaceAction::DeployApplication {
+                target_triples: vec![],
+                skip_documentation: true,
+            }),
+            Some(client.latest_snapshot().revision),
+        )
+        .expect("send application deployment");
+    let ProtocolFrame::Response(response) = client
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive fixture deployment policy response")
+    else {
+        panic!("expected a service response");
+    };
+    assert_eq!(response.kind, ClientResponseKind::Rejected);
+    assert!(
+        response
+            .error
+            .is_some_and(|error| { error.message.contains("unavailable in fixture mode") })
+    );
+    client
+        .send(
+            ClientAction::Workspace(WorkspaceAction::PackageApplication {
+                target_triples: vec!["x86_64-unknown-linux-gnu".into()],
+            }),
+            Some(client.latest_snapshot().revision),
+        )
+        .expect("send application packaging");
+    let ProtocolFrame::Response(response) = client
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive fixture packaging policy response")
+    else {
+        panic!("expected a service response");
+    };
+    assert_eq!(response.kind, ClientResponseKind::Rejected);
+    assert!(
+        response
+            .error
+            .is_some_and(|error| { error.message.contains("unavailable in fixture mode") })
+    );
+    client
         .shutdown(Duration::from_secs(2))
         .expect("fixture service shuts down");
     fs::remove_dir_all(root).expect("remove fixture workspace");

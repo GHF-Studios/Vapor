@@ -149,6 +149,25 @@ impl ClientSession {
                     profiling,
                 }
             }
+            WorkspaceAction::DeployApplication {
+                target_triples,
+                skip_documentation,
+            } => {
+                super::validate_runtime_target_matrix(&target_triples)?;
+                WorkspaceOperationKind::DeployApplication {
+                    target_triples,
+                    skip_documentation,
+                }
+            }
+            WorkspaceAction::PackageApplication { target_triples } => {
+                super::validate_runtime_target_matrix(&target_triples)?;
+                if target_triples.is_empty() {
+                    return Err(invalid_workspace_request(
+                        "Choose at least one runtime target before packaging the application.",
+                    ));
+                }
+                WorkspaceOperationKind::PackageApplication { target_triples }
+            }
             WorkspaceAction::Clean {
                 confirmed_workspace_root,
             } => {
@@ -258,6 +277,8 @@ impl ClientSession {
                 || matches!(
                     &completion.action,
                     WorkspaceOperationKind::RunConfiguration { .. }
+                        | WorkspaceOperationKind::DeployApplication { .. }
+                        | WorkspaceOperationKind::PackageApplication { .. }
                 )
         };
         let mut result = completion.result;
@@ -339,6 +360,10 @@ impl ClientSession {
                 });
                 format!("Created {path}.")
             }
+            Ok(WorkspaceOperationResult::CompletedWithSummary(summary)) => {
+                operation_succeeded = true;
+                summary
+            }
             Ok(WorkspaceOperationResult::Completed) => {
                 operation_succeeded = true;
                 if matches!(
@@ -359,6 +384,12 @@ impl ClientSession {
                     WorkspaceOperationKind::RunConfiguration { name, .. } => {
                         workspace_file_result = None;
                         format!("Run Configuration `{name}` finished.")
+                    }
+                    WorkspaceOperationKind::DeployApplication { .. } => {
+                        "Application deployment completed.".to_owned()
+                    }
+                    WorkspaceOperationKind::PackageApplication { .. } => {
+                        "Application package completed.".to_owned()
                     }
                     WorkspaceOperationKind::Validate => {
                         "Workspace validation completed.".to_owned()
@@ -531,6 +562,8 @@ fn workspace_operation_action_id(kind: &WorkspaceOperationKind) -> &'static str 
             "workspace.validate"
         }
         WorkspaceOperationKind::RunConfiguration { .. } => "workspace.run-configuration",
+        WorkspaceOperationKind::DeployApplication { .. } => "workspace.deploy-application",
+        WorkspaceOperationKind::PackageApplication { .. } => "workspace.package-application",
         WorkspaceOperationKind::Clean => "workspace.clean",
         WorkspaceOperationKind::Remember => "workspace.remember",
         WorkspaceOperationKind::AdoptProject(_) => "workspace.adopt-project",
@@ -552,6 +585,8 @@ fn workspace_operation_phase(kind: &WorkspaceOperationKind) -> OperationPhase {
             OperationPhase::Building
         }
         WorkspaceOperationKind::RunConfiguration { .. } => OperationPhase::Running,
+        WorkspaceOperationKind::DeployApplication { .. } => OperationPhase::Staging,
+        WorkspaceOperationKind::PackageApplication { .. } => OperationPhase::Building,
         WorkspaceOperationKind::Validate
         | WorkspaceOperationKind::Remember
         | WorkspaceOperationKind::AdoptProject(_)
@@ -693,6 +728,26 @@ fn execute_workspace_operation(
             .map(|_| WorkspaceOperationResult::Completed)
             .map_err(|error| error.to_string())
         }
+        WorkspaceOperationKind::DeployApplication {
+            target_triples,
+            skip_documentation,
+        } => vapor_client_application::deploy_application_with_context(
+            executable,
+            root,
+            &target_triples,
+            skip_documentation,
+            &context,
+        )
+        .map(WorkspaceOperationResult::CompletedWithSummary),
+        WorkspaceOperationKind::PackageApplication { target_triples } => {
+            vapor_client_application::package_application_with_context(
+                executable,
+                root,
+                &target_triples,
+                &context,
+            )
+            .map(WorkspaceOperationResult::CompletedWithSummary)
+        }
         WorkspaceOperationKind::Clean => vapor_core::run_workspace_operation_at_with_context(
             root,
             vapor_core::DevelopmentOperation::Clean,
@@ -744,6 +799,7 @@ fn workspace_result_outcome(
         }
         Ok(WorkspaceOperationResult::Created(path)) => Ok(format!("Created {}.", path.display())),
         Ok(WorkspaceOperationResult::Completed) => Ok("Workspace operation completed.".to_owned()),
+        Ok(WorkspaceOperationResult::CompletedWithSummary(summary)) => Ok(summary.clone()),
         Ok(WorkspaceOperationResult::Remembered(paths)) => Ok(format!(
             "Registered {} workspace{}.",
             paths.len(),
