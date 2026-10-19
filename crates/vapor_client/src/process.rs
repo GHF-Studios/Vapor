@@ -407,8 +407,12 @@ fn write_frame(writer: &mut impl Write, frame: &ProtocolFrame) -> Result<(), Cli
 }
 
 pub fn service_sibling_path(gui_executable: &Path) -> PathBuf {
+    service_sibling_path_for(gui_executable, cfg!(windows))
+}
+
+fn service_sibling_path_for(gui_executable: &Path, windows: bool) -> PathBuf {
     let mut filename: OsString = "vapor-client-service".into();
-    if cfg!(windows) { filename.push(".exe"); }
+    if windows { filename.push(".exe"); }
     gui_executable.parent().unwrap_or_else(|| Path::new(".")).join(filename)
 }
 

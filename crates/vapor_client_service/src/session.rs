@@ -128,6 +128,24 @@ struct WorkshopOperationCompletion {
     result: Result<WorkshopOperationResult, String>,
 }
 
+struct AutoInstallCompositionUpdate {
+    composition_id: String,
+    inputs: CompositionOperationInputs,
+    result: Result<vapor_client_application::InstalledComposition, String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AutoInstallContext {
+    constraints: BTreeMap<String, Vec<String>>,
+    compositions: BTreeMap<String, Vec<AutoInstallCompositionTarget>>,
+}
+
+#[derive(Debug, Clone)]
+struct AutoInstallCompositionTarget {
+    composition: Composition,
+    inputs: CompositionOperationInputs,
+}
+
 struct RootPublishReviewState {
     request: vapor_sdk_core::root::types::RootPublishRequest,
     snapshot: RootPublishingSnapshot,
@@ -233,11 +251,16 @@ enum WorkshopOperationResult {
     Subscriptions(Vec<vapor_client_application::WorkshopSubscription>),
     SubscriptionWithAcquisition {
         subscriptions: Vec<vapor_client_application::WorkshopSubscription>,
-        acquisition: Result<(Vec<vapor_client_application::WorkshopAcquisition>, usize), String>,
+        acquisition: Result<(
+            Vec<vapor_client_application::WorkshopAcquisition>,
+            usize,
+            Vec<AutoInstallCompositionUpdate>,
+        ), String>,
     },
     Acquisitions {
         items: Vec<vapor_client_application::WorkshopAcquisition>,
         requested: usize,
+        updates: Vec<AutoInstallCompositionUpdate>,
     },
     Review(vapor_client_application::WorkshopPackagePreview),
     Publication(vapor_client_application::WorkshopPublication),
@@ -779,6 +802,23 @@ impl ClientSession {
                     }
                 },
                 ClientAction::Library(LibraryAction::SetAutoInstall { content_id, enabled }) => {
+                    if self.active_operation.is_some() {
+                        response_kind = ClientResponseKind::Rejected;
+                        error = Some(ServiceError {
+                            code: ServiceErrorCode::OperationInProgress,
+                            message: "Wait for the current operation to finish before changing Library update policy.".to_owned(),
+                            retryable: true,
+                        });
+                        let snapshot = self.snapshot();
+                        return ClientResponse {
+                            protocol_version: vapor_client_protocol::PROTOCOL_VERSION,
+                            request_id: request.request_id,
+                            revision: snapshot.revision,
+                            kind: response_kind,
+                            snapshot,
+                            error,
+                        };
+                    }
                     let parsed = vapor_client_protocol::ContentReference::parse(
                         content_id.clone(),
                         None,
@@ -812,6 +852,21 @@ impl ClientSession {
                                     message,
                                     retryable: true,
                                 });
+                            } else if enabled {
+                                if let Err(message) = self.collect_unreferenced_auto_install() {
+                                    self.durable_state = previous_state;
+                                    if let Some(store) = &self.state_store {
+                                        let _ = store.save(&self.durable_state);
+                                    }
+                                    response_kind = ClientResponseKind::Rejected;
+                                    error = Some(ServiceError {
+                                        code: ServiceErrorCode::ProviderFailure,
+                                        message,
+                                        retryable: true,
+                                    });
+                                } else {
+                                    self.revision.0 = self.revision.0.saturating_add(1);
+                                }
                             } else {
                                 self.revision.0 = self.revision.0.saturating_add(1);
                             }
@@ -1737,8 +1792,8 @@ impl ClientSession {
                 AuthoringResultKind::Composition { .. }
                 | AuthoringResultKind::WorkshopMetadata { .. }
                 | AuthoringResultKind::RuntimeOutputs { .. } => self.refresh_catalog(),
-                AuthoringResultKind::ContentCreated { .. }
-                | AuthoringResultKind::WorkspaceCreated { .. } => {}
+                AuthoringResultKind::ContentCreated { .. } => self.refresh_catalog(),
+                AuthoringResultKind::WorkspaceCreated { .. } => {}
             }
             self.operation_events
                 .push_back(ClientEvent::AuthoringResult(Box::new(AuthoringResult {
@@ -2071,6 +2126,11 @@ impl ClientSession {
                 ));
             }
         };
+        let auto_install = self.auto_install_context(&kind).map_err(|message| ServiceError {
+            code: ServiceErrorCode::ActionUnavailable,
+            message,
+            retryable: true,
+        })?;
         let operation_id = application::OperationId::fresh();
         let id = operation_id.0.to_string();
         let action_id = workshop_operation_action_id(&kind);
@@ -2087,6 +2147,7 @@ impl ClientSession {
         let application_executable = self.bootstrap.application_executable.clone();
         let workshop_app_id = self.bootstrap.workshop_app_id;
         let fixture_subscriptions = self.fixture_workshop_subscriptions.clone();
+        let auto_install = auto_install.clone();
         let lifecycle_sender = self.operation_sender.clone();
         let completion_sender = self.operation_sender.clone();
         thread::Builder::new()
@@ -2112,6 +2173,7 @@ impl ClientSession {
                             fixture_mode,
                             workshop_app_id,
                             fixture_subscriptions,
+                            auto_install,
                             action_for_worker,
                         )
                     },
@@ -2134,6 +2196,159 @@ impl ClientSession {
                 }
             })?;
         Ok(())
+    }
+
+    fn auto_install_context(
+        &self,
+        kind: &WorkshopOperationKind,
+    ) -> Result<AutoInstallContext, String> {
+        let requested_ids = match kind {
+            WorkshopOperationKind::Acquire { ids } => ids.iter().cloned().collect::<BTreeSet<_>>(),
+            WorkshopOperationKind::ChangeSubscriptions { ids, subscribe: true } => ids
+                .iter()
+                .map(u64::to_string)
+                .collect::<BTreeSet<_>>(),
+            _ => return Ok(AutoInstallContext::default()),
+        };
+        let mut context = AutoInstallContext::default();
+        for item in self.catalog.entries().iter().filter(|item| {
+            item.published_file_id
+                .as_ref()
+                .is_some_and(|id| requested_ids.contains(id))
+        }) {
+            let reference = ContentReference::parse(item.id.clone(), item.version.clone())
+                .map_err(|error| format!("invalid cached content identity: {error}"))?;
+            let content_id = reference
+                .vapor_id()
+                .map_err(|error| format!("invalid cached content ID: {error}"))?;
+            if !vapor_client_domain::library_auto_install_enabled(
+                &self.durable_state.library_policies,
+                &content_id,
+            ) {
+                continue;
+            }
+            let constraints = vapor_client_domain::library_constraints(
+                &self.durable_state.compositions,
+                &content_id,
+            )
+            .map_err(|missing| {
+                format!(
+                    "Auto-Install paused: composition '{}' has an unresolved version constraint for {}. Resolve that composition before updating this item.",
+                    missing.composition_id, content_id
+                )
+            })?;
+            context.constraints.insert(
+                content_id.to_string(),
+                constraints.iter().map(ToString::to_string).collect(),
+            );
+            for composition in &self.durable_state.compositions.compositions {
+                if composition.root_package.is_some()
+                    && composition.resolved_graph.is_none()
+                {
+                    return Err(format!(
+                        "Auto-Install paused: composition '{}' has not been resolved, so Vapor cannot verify that this update is safe.",
+                        composition.name
+                    ));
+                }
+                let depends_on_item = composition.resolved_graph.as_ref().is_some_and(|graph| {
+                    graph.nodes.iter().any(|node| node.content.id == content_id.as_str())
+                });
+                if depends_on_item
+                    && composition.root_package.is_some()
+                    && matches!(
+                        composition.installation,
+                        InstallationState::Installed { .. } | InstallationState::OutOfDate { .. }
+                    )
+                {
+                    context
+                        .compositions
+                        .entry(content_id.to_string())
+                        .or_default()
+                        .push(AutoInstallCompositionTarget {
+                            composition: composition.clone(),
+                            inputs: CompositionOperationInputs::capture(
+                                composition,
+                                CompositionOperationKind::Update,
+                            ),
+                        });
+                }
+            }
+        }
+        Ok(context)
+    }
+
+    fn apply_auto_install_updates(
+        &mut self,
+        updates: Vec<AutoInstallCompositionUpdate>,
+    ) -> Result<Option<String>, String> {
+        if updates.is_empty() {
+            return Ok(None);
+        }
+        let previous_compositions = self.durable_state.compositions.compositions.clone();
+        let previous_revision = self.durable_state.composition_revision;
+        let mut updated = 0usize;
+        let mut failures = Vec::new();
+        for update in updates {
+            let current = self
+                .durable_state
+                .compositions
+                .compositions
+                .iter()
+                .find(|composition| composition.id == update.composition_id)
+                .map(|composition| {
+                    CompositionOperationInputs::capture(composition, CompositionOperationKind::Update)
+                });
+            if current.as_ref() != Some(&update.inputs) {
+                failures.push(format!(
+                    "composition '{}' changed during the Workshop download and was not changed by Auto-Install",
+                    update.composition_id
+                ));
+                continue;
+            }
+            let failed = apply_operation_result_to_composition(
+                &mut self.composition_preview,
+                &mut self.durable_state.compositions.compositions,
+                &update.composition_id,
+                CompositionOperationKind::Update,
+                CompositionOperationResult::Update(update.result),
+            );
+            if let Some(failure) = failed {
+                failures.push(format!("{}: {failure}", update.composition_id));
+            } else {
+                updated += 1;
+            }
+        }
+        let changed = self.durable_state.compositions.compositions != previous_compositions;
+        if changed {
+            self.durable_state.composition_revision = previous_revision.saturating_add(1);
+            if let Some(store) = &self.state_store
+                && let Err(error) = store.save(&self.durable_state)
+            {
+                self.durable_state.compositions.compositions = previous_compositions;
+                self.durable_state.composition_revision = previous_revision;
+                self.refresh_catalog();
+                return Err(format!(
+                    "Workshop content was downloaded, but Auto-Install could not save composition state: {error}"
+                ));
+            }
+        }
+        match self.collect_unreferenced_auto_install() {
+            Ok(_) => {}
+            Err(error) => failures.push(format!("Library cleanup: {error}")),
+        }
+        self.refresh_catalog();
+        if failures.is_empty() {
+            return Ok((updated > 0).then(|| {
+                format!(
+                    "Auto-Install updated {updated} dependent composition{}.",
+                    if updated == 1 { "" } else { "s" }
+                )
+            }));
+        }
+        Err(format!(
+            "Workshop content was downloaded, but Auto-Install could not update every dependent composition: {}",
+            failures.join("; ")
+        ))
     }
 
     fn apply_workshop_completion(&mut self, completion: WorkshopOperationCompletion) {
@@ -2195,7 +2410,7 @@ impl ClientSession {
                 self.workshop.subscriptions_revision =
                     self.workshop.subscriptions_revision.saturating_add(1);
                 match acquisition {
-                    Ok((items, requested)) => {
+                    Ok((items, requested, updates)) => {
                         let revision = self
                             .workshop
                             .acquisition
@@ -2218,6 +2433,14 @@ impl ClientSession {
                             if imported == 1 { "" } else { "s" }
                         ));
                         self.refresh_catalog();
+                        match self.apply_auto_install_updates(updates) {
+                            Ok(Some(message)) => summary = Some(message),
+                            Err(message) => {
+                                succeeded = false;
+                                failure = Some(message);
+                            }
+                            Ok(None) => {}
+                        }
                     }
                     Err(error) => {
                         succeeded = false;
@@ -2227,7 +2450,7 @@ impl ClientSession {
                     }
                 }
             }
-            Ok(WorkshopOperationResult::Acquisitions { items, requested }) => {
+            Ok(WorkshopOperationResult::Acquisitions { items, requested, updates }) => {
                 let revision = self
                     .workshop
                     .acquisition
@@ -2252,6 +2475,14 @@ impl ClientSession {
                     imported
                 ));
                 self.refresh_catalog();
+                match self.apply_auto_install_updates(updates) {
+                    Ok(Some(message)) => summary = Some(message),
+                    Err(message) => {
+                        succeeded = false;
+                        failure = Some(message);
+                    }
+                    Ok(None) => {}
+                }
             }
             Ok(WorkshopOperationResult::Review(preview)) => {
                 let (selector, workspace_root) = match &completion.action {
@@ -2680,6 +2911,7 @@ impl ClientSession {
     }
 
     fn apply_composition_action(&mut self, action: CompositionAction) -> Result<(), ServiceError> {
+        let may_release_content = matches!(&action, CompositionAction::Remove { .. });
         let previous_state = self.durable_state.clone();
         let application_executable = self.bootstrap.application_executable.clone();
         let fixture_mode = self.bootstrap.fixture_mode;
@@ -2720,7 +2952,54 @@ impl ClientSession {
                 retryable: true,
             });
         }
+        if may_release_content
+            && let Err(message) = self.collect_unreferenced_auto_install()
+        {
+            self.catalog.fail(format!(
+                "The composition was removed, but automatic Library cleanup could not finish: {message}"
+            ));
+        }
         Ok(())
+    }
+
+    fn collect_unreferenced_auto_install(&mut self) -> Result<Vec<String>, String> {
+        if self.bootstrap.fixture_mode {
+            return Ok(Vec::new());
+        }
+        if self.durable_state.compositions.compositions.iter().any(|composition| {
+            composition.root_package.is_some() && composition.resolved_graph.is_none()
+        }) {
+            return Ok(Vec::new());
+        }
+        let policies = self.durable_state.library_policies.clone();
+        let mut collected = Vec::new();
+        for policy in policies.into_iter().filter(|policy| policy.auto_install) {
+            let referenced = self
+                .durable_state
+                .compositions
+                .compositions
+                .iter()
+                .filter_map(|composition| composition.resolved_graph.as_ref())
+                .any(|graph| {
+                    graph
+                        .nodes
+                        .iter()
+                        .any(|node| node.content.id == policy.content_id.as_str())
+                });
+            if referenced {
+                continue;
+            }
+            if application::collect_library_item(
+                &self.bootstrap.application_executable,
+                policy.content_id.as_str(),
+            )? {
+                collected.push(policy.content_id.to_string());
+            }
+        }
+        if !collected.is_empty() {
+            self.refresh_catalog();
+        }
+        Ok(collected)
     }
 
 
@@ -2842,6 +3121,7 @@ fn authoring_action_id(action: &AuthoringAction) -> &'static str {
         AuthoringAction::ValidateContent { .. } => "authoring.validate-content",
         AuthoringAction::SaveRuntimeOutputs { .. } => "authoring.save-runtime-outputs",
         AuthoringAction::CreateContent { .. } => "authoring.create-content",
+        AuthoringAction::ForkContent { .. } => "authoring.fork-content",
         AuthoringAction::CreateWorkspace { .. } => "authoring.create-workspace",
     }
 }
@@ -3079,6 +3359,45 @@ fn execute_authoring_operation(
                 &dependencies,
                 &optional_dependencies,
                 &policy,
+            )?;
+            let contents = std::fs::read_to_string(&manifest)
+                .map_err(|error| format!("{}: {error}", manifest.display()))?;
+            let files = vapor_client_application::discover_workspace_files(&active)?
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            Ok(AuthoringResultKind::ContentCreated {
+                workspace_root: active.to_string_lossy().into_owned(),
+                manifest: manifest
+                    .strip_prefix(&active)
+                    .unwrap_or(&manifest)
+                    .to_string_lossy()
+                    .into_owned(),
+                manifest_contents: contents,
+                files,
+            })
+        }
+        Action::ForkContent {
+            workspace_root,
+            content_id,
+            name,
+        } => {
+            let active = active_workspace.ok_or("Open a workspace before forking content.")?;
+            let requested = PathBuf::from(workspace_root)
+                .canonicalize()
+                .map_err(|error| error.to_string())?;
+            let active = active.canonicalize().map_err(|error| error.to_string())?;
+            if requested != active {
+                return Err("Content forks must target the currently open workspace.".to_owned());
+            }
+            if !valid_workspace_slug(&name) {
+                return Err("Fork name must use lowercase letters, digits, and internal hyphens.".to_owned());
+            }
+            let manifest = vapor_client_application::fork_acquired_content(
+                executable,
+                &active,
+                &content_id,
+                &name,
             )?;
             let contents = std::fs::read_to_string(&manifest)
                 .map_err(|error| format!("{}: {error}", manifest.display()))?;
@@ -3430,7 +3749,7 @@ fn workshop_result_outcome(
             items.len()
         )),
         Ok(WorkshopOperationResult::SubscriptionWithAcquisition {
-            acquisition: Ok((items, requested)),
+            acquisition: Ok((items, requested, _updates)),
             ..
         }) => {
             if items.len() == *requested {
@@ -3451,7 +3770,7 @@ fn workshop_result_outcome(
         }) => Err(format!(
             "Subscription is active, but Vapor Client could not add the item to the Library: {error}"
         )),
-        Ok(WorkshopOperationResult::Acquisitions { items, requested }) => {
+        Ok(WorkshopOperationResult::Acquisitions { items, requested, .. }) => {
             if items.len() == *requested {
                 Ok(format!(
                     "Added {} Workshop items to the local cache.",
@@ -3492,6 +3811,7 @@ fn execute_workshop_operation(
     fixture_mode: bool,
     workshop_app_id: Option<u32>,
     fixture_subscriptions: BTreeSet<String>,
+    auto_install: AutoInstallContext,
     kind: WorkshopOperationKind,
 ) -> Result<WorkshopOperationResult, String> {
     if fixture_mode {
@@ -3522,10 +3842,12 @@ fn execute_workshop_operation(
             if subscribe {
                 let requested = ids.len();
                 let ids = ids.into_iter().map(|id| id.to_string()).collect::<Vec<_>>();
-                let acquisition =
-                    vapor_client_application::download_workshop_items(application_executable, &ids)
-                        .map(|items| (items, requested))
-                        .map_err(|error| error.to_string());
+                let acquisition = download_with_auto_install(
+                    application_executable,
+                    &ids,
+                    requested,
+                    &auto_install,
+                );
                 Ok(WorkshopOperationResult::SubscriptionWithAcquisition {
                     subscriptions,
                     acquisition,
@@ -3536,8 +3858,17 @@ fn execute_workshop_operation(
         }
         WorkshopOperationKind::Acquire { ids } => {
             let requested = ids.len();
-            vapor_client_application::download_workshop_items(application_executable, &ids)
-                .map(|items| WorkshopOperationResult::Acquisitions { items, requested })
+            download_with_auto_install(
+                application_executable,
+                &ids,
+                requested,
+                &auto_install,
+            )
+            .map(|(items, _, updates)| WorkshopOperationResult::Acquisitions {
+                items,
+                requested,
+                updates,
+            })
         }
         WorkshopOperationKind::Stage {
             selector,
@@ -3568,6 +3899,66 @@ fn required_workshop_app_id(app_id: Option<u32>) -> Result<u32, String> {
     app_id.ok_or_else(|| {
         "This Vapor Client installation has no configured Workshop application.".to_owned()
     })
+}
+
+fn download_with_auto_install(
+    application_executable: &Path,
+    ids: &[String],
+    requested: usize,
+    context: &AutoInstallContext,
+) -> Result<(
+    Vec<vapor_client_application::WorkshopAcquisition>,
+    usize,
+    Vec<AutoInstallCompositionUpdate>,
+), String> {
+    let items = vapor_client_application::download_workshop_items_with_constraints(
+        application_executable,
+        ids,
+        &context.constraints,
+    )?;
+    let acquired = items
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut updates = Vec::new();
+    let mut updated_compositions = BTreeSet::new();
+    for (content_id, targets) in &context.compositions {
+        if !acquired.contains(content_id.as_str()) {
+            continue;
+        }
+        for target in targets {
+            if !updated_compositions.insert(target.composition.id.clone()) {
+                continue;
+            }
+            let selector = target
+                .composition
+                .root_package
+                .as_ref()
+                .map(|root| root.id.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "Auto-Install could not update composition '{}' because it has no Packagepack.",
+                        target.composition.name
+                    )
+                })?;
+            let workspace = target
+                .composition
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.root.as_path());
+            let result = vapor_client_application::update_composition(
+                application_executable,
+                workspace,
+                selector,
+            );
+            updates.push(AutoInstallCompositionUpdate {
+                composition_id: target.composition.id.clone(),
+                inputs: target.inputs.clone(),
+                result,
+            });
+        }
+    }
+    Ok((items, requested, updates))
 }
 
 fn fixture_workshop_operation(
@@ -3623,7 +4014,7 @@ fn fixture_workshop_operation(
                     .collect();
                 WorkshopOperationResult::SubscriptionWithAcquisition {
                     subscriptions: subscribed,
-                    acquisition: Ok((items, requested)),
+                    acquisition: Ok((items, requested, Vec::new())),
                 }
             } else {
                 WorkshopOperationResult::Subscriptions(subscribed)
@@ -3641,7 +4032,11 @@ fn fixture_workshop_operation(
                     fingerprint: format!("fixture:{id}"),
                 })
                 .collect();
-            WorkshopOperationResult::Acquisitions { items, requested }
+            WorkshopOperationResult::Acquisitions {
+                items,
+                requested,
+                updates: Vec::new(),
+            }
         }
         WorkshopOperationKind::Stage {
             selector,
@@ -4497,6 +4892,8 @@ mod tests {
             workspace_root: None,
             active_composition_id: Some("default".to_owned()),
             fixture_mode: true,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         })
     }
 
@@ -4507,6 +4904,8 @@ mod tests {
             workspace_root: Some(PathBuf::from("/fixture/workspace")),
             active_composition_id: Some("default".to_owned()),
             fixture_mode: true,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         })
     }
 
@@ -4550,6 +4949,109 @@ mod tests {
                 .workspace_content
                 .unregistered_projects_loaded
         );
+    }
+
+    #[test]
+    fn auto_install_download_context_carries_all_dependent_constraints_and_compositions() {
+        use vapor_client_protocol::{
+            CatalogEntry, CatalogLocation, CatalogLocationKind, CatalogItemRole,
+            ResolvedCompositionGraph, ResolvedDependencyIdentity, ResolvedNodeIdentity,
+        };
+        let mut session = session();
+        let content_id = "publisher/project/movement";
+        let content = ContentReference::parse(content_id.to_owned(), Some("1.0.0".to_owned()))
+            .expect("valid content reference");
+        let root = ContentReference::parse(
+            "author/game/pack".to_owned(),
+            Some("1.0.0".to_owned()),
+        )
+        .expect("valid Packagepack reference");
+        session.durable_state.library_policies.push(
+            vapor_client_protocol::LibraryItemPolicy {
+                content_id: content.vapor_id().expect("valid Vapor ID"),
+                auto_install: true,
+            },
+        );
+        session.durable_state.compositions.compositions[0].root_package = Some(root.clone());
+        session.durable_state.compositions.compositions[0].installation =
+            InstallationState::Installed {
+                artifacts: Vec::new(),
+                graph_fingerprint: None,
+            };
+        session.durable_state.compositions.compositions[0].resolved_graph = Some(
+            ResolvedCompositionGraph {
+                root: root.clone(),
+                effective_engine: ContentReference::parse(
+                    "author/engine/core".to_owned(),
+                    Some("1.0.0".to_owned()),
+                )
+                .unwrap(),
+                effective_game: Some(ContentReference::parse(
+                    "author/game/main".to_owned(),
+                    Some("1.0.0".to_owned()),
+                )
+                .unwrap()),
+                nodes: vec![ResolvedNodeIdentity {
+                    content: root,
+                    kind: "packagepack".to_owned(),
+                    fingerprint: None,
+                    source: None,
+                    dependencies: vec![ResolvedDependencyIdentity {
+                        binding: "movement".to_owned(),
+                        content: content.clone(),
+                        version_requirement: Some("^1.0".to_owned()),
+                    }],
+                }, ResolvedNodeIdentity {
+                    content: content.clone(),
+                    kind: "game-mod".to_owned(),
+                    fingerprint: None,
+                    source: None,
+                    dependencies: Vec::new(),
+                }],
+            },
+        );
+        session.catalog.replace(vec![CatalogEntry {
+            id: content_id.to_owned(),
+            name: Some("Movement".to_owned()),
+            version: Some("1.0.0".to_owned()),
+            kind: "game-mod".to_owned(),
+            published_file_id: Some("3762162552".to_owned()),
+            dependencies: Vec::new(),
+            conflicts: Vec::new(),
+            locations: vec![CatalogLocation {
+                kind: CatalogLocationKind::Cache,
+                root: "/cache/movement".to_owned(),
+                enabled: true,
+                fingerprint: None,
+                install_source: None,
+            }],
+            role: CatalogItemRole::Other,
+            actions: Vec::new(),
+        }]);
+
+        let kind = WorkshopOperationKind::Acquire {
+            ids: vec!["3762162552".to_owned()],
+        };
+        let context = session
+            .auto_install_context(&kind)
+            .expect("safe update context can be constructed");
+        assert_eq!(context.constraints[content_id], vec!["^1.0".to_owned()]);
+        assert_eq!(context.compositions[content_id].len(), 1);
+        assert_eq!(context.compositions[content_id][0].composition.id, "default");
+
+        session.durable_state.compositions.compositions.push(Composition {
+            id: "unresolved".to_owned(),
+            name: "Unresolved composition".to_owned(),
+            root_package: Some(ContentReference::parse(
+                "author/game/other-pack".to_owned(),
+                Some("1.0.0".to_owned()),
+            ).unwrap()),
+            resolved_graph: None,
+            workspace: None,
+            launch: vapor_client_application::LaunchSettings::default(),
+            installation: InstallationState::Unknown,
+        });
+        assert!(session.auto_install_context(&kind).unwrap_err().contains("has not been resolved"));
     }
 
     #[test]
@@ -4954,6 +5456,8 @@ mod tests {
             workspace_root: Some(PathBuf::from("/fixture/workspace")),
             active_composition_id: None,
             fixture_mode: true,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         });
         let response = session.dispatch(request(
             Some(0),
@@ -5004,6 +5508,8 @@ mod tests {
             workspace_root: None,
             active_composition_id: None,
             fixture_mode: true,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         });
         let root = fixture_temp_workspace("fixture-workspace-open");
         let response = session.dispatch(request(
@@ -5031,6 +5537,8 @@ mod tests {
             workspace_root: None,
             active_composition_id: None,
             fixture_mode: true,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         });
         let outside_fixture = std::env::current_dir().expect("current directory");
 
@@ -5059,6 +5567,8 @@ mod tests {
             workspace_root: Some(root.clone()),
             active_composition_id: None,
             fixture_mode: true,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         });
 
         let remember = session.dispatch(request(
@@ -5103,6 +5613,8 @@ mod tests {
             workspace_root: Some(root.clone()),
             active_composition_id: Some("default".to_owned()),
             fixture_mode: true,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         });
 
         let response = session.dispatch(request(
@@ -5191,6 +5703,8 @@ mod tests {
             workspace_root: None,
             active_composition_id: None,
             fixture_mode: true,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         });
         let assigned = session.dispatch(request(
             Some(0),
@@ -5254,6 +5768,8 @@ mod tests {
             workspace_root: Some(authoring_root.clone()),
             active_composition_id: None,
             fixture_mode: true,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         });
         session.durable_state.compositions.compositions[0].workspace = Some(WorkspaceAssociation {
             root: linked_root.clone(),
@@ -5291,6 +5807,8 @@ mod tests {
             workspace_root: None,
             active_composition_id: None,
             fixture_mode: true,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         });
         let opened = session.dispatch(request(
             Some(0),
@@ -5396,6 +5914,8 @@ mod tests {
             workspace_root: None,
             active_composition_id: None,
             fixture_mode: false,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         });
         let created = session.dispatch(request(
             Some(0),

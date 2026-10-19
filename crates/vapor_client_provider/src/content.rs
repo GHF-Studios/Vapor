@@ -1942,10 +1942,224 @@ pub fn create_source_project_with_dependency_policies(
     Ok(manifest_path)
 }
 
+/// Fork an acquired deployed artifact into a distinct editable project in the
+/// selected Vapor Workspace. The package must contain real source whenever
+/// its role declares Rust build outputs.
+pub fn fork_cached_artifact(
+    paths: &EnvironmentPaths,
+    selector: &str,
+    new_name: &str,
+) -> Result<PathBuf, String> {
+    if !is_workspace_slug(new_name) {
+        return Err("fork name must use lowercase ASCII letters, digits, '-' or '_'".to_owned());
+    }
+    let workspace_manifest = paths.source().root().join(manifest::WORKSPACE_FILE_NAME);
+    let _workspace_lock = acquire_workspace_project_lock(&workspace_manifest)?;
+    let workspace = WorkspaceManifest::load(paths)?;
+    if workspace.kind() != crate::workspace::SourceRootKind::Workspace {
+        return Err("Workshop content can only be forked into a Vapor Workspace".to_owned());
+    }
+
+    let cached = cached_artifact(paths.installation(), selector)?;
+    let source_id = cached.artifact_id.clone();
+    let kind = cached.kind.parse::<ContentKind>()
+        .map_err(|error| format!("cached content has an unsupported type: {error}"))?;
+    let new_id = format!("{}/{new_name}", workspace.id());
+    if workspace.projects().iter().any(|project| project.id() == new_id) {
+        return Err(format!("content project is already registered: {new_id}"));
+    }
+
+    let package_manifest = manifest::content_marker_at(&cached.installed_root)
+        .ok_or_else(|| format!("acquired content {source_id} has no role manifest"))?;
+    let deployed = fs::read_to_string(&package_manifest)
+        .map_err(io("read acquired content manifest", &package_manifest))?;
+    let deployed_artifact = read_deployed_manifest(&cached.installed_root)?;
+    let fork_manifest = source_manifest_for_fork(&deployed, kind, new_name)?;
+    let source_declares_rust = kind == ContentKind::Crate
+        || !deployed_artifact.binaries().is_empty()
+        || !deployed_artifact.libraries().is_empty();
+    let package_cargo = cached.installed_root.join("Cargo.toml");
+    let has_cargo = package_cargo.is_file();
+    if source_declares_rust && (!has_cargo || !cached.installed_root.join("src").is_dir()) {
+        return Err(format!(
+            "Workshop item {source_id} contains built output but no complete Rust source project; it cannot be forked as editable content"
+        ));
+    }
+    let old_crate_name = if has_cargo {
+        Some(read_package_name(&package_cargo)?)
+    } else {
+        None
+    };
+    let new_crate_name = old_crate_name
+        .as_ref()
+        .map(|_| format!("vapor_{}", new_id.replace(['/', '-'], "_")));
+
+    let source_root = fs::canonicalize(paths.source().root())
+        .map_err(io("resolve source workspace", paths.source().root()))?;
+    let content_directory = source_root.join("content");
+    match fs::symlink_metadata(&content_directory) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err(format!("{} is not a regular directory", content_directory.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&content_directory)
+                .map_err(io("create workspace content directory", &content_directory))?;
+        }
+        Err(error) => return Err(format!("{}: {error}", content_directory.display())),
+    }
+    let content_directory = fs::canonicalize(&content_directory)
+        .map_err(io("resolve workspace content directory", &content_directory))?;
+    if !content_directory.starts_with(&source_root) {
+        return Err("workspace content directory resolves outside the selected workspace".to_owned());
+    }
+    let relative_project = PathBuf::from("content").join(new_name);
+    let output = source_root.join(&relative_project);
+    if fs::symlink_metadata(&output).is_ok() {
+        return Err(format!("fork destination already exists: {}", output.display()));
+    }
+    fs::create_dir(&output).map_err(io("create fork destination", &output))?;
+    let cargo_workspace_path = source_root.join("Cargo.toml");
+    let cargo_transaction = if has_cargo {
+        let original = fs::read_to_string(&cargo_workspace_path)
+            .map_err(io("read Cargo workspace manifest", &cargo_workspace_path))?;
+        let updated = cargo_workspace_with_member(&original, &relative_project)?;
+        Some((cargo_workspace_path.clone(), original, updated))
+    } else {
+        None
+    };
+
+    let prepare = (|| -> Result<(), String> {
+        copy_fork_tree(&cached.installed_root, &output, &cached.installed_root)?;
+        let manifest_path = output.join(kind.manifest_file_name());
+        fs::write(&manifest_path, fork_manifest)
+            .map_err(io("write fork source manifest", &manifest_path))?;
+        let _ = fs::remove_file(output.join("Cargo.lock"));
+        if let (Some(old_name), Some(new_name)) = (&old_crate_name, &new_crate_name) {
+            rewrite_fork_source(&output, &source_id, &new_id, old_name, new_name)?;
+        } else {
+            rewrite_fork_source(&output, &source_id, &new_id, "", "")?;
+        }
+        if let Some((cargo_path, original, updated)) = &cargo_transaction {
+            replace_source_manifest(
+                cargo_path,
+                original,
+                updated,
+                "Cargo workspace membership for content fork",
+                || {
+                    vapor_core::VaporWorkspace::load(&source_root)
+                        .map_err(|error| error.to_string())?;
+                    Ok(())
+                },
+            )?;
+        }
+        adopt_source_project_locked(paths, &relative_project)?;
+        Ok(())
+    })();
+    if let Err(error) = prepare {
+        if let Some((cargo_path, original, updated)) = &cargo_transaction {
+            if fs::read_to_string(cargo_path).is_ok_and(|current| current == *updated) {
+                let _ = replace_source_manifest(
+                    cargo_path,
+                    updated,
+                    original,
+                    "Cargo workspace membership rollback for content fork",
+                    || Ok(()),
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(&output);
+        return Err(error);
+    }
+    Ok(output.join(kind.manifest_file_name()))
+}
+
+fn is_workspace_slug(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+}
+
+fn read_package_name(path: &Path) -> Result<String, String> {
+    let source = fs::read_to_string(path).map_err(io("read content Cargo manifest", path))?;
+    let document = source.parse::<toml_edit::DocumentMut>()
+        .map_err(|error| format!("content Cargo.toml is invalid: {error}"))?;
+    if document.get("workspace").is_some() {
+        return Err("nested Cargo workspaces cannot be forked into another Cargo workspace".to_owned());
+    }
+    document.get("package")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|package| package.get("name"))
+        .and_then(toml_edit::Item::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "Rust source project has no [package].name in Cargo.toml".to_owned())
+}
+
+fn copy_fork_tree(source: &Path, target: &Path, root: &Path) -> Result<(), String> {
+    let relative = source.strip_prefix(root).unwrap_or(Path::new(""));
+    if [".git", "target", "output"].iter().any(|name| relative.starts_with(name)) {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(source).map_err(io("inspect fork source", source))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!("source fork refuses symlinks in the acquired package: {}", source.display()));
+    }
+    if metadata.is_dir() {
+        fs::create_dir_all(target).map_err(io("create fork folder", target))?;
+        for entry in fs::read_dir(source).map_err(io("read fork source", source))? {
+            let entry = entry.map_err(|error| format!("failed to read fork source entry: {error}"))?;
+            copy_fork_tree(&entry.path(), &target.join(entry.file_name()), root)?;
+        }
+    } else if metadata.is_file() {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(io("create fork folder", parent))?;
+        }
+        fs::copy(source, target).map_err(io("copy fork source file", source))?;
+    }
+    Ok(())
+}
+
+fn rewrite_fork_source(
+    root: &Path,
+    source_id: &str,
+    new_id: &str,
+    old_crate: &str,
+    new_crate: &str,
+) -> Result<(), String> {
+    let mut files = Vec::new();
+    collect_files(root, root, &mut files)?;
+    for relative_path in files {
+        let path = root.join(relative_path);
+        let Ok(source) = fs::read_to_string(&path) else { continue };
+        let mut updated = source.replace(source_id, new_id);
+        if !old_crate.is_empty() && old_crate != new_crate {
+            updated = updated.replace(old_crate, new_crate);
+        }
+        if updated != source {
+            fs::write(&path, updated).map_err(io("rewrite fork source identity", &path))?;
+        }
+    }
+    Ok(())
+}
+
 /// Register an existing in-workspace content project without moving its files.
 pub fn adopt_source_project(
     paths: &EnvironmentPaths,
     project_path: &Path,
+) -> Result<String, String> {
+    adopt_source_project_impl(paths, project_path, false)
+}
+
+fn adopt_source_project_locked(
+    paths: &EnvironmentPaths,
+    project_path: &Path,
+) -> Result<String, String> {
+    adopt_source_project_impl(paths, project_path, true)
+}
+
+fn adopt_source_project_impl(
+    paths: &EnvironmentPaths,
+    project_path: &Path,
+    workspace_lock_held: bool,
 ) -> Result<String, String> {
     let workspace = WorkspaceManifest::load(paths)?;
     if workspace.kind() != crate::workspace::SourceRootKind::Workspace {
@@ -2052,12 +2266,7 @@ pub fn adopt_source_project(
     }
 
     let updated = document.to_string();
-    replace_workspace_manifest(
-        &workspace_manifest,
-        &original,
-        &updated,
-        "content project registration",
-        || {
+    let register = || {
             WorkspaceManifest::load(paths)?;
             vapor_core::VaporWorkspace::load(&source_root).map_err(|error| error.to_string())?;
             let catalog = discover(paths)?;
@@ -2071,8 +2280,24 @@ pub fn adopt_source_project(
                 ));
             }
             Ok(())
-        },
-    )?;
+        };
+    if workspace_lock_held {
+        replace_workspace_manifest_locked(
+            &workspace_manifest,
+            &original,
+            &updated,
+            "content project registration",
+            register,
+        )?;
+    } else {
+        replace_workspace_manifest(
+            &workspace_manifest,
+            &original,
+            &updated,
+            "content project registration",
+            register,
+        )?;
+    }
     Ok(format!(
         "Registered {kind} content {id} from {}.",
         project_path.display()
@@ -3268,6 +3493,37 @@ fn source_project_manifest(
     output
 }
 
+/// Turn one deployed role manifest back into a source-authored manifest for a
+/// new local identity. Runtime payloads describe a built artifact and are not
+/// source declarations; a published-file ID belongs to the publisher's item.
+fn source_manifest_for_fork(
+    deployed: &str,
+    kind: ContentKind,
+    name: &str,
+) -> Result<String, String> {
+    let mut document = deployed
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| format!("deployed content manifest is not valid TOML: {error}"))?;
+    document.remove("schema");
+    let role = document
+        .get_mut(kind.as_str())
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or_else(|| format!("deployed manifest has no [{}] table", kind.as_str()))?;
+    role.remove("id");
+    role.remove("runtime");
+    role.insert("name", toml_edit::value(name));
+    if let Some(steam) = role
+        .get_mut("steam")
+        .and_then(toml_edit::Item::as_table_mut)
+    {
+        steam.remove("published-file-id");
+    }
+    let source = document.to_string();
+    vapor_content::authored_manifest::AuthoredContentManifest::parse(&source)
+        .map_err(|error| format!("forked source manifest is invalid: {error}"))?;
+    Ok(source)
+}
+
 /// Validate content dependency, conflict, and Workshop metadata.
 ///
 /// # Errors
@@ -3718,6 +3974,22 @@ fn import_workshop_item(
     published_file_id: &str,
     provider_root: &Path,
 ) -> Result<AcquireReport, String> {
+    import_workshop_item_with_constraints(
+        installation,
+        app_id,
+        published_file_id,
+        provider_root,
+        None,
+    )
+}
+
+fn import_workshop_item_with_constraints(
+    installation: &InstallationPaths,
+    app_id: u32,
+    published_file_id: &str,
+    provider_root: &Path,
+    constraints: Option<&BTreeMap<String, Vec<String>>>,
+) -> Result<AcquireReport, String> {
     let layout = ContentLayout::new(installation);
     let observed_root = layout
         .steam_downloads()
@@ -3726,11 +3998,93 @@ fn import_workshop_item(
     reset_directory(installation.root(), &observed_root)?;
     copy_tree(provider_root, &observed_root, provider_root, &[])?;
     let artifact = read_deployed_manifest(&observed_root)?;
+    if let Some(requirements) = constraints.and_then(|all| all.get(artifact.id())) {
+        let version = artifact
+            .version()
+            .and_then(|version| semver::Version::parse(version).ok())
+            .ok_or_else(|| {
+                format!(
+                    "Workshop update for {} has no valid semantic version; dependent compositions were left unchanged",
+                    artifact.id()
+                )
+            })?;
+        for requirement in requirements {
+            let requirement = semver::VersionReq::parse(requirement).map_err(|error| {
+                format!("saved version requirement '{requirement}' is invalid: {error}")
+            })?;
+            if !requirement.matches(&version) {
+                return Err(format!(
+                    "Workshop update {}@{version} does not satisfy every dependent composition; the previous Library copy was preserved",
+                    artifact.id()
+                ));
+            }
+        }
+    }
     let cache_root = layout.cache().join("packages").join(published_file_id);
-    reset_directory(installation.root(), &cache_root)?;
-    copy_tree(&observed_root, &cache_root, &observed_root, &[])?;
-    let fingerprint = fingerprint_tree(&cache_root)?;
+    let packages = cache_root
+        .parent()
+        .ok_or_else(|| "cache package path has no parent directory".to_owned())?;
+    fs::create_dir_all(packages).map_err(io("create content package cache", packages))?;
+    let _index_lock = acquire_content_index_lock(&layout)?;
     let mut index = load_index(&layout)?;
+    if index.caches.values().any(|record| {
+        record.workshop_id.as_deref() == Some(published_file_id)
+            && record.artifact_id != artifact.id()
+    }) {
+        return Err(format!(
+            "Workshop item {published_file_id} changed its Vapor content ID; the previous Library item was preserved"
+        ));
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let staging = packages.join(format!(".{published_file_id}.incoming-{nonce}"));
+    let backup = packages.join(format!(".{published_file_id}.previous-{nonce}"));
+    if staging.exists() || backup.exists() {
+        return Err("could not allocate a temporary Workshop cache transaction".to_owned());
+    }
+    fs::create_dir(&staging).map_err(io("create Workshop cache staging directory", &staging))?;
+    if let Err(error) = copy_tree(&observed_root, &staging, &observed_root, &[]) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    let fingerprint = match fingerprint_tree(&staging) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+    let previous = match fs::symlink_metadata(&cache_root) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            if let Err(error) = fs::rename(&cache_root, &backup) {
+                let _ = fs::remove_dir_all(&staging);
+                return Err(io("stage previous cached artifact", &cache_root)(error));
+            }
+            true
+        }
+        Ok(_) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(format!(
+                "existing Workshop cache path is not a regular directory: {}",
+                cache_root.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(io("inspect previous cached artifact", &cache_root)(error));
+        }
+    };
+    if let Err(error) = fs::rename(&staging, &cache_root) {
+        if previous {
+            let _ = fs::rename(&backup, &cache_root);
+        }
+        let _ = fs::remove_dir_all(&staging);
+        return Err(io("activate downloaded Workshop artifact", &cache_root)(error));
+    }
+    index.caches.retain(|_, record| record.workshop_id.as_deref() != Some(published_file_id));
     index.caches.insert(
         artifact.id().to_owned(),
         CacheRecord {
@@ -3742,7 +4096,20 @@ fn import_workshop_item(
             acquired_at: now_seconds(),
         },
     );
-    save_index(&layout, &index)?;
+    if let Err(error) = save_index(&layout, &index) {
+        let _ = fs::remove_dir_all(&cache_root);
+        if previous {
+            let restore = fs::rename(&backup, &cache_root);
+            return Err(match restore {
+                Ok(()) => format!("{error}; previous cached artifact restored"),
+                Err(restore) => format!("{error}; cache recovery failed: {restore}"),
+            });
+        }
+        return Err(error);
+    }
+    if previous {
+        fs::remove_dir_all(&backup).map_err(io("remove previous cached artifact", &backup))?;
+    }
     let receipt = write_receipt(
         installation,
         "download",
@@ -3775,6 +4142,25 @@ pub fn import_workshop_item_from_provider(
     provider_root: &Path,
 ) -> Result<AcquireReport, String> {
     import_workshop_item(installation, app_id, published_file_id, provider_root)
+}
+
+/// Import a Workshop item only when its version satisfies all supplied
+/// Auto-Install composition constraints. A rejected update leaves the previous
+/// Library copy intact.
+pub fn import_workshop_item_from_provider_with_constraints(
+    installation: &InstallationPaths,
+    app_id: u32,
+    published_file_id: &str,
+    provider_root: &Path,
+    constraints: &BTreeMap<String, Vec<String>>,
+) -> Result<AcquireReport, String> {
+    import_workshop_item_with_constraints(
+        installation,
+        app_id,
+        published_file_id,
+        provider_root,
+        Some(constraints),
+    )
 }
 
 /// Install source or cached content into the app-owned installed-content tree.
@@ -4839,6 +5225,57 @@ pub fn cached_artifact(
         enabled: true,
         dependencies: artifact.dependencies().to_vec(),
     })
+}
+
+/// Remove one acquired artifact from the local Library cache without touching
+/// its installed copy. Callers must establish that no composition depends on
+/// the item before requesting collection.
+pub fn collect_cached_artifact(
+    installation: &InstallationPaths,
+    content_id: &str,
+) -> Result<bool, String> {
+    let layout = ContentLayout::new(installation);
+    let _lock = acquire_content_index_lock(&layout)?;
+    let mut index = load_index(&layout)?;
+    let Some(record) = index.caches.get(content_id).cloned() else {
+        return Ok(false);
+    };
+
+    let packages = layout.cache().join("packages");
+    fs::create_dir_all(&packages).map_err(io("create content cache", &packages))?;
+    let packages_root = fs::canonicalize(&packages).map_err(io("resolve content cache", &packages))?;
+    let record_metadata = fs::symlink_metadata(&record.cache_root)
+        .map_err(io("inspect cached artifact", &record.cache_root))?;
+    if !record_metadata.file_type().is_dir() || record_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "cached artifact path is not a regular directory: {}",
+            record.cache_root.display()
+        ));
+    }
+    let cache_root = fs::canonicalize(&record.cache_root)
+        .map_err(io("resolve cached artifact", &record.cache_root))?;
+    if !cache_root.starts_with(&packages_root) || cache_root == packages_root {
+        return Err(format!(
+            "cached artifact resolves outside the managed content cache: {}",
+            record.cache_root.display()
+        ));
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let quarantine = packages.join(format!(".collect-{}-{nonce}", slug(content_id)));
+    fs::rename(&cache_root, &quarantine).map_err(io("stage cached artifact collection", &cache_root))?;
+    index.caches.remove(content_id);
+    if let Err(error) = save_index(&layout, &index) {
+        let restore = fs::rename(&quarantine, &cache_root);
+        return Err(match restore {
+            Ok(()) => format!("{error}; cached artifact restored"),
+            Err(restore) => format!("{error}; cached artifact recovery failed: {restore}"),
+        });
+    }
+    fs::remove_dir_all(&quarantine).map_err(io("collect cached artifact", &quarantine))?;
+    Ok(true)
 }
 
 /// Read exact installed artifact records from the app-owned index.
@@ -6518,7 +6955,75 @@ fn save_index(layout: &ContentLayout, index: &ContentIndex) -> Result<(), String
     }
     let encoded = toml::to_string_pretty(index)
         .map_err(|error| format!("failed to encode content index: {error}"))?;
-    fs::write(layout.index(), encoded).map_err(io("write content index", layout.index()))
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let temporary = layout.index().with_extension(format!("tmp-{nonce}"));
+    let backup = layout.index().with_extension(format!("backup-{nonce}"));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(io("create temporary content index", &temporary))?;
+    file.write_all(encoded.as_bytes())
+        .map_err(io("write temporary content index", &temporary))?;
+    file.sync_all()
+        .map_err(io("flush temporary content index", &temporary))?;
+    drop(file);
+
+    let had_previous = match fs::symlink_metadata(layout.index()) {
+        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {
+            fs::rename(layout.index(), &backup)
+                .map_err(io("stage previous content index", layout.index()))?;
+            true
+        }
+        Ok(_) => {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!(
+                "content index is not a regular file: {}",
+                layout.index().display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            return Err(io("inspect previous content index", layout.index())(error));
+        }
+    };
+    if let Err(error) = fs::rename(&temporary, layout.index()) {
+        if had_previous {
+            let _ = fs::rename(&backup, layout.index());
+        }
+        let _ = fs::remove_file(&temporary);
+        return Err(io("activate content index", layout.index())(error));
+    }
+    if had_previous {
+        let _ = fs::remove_file(&backup);
+    }
+    Ok(())
+}
+
+struct ContentIndexLock {
+    path: PathBuf,
+}
+
+impl Drop for ContentIndexLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_content_index_lock(layout: &ContentLayout) -> Result<ContentIndexLock, String> {
+    if let Some(parent) = layout.index().parent() {
+        fs::create_dir_all(parent).map_err(io("create content state directory", parent))?;
+    }
+    let path = layout.index().with_extension("lock");
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("cannot acquire content index lock '{}': {error}", path.display()))?;
+    Ok(ContentIndexLock { path })
 }
 
 fn write_lock(layout: &ContentLayout, record: &InstalledRecord) -> Result<(), String> {
@@ -7180,4 +7685,311 @@ fn steam_escape(value: &str) -> String {
 
 fn io<'a>(action: &'a str, path: &'a Path) -> impl Fn(std::io::Error) -> String + 'a {
     move |error| format!("failed to {action} '{}': {error}", path.display())
+}
+
+#[cfg(test)]
+mod fork_manifest_tests {
+    use super::*;
+
+    #[test]
+    fn fork_manifest_restores_source_identity_and_unpublishes_the_original_item() {
+        let deployed = r#"schema = 1
+
+[game-mod]
+id = "community/nebula/movement"
+name = "Movement"
+version = "2.3.0"
+runtime = [{ target = "x86_64-unknown-linux-gnu", libraries = ["vapor_community_nebula_movement"] }]
+
+[[game-mod.dependencies]]
+id = "community/shared/math"
+version = ">=1.0.0"
+
+[game-mod.steam]
+app-id = 2122620
+published-file-id = "3762162548"
+title = "Movement"
+"#;
+
+        let source = source_manifest_for_fork(deployed, ContentKind::GameMod, "nebula-movement").unwrap();
+        let document = source.parse::<toml_edit::DocumentMut>().unwrap();
+        assert!(document.get("schema").is_none());
+        let role = document.get("game-mod").unwrap().as_table().unwrap();
+        assert!(role.get("id").is_none());
+        assert!(role.get("runtime").is_none());
+        assert_eq!(role.get("name").unwrap().as_str(), Some("nebula-movement"));
+        assert_eq!(role.get("version").unwrap().as_str(), Some("2.3.0"));
+        assert_eq!(
+            role.get("dependencies").unwrap().as_array_of_tables().unwrap().iter().next().unwrap()
+                .get("id").unwrap().as_str(),
+            Some("community/shared/math")
+        );
+        let steam = role.get("steam").unwrap().as_table().unwrap();
+        assert!(steam.get("published-file-id").is_none());
+        assert_eq!(steam.get("app-id").unwrap().as_integer(), Some(2122620));
+        assert_eq!(steam.get("title").unwrap().as_str(), Some("Movement"));
+    }
+
+    #[test]
+    fn fork_rewrites_owned_content_and_crate_identity_without_touching_dependencies() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("vapor-fork-test-{stamp}"));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"vapor_author_old_mod\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub const CONTENT_ID: &str = \"author/old/mod\";\npub use vapor_author_old_mod::run;\n",
+        )
+        .unwrap();
+
+        rewrite_fork_source(
+            &root,
+            "author/old/mod",
+            "local/workspace/new-mod",
+            "vapor_author_old_mod",
+            "vapor_local_workspace_new_mod",
+        )
+        .unwrap();
+
+        let source = fs::read_to_string(root.join("src/lib.rs")).unwrap();
+        assert!(source.contains("local/workspace/new-mod"));
+        assert!(source.contains("vapor_local_workspace_new_mod::run"));
+        assert!(!source.contains("author/old/mod"));
+        assert!(fs::read_to_string(root.join("Cargo.toml"))
+            .unwrap()
+            .contains("vapor_local_workspace_new_mod"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cached_source_fork_registers_new_vapor_and_cargo_projects_and_rejects_binary_only_items() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("vapor-fork-integration-{stamp}"));
+        let installation_root = root.join("installation");
+        let workspace_root = root.join("workspace");
+        fs::create_dir_all(installation_root.join("bin")).unwrap();
+        fs::create_dir_all(workspace_root.join("fixtures/base")).unwrap();
+        fs::write(installation_root.join("bin/vapor"), "").unwrap();
+        fs::write(
+            installation_root.join(manifest::APP_FILE_NAME),
+            "schema = 1\n\n[root]\nname = \"test-app\"\norganization = \"test\"\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace_root.join(manifest::WORKSPACE_FILE_NAME),
+            "schema = 1\n\n[workspace]\nname = \"workspace\"\norganization = \"author\"\nversion = \"0.1.0\"\nrepository = \"\"\n\n[toolchain]\nchannel = \"nightly\"\nversion = \"nightly-2026-01-30\"\ndate = \"2026-01-30\"\n\n[[project]]\nname = \"base\"\npath = \"fixtures/base\"\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace_root.join("Cargo.toml"),
+            "[workspace]\nresolver = \"3\"\nmembers = [\"fixtures/base\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace_root.join("fixtures/base/Cargo.toml"),
+            "[package]\nname = \"base\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+
+        let installation = InstallationPaths::from_executable(&installation_root.join("bin/vapor"))
+            .expect("test installation is valid");
+        let paths = EnvironmentPaths::from_installation_and_source_path(
+            installation.clone(),
+            &workspace_root,
+        )
+        .expect("test workspace is valid");
+        let layout = ContentLayout::new(&installation);
+        let source_id = "publisher/project/movement";
+        let cache_root = layout.cache().join("packages/3762162548");
+        fs::create_dir_all(cache_root.join("src")).unwrap();
+        fs::write(
+            cache_root.join(manifest::GAME_MOD_FILE_NAME),
+            "schema = 1\n\n[game-mod]\nid = \"publisher/project/movement\"\nname = \"Movement\"\nversion = \"2.3.0\"\n\n[game-mod.steam]\napp-id = 2122620\npublished-file-id = \"3762162548\"\ntitle = \"Movement\"\n",
+        )
+        .unwrap();
+        fs::write(
+            cache_root.join("Cargo.toml"),
+            "[package]\nname = \"vapor_publisher_project_movement\"\nversion = \"2.3.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs::write(
+            cache_root.join("src/lib.rs"),
+            "pub const CONTENT_ID: &str = \"publisher/project/movement\";\n",
+        )
+        .unwrap();
+
+        let binary_only_id = "publisher/project/binary-addon";
+        let binary_cache = layout.cache().join("packages/3762162549");
+        fs::create_dir_all(&binary_cache).unwrap();
+        fs::write(
+            binary_cache.join(manifest::GAME_MOD_FILE_NAME),
+            "schema = 1\n\n[game-mod]\nid = \"publisher/project/binary-addon\"\nname = \"Binary addon\"\nversion = \"1.0.0\"\nbinaries = [\"addon\"]\n",
+        )
+        .unwrap();
+        let mut index = ContentIndex::default();
+        for (id, published_file_id, cache_root) in [
+            (source_id, "3762162548", cache_root),
+            (binary_only_id, "3762162549", binary_cache),
+        ] {
+            index.caches.insert(
+                id.to_owned(),
+                CacheRecord {
+                    artifact_id: id.to_owned(),
+                    workshop_id: Some(published_file_id.to_owned()),
+                    version: Some(if id == source_id { "2.3.0" } else { "1.0.0" }.to_owned()),
+                    fingerprint: fingerprint_tree(&cache_root).unwrap(),
+                    cache_root,
+                    acquired_at: 0,
+                },
+            );
+        }
+        save_index(&layout, &index).unwrap();
+
+        let manifest_path = fork_cached_artifact(&paths, "publisher/project/movement@2.3.0", "movement-copy")
+            .expect("source-backed package can be forked");
+        let fork_root = manifest_path.parent().unwrap();
+        assert!(manifest_path.is_file());
+        let source = fs::read_to_string(&manifest_path).unwrap();
+        assert!(!source.contains("published-file-id"));
+        assert!(!source.contains("id = \"publisher/project/movement\""));
+        assert!(source.contains("name = \"movement-copy\""));
+        assert!(fs::read_to_string(fork_root.join("Cargo.toml"))
+            .unwrap()
+            .contains("vapor_author_workspace_movement_copy"));
+        assert!(fs::read_to_string(fork_root.join("src/lib.rs"))
+            .unwrap()
+            .contains("author/workspace/movement-copy"));
+        assert!(fs::read_to_string(workspace_root.join("Cargo.toml"))
+            .unwrap()
+            .contains("content/movement-copy"));
+        assert!(discover(&paths)
+            .unwrap()
+            .artifacts()
+            .iter()
+            .any(|artifact| artifact.id() == "author/workspace/movement-copy"));
+
+        let error = fork_cached_artifact(&paths, binary_only_id, "binary-copy").unwrap_err();
+        assert!(error.contains("no complete Rust source project"));
+        assert!(!workspace_root.join("content/binary-copy").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cache_collection_removes_only_the_library_copy() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("vapor-cache-collection-{stamp}"));
+        let installation_root = root.join("installation");
+        fs::create_dir_all(installation_root.join("bin")).unwrap();
+        fs::write(installation_root.join("bin/vapor"), "").unwrap();
+        fs::write(
+            installation_root.join(manifest::APP_FILE_NAME),
+            "schema = 1\n\n[root]\nname = \"test-app\"\norganization = \"test\"\n",
+        )
+        .unwrap();
+        let installation = InstallationPaths::from_executable(&installation_root.join("bin/vapor"))
+            .expect("test installation is valid");
+        let layout = ContentLayout::new(&installation);
+        let content_id = "publisher/project/cache-me";
+        let cache_root = layout.cache().join("packages/3762162550");
+        fs::create_dir_all(&cache_root).unwrap();
+        fs::write(cache_root.join("payload.txt"), "cached").unwrap();
+        let installed_root = layout.installed().join("packages/3762162550");
+        fs::create_dir_all(&installed_root).unwrap();
+        fs::write(installed_root.join("payload.txt"), "installed").unwrap();
+        let mut index = ContentIndex::default();
+        index.caches.insert(
+            content_id.to_owned(),
+            CacheRecord {
+                artifact_id: content_id.to_owned(),
+                workshop_id: Some("3762162550".to_owned()),
+                version: Some("1.0.0".to_owned()),
+                fingerprint: fingerprint_tree(&cache_root).unwrap(),
+                cache_root: cache_root.clone(),
+                acquired_at: 0,
+            },
+        );
+        save_index(&layout, &index).unwrap();
+
+        assert!(collect_cached_artifact(&installation, content_id).unwrap());
+        assert!(!cache_root.exists());
+        assert_eq!(fs::read_to_string(installed_root.join("payload.txt")).unwrap(), "installed");
+        assert!(!load_index(&layout).unwrap().caches.contains_key(content_id));
+        assert!(!collect_cached_artifact(&installation, content_id).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incompatible_auto_install_download_preserves_the_previous_library_copy() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("vapor-cache-update-{stamp}"));
+        let installation_root = root.join("installation");
+        let provider_root = root.join("provider");
+        fs::create_dir_all(installation_root.join("bin")).unwrap();
+        fs::create_dir_all(&provider_root).unwrap();
+        fs::write(installation_root.join("bin/vapor"), "").unwrap();
+        fs::write(
+            installation_root.join(manifest::APP_FILE_NAME),
+            "schema = 1\n\n[root]\nname = \"test-app\"\norganization = \"test\"\n",
+        )
+        .unwrap();
+        let installation = InstallationPaths::from_executable(&installation_root.join("bin/vapor"))
+            .expect("test installation is valid");
+        let layout = ContentLayout::new(&installation);
+        let content_id = "publisher/project/versioned";
+        let published_file_id = "3762162551";
+        let cache_root = layout.cache().join("packages").join(published_file_id);
+        fs::create_dir_all(&cache_root).unwrap();
+        fs::write(cache_root.join("payload.txt"), "old-version").unwrap();
+        let mut index = ContentIndex::default();
+        index.caches.insert(
+            content_id.to_owned(),
+            CacheRecord {
+                artifact_id: content_id.to_owned(),
+                workshop_id: Some(published_file_id.to_owned()),
+                version: Some("1.5.0".to_owned()),
+                fingerprint: fingerprint_tree(&cache_root).unwrap(),
+                cache_root: cache_root.clone(),
+                acquired_at: 1,
+            },
+        );
+        save_index(&layout, &index).unwrap();
+        fs::write(
+            provider_root.join(manifest::GAME_MOD_FILE_NAME),
+            format!(
+                "schema = 1\n\n[game-mod]\nid = \"{content_id}\"\nname = \"Versioned\"\nversion = \"2.1.0\"\n"
+            ),
+        )
+        .unwrap();
+        fs::write(provider_root.join("payload.txt"), "new-version").unwrap();
+
+        let constraints = BTreeMap::from([(content_id.to_owned(), vec!["^1.0".to_owned()])]);
+        let error = import_workshop_item_with_constraints(
+            &installation,
+            2122620,
+            published_file_id,
+            &provider_root,
+            Some(&constraints),
+        )
+        .unwrap_err();
+        assert!(error.contains("does not satisfy every dependent composition"));
+        assert_eq!(fs::read_to_string(cache_root.join("payload.txt")).unwrap(), "old-version");
+        assert_eq!(load_index(&layout).unwrap().caches[content_id].version.as_deref(), Some("1.5.0"));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

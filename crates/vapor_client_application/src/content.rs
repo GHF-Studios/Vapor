@@ -89,6 +89,16 @@ pub fn download_workshop_items(
     application_executable: &Path,
     published_file_ids: &[String],
 ) -> Result<Vec<WorkshopAcquisition>, String> {
+    download_workshop_items_with_constraints(application_executable, published_file_ids, &Default::default())
+}
+
+/// Download Workshop items while preserving Auto-Install composition
+/// constraints during cache replacement.
+pub fn download_workshop_items_with_constraints(
+    application_executable: &Path,
+    published_file_ids: &[String],
+    constraints: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Result<Vec<WorkshopAcquisition>, String> {
     if published_file_ids.is_empty() {
         return Err("Select at least one Workshop item to import".to_owned());
     }
@@ -138,7 +148,13 @@ pub fn download_workshop_items(
             |published_file_id, root| {
                 let id = published_file_id.to_string();
                 let report =
-                    content::import_workshop_item_from_provider(&installation, app_id, &id, root)?;
+                    content::import_workshop_item_from_provider_with_constraints(
+                        &installation,
+                        app_id,
+                        &id,
+                        root,
+                        constraints,
+                    )?;
                 let cached = content::cached_artifact(&installation, report.artifact_id())?;
                 Ok((
                     *positions.get(&published_file_id).ok_or_else(|| {
@@ -342,6 +358,13 @@ pub fn update_composition(
         .transpose()?;
     content::update(&installation, paths.as_ref(), Some(selector))?;
     installed_composition(&installation, selector)
+}
+
+/// Remove one unreferenced cached artifact from the local Library while
+/// preserving any installed runtime copy.
+pub fn collect_library_item(application_executable: &Path, content_id: &str) -> Result<bool, String> {
+    let installation = InstallationPaths::from_application_executable(application_executable)?;
+    content::collect_cached_artifact(&installation, content_id)
 }
 
 fn graph_content_selectors(graph: &crate::ResolvedCompositionGraph) -> Vec<String> {

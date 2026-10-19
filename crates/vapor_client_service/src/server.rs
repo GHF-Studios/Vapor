@@ -520,6 +520,8 @@ mod tests {
             workspace_root: None,
             active_composition_id: Some("default".to_owned()),
             fixture_mode: true,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
         })
     }
 

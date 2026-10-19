@@ -138,6 +138,11 @@ pub enum AuthoringAction {
         optional_dependencies: Vec<String>,
         workshop: WorkshopMetadataDraft,
     },
+    ForkContent {
+        workspace_root: String,
+        content_id: String,
+        name: String,
+    },
     CreateWorkspace {
         parent: String,
         organization: String,
@@ -285,6 +290,7 @@ impl ClientAction {
                 AuthoringAction::ValidateContent { .. } => "authoring.validate-content",
                 AuthoringAction::SaveRuntimeOutputs { .. } => "authoring.save-runtime-outputs",
                 AuthoringAction::CreateContent { .. } => "authoring.create-content",
+                AuthoringAction::ForkContent { .. } => "authoring.fork-content",
                 AuthoringAction::CreateWorkspace { .. } => "authoring.create-workspace",
             },
             Self::Workshop(action) => match action {

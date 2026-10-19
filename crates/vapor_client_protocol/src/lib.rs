@@ -210,6 +210,11 @@ mod tests {
                 optional_dependencies: vec![],
                 workshop: WorkshopMetadataDraft::default(),
             }),
+            ClientAction::Authoring(AuthoringAction::ForkContent {
+                workspace_root: "/workspace".into(),
+                content_id: "publisher/project/moon".into(),
+                name: "moon-copy".into(),
+            }),
             ClientAction::Authoring(AuthoringAction::CreateWorkspace {
                 parent: "/tmp".into(),
                 organization: "ghf".into(),
@@ -259,7 +264,7 @@ mod tests {
         ];
         assert_eq!(
             actions.len(),
-            61,
+            62,
             "update this catalog when adding/removing action variants"
         );
         for action in actions {

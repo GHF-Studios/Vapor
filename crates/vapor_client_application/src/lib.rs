@@ -35,7 +35,8 @@ pub use content::{
     CompositionPreviewSource, CompositionRunResult, InstallationCheck, InstalledArtifact,
     InstalledComposition, WorkshopAcquisition, default_packagepack_selector,
     download_workshop_item, download_workshop_items, install_composition, preview_composition,
-    repair_composition, run_installed_composition, run_source_composition, update_composition,
+    collect_library_item, download_workshop_items_with_constraints, repair_composition,
+    run_installed_composition, run_source_composition, update_composition,
     verify_installation,
 };
 pub use vapor_steam::{
@@ -52,6 +53,7 @@ pub use workspace::{
     UnregisteredProjectScan, WorkshopPolicyDraft, adopt_workspace_content_project,
     create_basic_content_workspace, create_content_workspace,
     create_content_workspace_with_dependency_policies, create_content_workspace_with_workshop,
+    fork_acquired_content,
     discover_source_content, load_source_composition,
     load_source_runtime_outputs, load_source_workshop_metadata, remember_workspace,
     save_source_composition, save_source_runtime_outputs, save_source_workshop_metadata,

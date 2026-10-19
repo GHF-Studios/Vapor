@@ -312,6 +312,20 @@ pub fn create_content_workspace_with_dependency_policies(
     )
 }
 
+/// Fork acquired Workshop content into a distinct source project inside the
+/// selected Workspace. The provider rejects packages without their declared
+/// Rust source files instead of manufacturing an editable project.
+pub fn fork_acquired_content(
+    application_executable: &Path,
+    workspace_root: &Path,
+    selector: &str,
+    new_name: &str,
+) -> Result<PathBuf, String> {
+    let installation = InstallationPaths::from_application_executable(application_executable)?;
+    let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
+    vapor_client_provider::content::fork_cached_artifact(&paths, selector, new_name)
+}
+
 /// Scaffold the maintained Engine/Game/Packagepack starter workspace.
 pub fn create_basic_content_workspace(
     application_executable: &Path,
