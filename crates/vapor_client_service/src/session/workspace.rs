@@ -626,7 +626,8 @@ fn execute_workspace_operation(
                     .map_err(|error| error.to_string())
             } else {
                 let progress_context = context.clone();
-                vapor_client_application::run_workspace_tool_with_progress(
+                let output_context = context.clone();
+                vapor_client_application::run_workspace_tool_with_events(
                     executable,
                     root,
                     operation,
@@ -638,6 +639,12 @@ fn execute_workspace_operation(
                             total: Some(total as u64),
                             unit: "Cargo steps".to_owned(),
                             message: Some(message.to_owned()),
+                        });
+                    },
+                    move |stream, text| {
+                        output_context.report_output(application::OperationOutput {
+                            stream,
+                            text: text.to_owned(),
                         });
                     },
                 )

@@ -8,6 +8,8 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+const MAX_OPERATION_OUTPUT_BYTES: usize = 8 * 1024;
+
 static NEXT_OPERATION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Process-local identity for one operation.
@@ -61,6 +63,21 @@ pub struct Progress {
     pub message: Option<String>,
 }
 
+/// Which child-process pipe produced one line of operation output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OperationOutputStream {
+    Stdout,
+    Stderr,
+}
+
+/// One bounded line emitted by an operation's child process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationOutput {
+    pub stream: OperationOutputStream,
+    pub text: String,
+}
+
 /// Serializable event emitted by the shared operation runner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationEvent {
@@ -74,6 +91,8 @@ pub struct OperationEvent {
     pub phase: OperationPhase,
     /// Optional progress update.
     pub progress: Option<Progress>,
+    /// Optional child-process output line.
+    pub output: Option<OperationOutput>,
     /// Current status.
     pub status: OperationStatus,
 }
@@ -130,7 +149,25 @@ impl OperationContext {
         self.emit(OperationStatus::Running);
     }
 
+    /// Forward one child-process output line to subscribed frontends.
+    pub fn report_output(&self, mut output: OperationOutput) {
+        if output.text.len() > MAX_OPERATION_OUTPUT_BYTES {
+            let suffix = " … [truncated]";
+            let mut end = MAX_OPERATION_OUTPUT_BYTES.saturating_sub(suffix.len());
+            while !output.text.is_char_boundary(end) {
+                end -= 1;
+            }
+            output.text.truncate(end);
+            output.text.push_str(suffix);
+        }
+        self.emit_with_output(OperationStatus::Running, Some(output));
+    }
+
     fn emit(&self, status: OperationStatus) {
+        self.emit_with_output(status, None);
+    }
+
+    fn emit_with_output(&self, status: OperationStatus, output: Option<OperationOutput>) {
         let (phase, progress) = self
             .state
             .lock()
@@ -142,6 +179,7 @@ impl OperationContext {
             action: self.request.action.clone(),
             phase,
             progress,
+            output,
             status,
         });
     }
@@ -180,6 +218,7 @@ impl OperationService {
             action: request.action.clone(),
             phase: OperationPhase::Queued,
             progress: None,
+            output: None,
             status: OperationStatus::Running,
         });
         let context = OperationContext::new(request, Arc::clone(&sink));
@@ -191,5 +230,70 @@ impl OperationService {
             Err(message) => context.emit(OperationStatus::Failed { message }),
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    #[test]
+    fn operation_context_forwards_child_output_with_its_stream() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&events);
+        let sink: OperationEventSink = Arc::new(move |event| {
+            observed.lock().unwrap().push(event);
+        });
+        let request = OperationRequest {
+            id: OperationId::fresh(),
+            domain: "workspace".to_owned(),
+            action: "test".to_owned(),
+        };
+        let _ = OperationService::run(request, sink, |context| {
+            context.report_output(OperationOutput {
+                stream: OperationOutputStream::Stderr,
+                text: "failure detail".to_owned(),
+            });
+            Ok::<_, String>(())
+        });
+        let events: MutexGuard<'_, Vec<OperationEvent>> = events.lock().unwrap();
+        assert!(events.iter().any(|event| {
+            event.output
+                == Some(OperationOutput {
+                    stream: OperationOutputStream::Stderr,
+                    text: "failure detail".to_owned(),
+                })
+        }));
+    }
+
+    #[test]
+    fn operation_context_bounds_oversized_output_without_splitting_utf8() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&events);
+        let sink: OperationEventSink = Arc::new(move |event| {
+            observed.lock().unwrap().push(event);
+        });
+        let request = OperationRequest {
+            id: OperationId::fresh(),
+            domain: "workspace".to_owned(),
+            action: "build".to_owned(),
+        };
+        let _ = OperationService::run(request, sink, |context| {
+            context.report_output(OperationOutput {
+                stream: OperationOutputStream::Stdout,
+                text: format!("{}🌌", "x".repeat(MAX_OPERATION_OUTPUT_BYTES)),
+            });
+            Ok::<_, String>(())
+        });
+
+        let events = events.lock().unwrap();
+        let output = events
+            .iter()
+            .find_map(|event| event.output.as_ref())
+            .expect("operation output was forwarded");
+        assert!(output.text.len() <= MAX_OPERATION_OUTPUT_BYTES);
+        assert!(output.text.is_char_boundary(output.text.len()));
+        assert!(output.text.ends_with("[truncated]"));
     }
 }

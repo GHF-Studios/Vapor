@@ -39,13 +39,13 @@ pub use state::{
     CatalogItemAction, CatalogItemRole, CatalogLocation, CatalogLocationKind, ClientEvent,
     ClientRevision, ClientSnapshot, CompositionPreviewDependency, CompositionPreviewNode,
     CompositionPreviewSnapshot, CompositionPreviewSource, DevelopmentSessionSnapshot,
-    DurableStateSnapshot, HostSummary, OperationEvent, OperationPhase, OperationStatus,
-    OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot, ProfileZoneSnapshot,
-    RootDistributionIdentitySnapshot, RootPublishingSnapshot, SourceMetadataRepairAction,
-    SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot, WorkshopAcquisitionBatchSnapshot,
-    WorkshopAcquisitionSnapshot, WorkshopBatchReviewSnapshot, WorkshopItemSnapshot,
-    WorkshopPackagePreviewSnapshot, WorkshopReviewItemSnapshot, WorkshopReviewSnapshot,
-    WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
+    DurableStateSnapshot, HostSummary, OperationEvent, OperationOutputEvent, OperationOutputStream,
+    OperationPhase, OperationStatus, OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot,
+    ProfileZoneSnapshot, RootDistributionIdentitySnapshot, RootPublishingSnapshot,
+    SourceMetadataRepairAction, SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot,
+    WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot, WorkshopBatchReviewSnapshot,
+    WorkshopItemSnapshot, WorkshopPackagePreviewSnapshot, WorkshopReviewItemSnapshot,
+    WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
     WorkspaceContentSnapshot, WorkspaceFileResult, WorkspaceProjectCandidate,
     WorkspaceSourceProject, WorkspaceWorkshopPolicy,
 };
@@ -706,6 +706,15 @@ mod tests {
         });
         assert_round_trip(ProtocolFrame::Event(ClientEvent::ServiceReady {
             protocol_version: PROTOCOL_VERSION,
+        }));
+    }
+
+    #[test]
+    fn operation_output_round_trips_as_a_typed_event() {
+        assert_round_trip(ClientEvent::OperationOutput(OperationOutputEvent {
+            id: "operation-7".to_owned(),
+            stream: OperationOutputStream::Stderr,
+            text: "warning: example".to_owned(),
         }));
     }
 

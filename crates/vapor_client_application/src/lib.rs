@@ -32,16 +32,16 @@ pub use content::{
 };
 pub use operation::{
     CoreOperationEvent, CoreOperationRequest, OperationContext, OperationEvent, OperationEventSink,
-    OperationId, OperationKind, OperationPhase, OperationRequest, OperationService,
-    OperationStatus, Progress,
+    OperationId, OperationKind, OperationOutput, OperationOutputStream, OperationPhase,
+    OperationRequest, OperationService, OperationStatus, Progress,
 };
 pub use publishing::{
     ApplicationReleaseResult, ApplicationReleaseReview, BuildMode, BuildReport,
     MAX_WORKSHOP_REVIEW_BATCH, WorkshopBatchReview, WorkshopPackagePreview, WorkshopPublication,
     build_application_release, build_authored_workspace, publish_reviewed_application_release,
     publish_reviewed_workshop_batch, publish_reviewed_workshop_content, run_workspace_tool,
-    run_workspace_tool_with_progress, stage_application_release, stage_workshop_batch_preview,
-    stage_workshop_preview, validate_application_release_request,
+    run_workspace_tool_with_events, run_workspace_tool_with_progress, stage_application_release,
+    stage_workshop_batch_preview, stage_workshop_preview, validate_application_release_request,
 };
 pub use vapor_client_domain::can_auto_install_library_item;
 

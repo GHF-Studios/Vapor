@@ -1208,6 +1208,24 @@ impl ClientSession {
                             .filter(|total| *total > 0)
                             .map(|total| (progress.completed as f32 / total as f32).clamp(0.0, 1.0))
                     });
+                    if let Some(output) = event.output {
+                        self.operation_events
+                            .push_back(ClientEvent::OperationOutput(
+                                vapor_client_protocol::OperationOutputEvent {
+                                    id,
+                                    stream: match output.stream {
+                                        application::OperationOutputStream::Stdout => {
+                                            vapor_client_protocol::OperationOutputStream::Stdout
+                                        }
+                                        application::OperationOutputStream::Stderr => {
+                                            vapor_client_protocol::OperationOutputStream::Stderr
+                                        }
+                                    },
+                                    text: output.text,
+                                },
+                            ));
+                        continue;
+                    }
                     let (status, message) = protocol_status(event.status);
                     let message = message.or_else(|| {
                         event

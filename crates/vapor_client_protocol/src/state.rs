@@ -446,6 +446,20 @@ pub struct OperationEvent {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OperationOutputStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationOutputEvent {
+    pub id: String,
+    pub stream: OperationOutputStream,
+    pub text: String,
+}
+
 /// Result of a service-owned workspace editor operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "payload", rename_all = "kebab-case")]
@@ -632,6 +646,7 @@ pub enum ClientEvent {
     },
     Snapshot(Box<ClientSnapshot>),
     OperationChanged(OperationEvent),
+    OperationOutput(OperationOutputEvent),
     WorkspaceFileResult(Box<WorkspaceFileResult>),
     AuthoringResult(Box<AuthoringResult>),
     DevelopmentSessionChanged {

@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 pub use vapor_client_provider::workspace_build::{BuildMode, BuildReport};
 
 use vapor_client_provider::{
@@ -105,6 +108,34 @@ pub fn run_workspace_tool_with_progress(
     target_triples: &[String],
     report_progress: impl FnMut(usize, usize, &str),
 ) -> Result<(), String> {
+    run_workspace_tool_with_events(
+        application_executable,
+        workspace_root,
+        operation,
+        project_selection,
+        target_triples,
+        report_progress,
+        |stream, text| match stream {
+            vapor_core::OperationOutputStream::Stdout => {
+                let _ = writeln!(std::io::stdout().lock(), "{text}");
+            }
+            vapor_core::OperationOutputStream::Stderr => {
+                let _ = writeln!(std::io::stderr().lock(), "{text}");
+            }
+        },
+    )
+}
+
+/// Run a Studio workspace tool and forward its managed Cargo output.
+pub fn run_workspace_tool_with_events(
+    application_executable: &Path,
+    workspace_root: &Path,
+    operation: vapor_client_domain::WorkspaceToolOperation,
+    project_selection: &vapor_client_domain::WorkspaceProjectSelection,
+    target_triples: &[String],
+    report_progress: impl FnMut(usize, usize, &str),
+    report_output: impl FnMut(vapor_core::OperationOutputStream, &str),
+) -> Result<(), String> {
     let mode = match operation {
         vapor_client_domain::WorkspaceToolOperation::Format => BuildMode::Format,
         vapor_client_domain::WorkspaceToolOperation::Check => BuildMode::Check,
@@ -115,12 +146,13 @@ pub fn run_workspace_tool_with_progress(
     };
     let installation = InstallationPaths::from_application_executable(application_executable)?;
     let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
-    vapor_client_provider::workspace_build::run_selected_with_progress(
+    vapor_client_provider::workspace_build::run_selected_with_events(
         &paths,
         mode,
         project_selection,
         target_triples,
         report_progress,
+        report_output,
     )
     .map(|_| ())
 }
