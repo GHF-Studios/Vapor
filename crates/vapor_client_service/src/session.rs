@@ -51,6 +51,14 @@ pub(super) const MAX_BUFFERED_OPERATION_OUTPUT_EVENTS: usize = 512;
 const OPERATION_OUTPUT_OMISSION_NOTICE: &str =
     "Older output omitted because the service buffer reached its limit.";
 
+fn operation_cancellation_error(message: &str) -> ServiceError {
+    ServiceError {
+        code: ServiceErrorCode::ActionUnavailable,
+        message: message.to_owned(),
+        retryable: true,
+    }
+}
+
 fn queue_operation_output(events: &mut VecDeque<ClientEvent>, output: OperationOutputEvent) {
     let buffered_outputs = events
         .iter()
@@ -118,6 +126,8 @@ pub struct ClientSession {
     state_store: Option<ClientStateStore>,
     host_context: Option<ClientHostContext>,
     active_operation: Option<OperationSummary>,
+    active_operation_cancellation: Option<application::OperationCancellation>,
+    active_operation_cancellable: bool,
     composition_preview: Option<vapor_client_protocol::CompositionPreviewSnapshot>,
     workshop: WorkshopSnapshot,
     workshop_review: Option<WorkshopReviewState>,
@@ -144,6 +154,22 @@ enum BackgroundOperationMessage {
     CompleteAuthoring(Box<AuthoringOperationCompletion>),
     CompleteLibrary(Box<LibraryOperationCompletion>),
     CompleteProfileAnalysis(Box<ProfileAnalysisCompletion>),
+}
+
+impl BackgroundOperationMessage {
+    fn completion_id(&self) -> Option<&str> {
+        match self {
+            Self::Lifecycle(_) => None,
+            Self::Complete(completion) => Some(&completion.id),
+            Self::CompleteWorkshop(completion) => Some(&completion.id),
+            Self::CompleteRootPublish(completion) => Some(&completion.id),
+            Self::CompleteApplicationRelease(completion) => Some(&completion.id),
+            Self::CompleteWorkspace(completion) => Some(&completion.id),
+            Self::CompleteAuthoring(completion) => Some(&completion.id),
+            Self::CompleteLibrary(completion) => Some(&completion.id),
+            Self::CompleteProfileAnalysis(completion) => Some(&completion.id),
+        }
+    }
 }
 
 struct BackgroundOperationSpec {
@@ -502,6 +528,8 @@ impl ClientSession {
             state_store,
             host_context,
             active_operation: None,
+            active_operation_cancellation: None,
+            active_operation_cancellable: false,
             composition_preview: None,
             workshop: WorkshopSnapshot::default(),
             workshop_review: None,
@@ -523,6 +551,12 @@ impl ClientSession {
         self.active_operation.is_some()
     }
 
+    pub(super) fn clear_active_operation(&mut self) {
+        self.active_operation = None;
+        self.active_operation_cancellation = None;
+        self.active_operation_cancellable = false;
+    }
+
     pub(super) fn reject_if_operation_in_progress(&self) -> Result<(), ServiceError> {
         if self.active_operation.is_some() {
             return Err(ServiceError {
@@ -538,9 +572,14 @@ impl ClientSession {
         self.poll_background_operation_messages();
         let mut response_kind = ClientResponseKind::Applied;
         let mut error = None;
-        if request
-            .expected_revision
-            .is_some_and(|expected| expected != self.revision)
+        let is_cancel_request = matches!(
+            &request.action,
+            ClientAction::Session(SessionAction::CancelOperation { .. })
+        );
+        if !is_cancel_request
+            && request
+                .expected_revision
+                .is_some_and(|expected| expected != self.revision)
         {
             response_kind = ClientResponseKind::Rejected;
             error = Some(ServiceError {
@@ -939,6 +978,58 @@ impl ClientSession {
                         self.revision.0 = self.revision.0.saturating_add(1);
                     }
                 }
+                ClientAction::Session(SessionAction::CancelOperation { operation_id }) => {
+                    let Some(active) = self.active_operation.as_ref() else {
+                        response_kind = ClientResponseKind::Rejected;
+                        error = Some(operation_cancellation_error(
+                            "There is no running operation to cancel.",
+                        ));
+                        let snapshot = self.snapshot();
+                        return ClientResponse {
+                            protocol_version: vapor_client_protocol::PROTOCOL_VERSION,
+                            request_id: request.request_id,
+                            revision: snapshot.revision,
+                            kind: response_kind,
+                            snapshot,
+                            error,
+                        };
+                    };
+                    if active.id != operation_id {
+                        response_kind = ClientResponseKind::Rejected;
+                        error = Some(operation_cancellation_error(
+                            "That operation is no longer active.",
+                        ));
+                    } else if !self.active_operation_cancellable {
+                        response_kind = ClientResponseKind::Rejected;
+                        error = Some(operation_cancellation_error(
+                            "This operation cannot be stopped safely once it has started.",
+                        ));
+                    } else if let Some(cancellation) = &self.active_operation_cancellation {
+                        cancellation.cancel();
+                        if let Some(active) = self.active_operation.as_mut() {
+                            active.status = OperationStatus::Cancelling;
+                        }
+                        self.active_operation_cancellable = false;
+                        self.revision.0 = self.revision.0.saturating_add(1);
+                        let active = self.active_operation.as_ref().expect("active operation");
+                        self.operation_events
+                            .push_back(ClientEvent::OperationChanged(OperationEvent {
+                                revision: self.revision,
+                                id: active.id.clone(),
+                                composition_id: active.composition_id.clone(),
+                                action: active.action.clone(),
+                                phase: OperationPhase::Finalizing,
+                                status: OperationStatus::Cancelling,
+                                progress: active.progress,
+                                message: Some("Cancellation requested.".to_owned()),
+                            }));
+                    } else {
+                        response_kind = ClientResponseKind::Rejected;
+                        error = Some(operation_cancellation_error(
+                            "This operation has no active cancellation handle.",
+                        ));
+                    }
+                }
                 ClientAction::Developer(DeveloperAction::SubscribeTelemetry { .. }) => {}
                 ClientAction::Developer(DeveloperAction::RefreshProfileTraces) => {
                     if self.bootstrap.fixture_mode {
@@ -1205,6 +1296,13 @@ impl ClientSession {
     {
         let operation_id = application::OperationId::fresh();
         let id = operation_id.0.to_string();
+        let cancellable = matches!(
+            spec.action,
+            "workspace.fmt" | "workspace.check" | "workspace.test" | "workspace.build"
+        ) && !self.bootstrap.fixture_mode;
+        let cancellation = application::OperationCancellation::default();
+        self.active_operation_cancellation = Some(cancellation.clone());
+        self.active_operation_cancellable = cancellable;
         self.active_operation = Some(OperationSummary {
             id: id.clone(),
             composition_id: spec.composition_id,
@@ -1228,16 +1326,25 @@ impl ClientSession {
                 let sink: application::OperationEventSink = std::sync::Arc::new(move |event| {
                     // The service emits terminal events only after it has applied
                     // and persisted the operation's user-visible state.
-                    if matches!(event.status, application::OperationStatus::Running) {
+                    if matches!(
+                        event.status,
+                        application::OperationStatus::Running
+                            | application::OperationStatus::Cancelled
+                    ) {
                         let _ = lifecycle_sender.send(BackgroundOperationMessage::Lifecycle(event));
                     }
                 });
-                let result =
-                    application::OperationService::run_observed(request, sink, execute, outcome);
+                let result = application::OperationService::run_observed_cancellable(
+                    request,
+                    sink,
+                    cancellation,
+                    execute,
+                    outcome,
+                );
                 let _ = completion_sender.send(completion(id, result));
             })
             .map_err(|error| {
-                self.active_operation = None;
+                self.clear_active_operation();
                 ServiceError {
                     code: ServiceErrorCode::InternalFailure,
                     message: format!("Could not start {failure_label}: {error}"),
@@ -1249,6 +1356,14 @@ impl ClientSession {
 
     fn poll_background_operation_messages(&mut self) {
         while let Ok(message) = self.operation_receiver.try_recv() {
+            if message.completion_id().is_some_and(|completion_id| {
+                self.active_operation.as_ref().is_some_and(|operation| {
+                    operation.id == completion_id && operation.status == OperationStatus::Cancelled
+                })
+            }) {
+                self.clear_active_operation();
+                continue;
+            }
             match message {
                 BackgroundOperationMessage::Lifecycle(event) => {
                     let id = event.id.0.to_string();
@@ -1281,7 +1396,12 @@ impl ClientSession {
                         );
                         continue;
                     }
-                    let (status, message) = protocol_status(event.status);
+                    let (mut status, message) = protocol_status(event.status);
+                    if active.status == OperationStatus::Cancelling
+                        && status == OperationStatus::Running
+                    {
+                        status = OperationStatus::Cancelling;
+                    }
                     let message = message.or_else(|| {
                         event
                             .progress
@@ -1339,7 +1459,7 @@ impl ClientSession {
             return;
         };
         let action = active.action.clone();
-        self.active_operation = None;
+        self.clear_active_operation();
         self.revision.0 = self.revision.0.saturating_add(1);
         let (status, message) = match &completion.result {
             Ok(_) => (
@@ -1599,6 +1719,97 @@ mod tests {
             expected_revision: revision.map(ClientRevision),
             action,
         }
+    }
+
+    fn running_operation(id: &str, action: &str) -> OperationSummary {
+        OperationSummary {
+            id: id.to_owned(),
+            composition_id: None,
+            action: action.to_owned(),
+            phase: OperationPhase::Building,
+            status: OperationStatus::Running,
+            progress: None,
+        }
+    }
+
+    #[test]
+    fn cancellation_targets_the_active_operation_even_after_its_revision_changes() {
+        let mut session = session();
+        let cancellation = application::OperationCancellation::default();
+        session.active_operation = Some(running_operation("42", "workspace.test"));
+        session.active_operation_cancellation = Some(cancellation.clone());
+        session.active_operation_cancellable = true;
+
+        let response = session.dispatch(request(
+            Some(u64::MAX),
+            ClientAction::Session(SessionAction::CancelOperation {
+                operation_id: "42".to_owned(),
+            }),
+        ));
+
+        assert_eq!(response.kind, ClientResponseKind::Applied);
+        assert!(cancellation.is_cancelled());
+        assert_eq!(
+            session.active_operation.as_ref().unwrap().status,
+            OperationStatus::Cancelling
+        );
+        assert!(matches!(
+            session.operation_events.back(),
+            Some(ClientEvent::OperationChanged(OperationEvent {
+                status: OperationStatus::Cancelling,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn cancellation_rejects_non_cancellable_operations_instead_of_cancelling_them() {
+        let mut session = session();
+        let cancellation = application::OperationCancellation::default();
+        session.active_operation = Some(running_operation("42", "publishing.publish-root"));
+        session.active_operation_cancellation = Some(cancellation.clone());
+        session.active_operation_cancellable = false;
+
+        let response = session.dispatch(request(
+            None,
+            ClientAction::Session(SessionAction::CancelOperation {
+                operation_id: "42".to_owned(),
+            }),
+        ));
+
+        assert_eq!(response.kind, ClientResponseKind::Rejected);
+        assert_eq!(
+            response.error.unwrap().code,
+            ServiceErrorCode::ActionUnavailable
+        );
+        assert!(!cancellation.is_cancelled());
+        assert_eq!(
+            session.active_operation.as_ref().unwrap().status,
+            OperationStatus::Running
+        );
+    }
+
+    #[test]
+    fn cancellation_discards_the_late_worker_result() {
+        let mut session = session();
+        let mut active = running_operation("42", "developer.analyze-profile-trace");
+        active.status = OperationStatus::Cancelled;
+        session.active_operation = Some(active);
+        session
+            .operation_sender
+            .send(BackgroundOperationMessage::CompleteProfileAnalysis(
+                Box::new(ProfileAnalysisCompletion {
+                    id: "42".to_owned(),
+                    result: Err("late worker failure".to_owned()),
+                }),
+            ))
+            .unwrap();
+
+        session.poll_background_operation_messages();
+
+        assert!(session.active_operation.is_none());
+        assert!(session.operation_events.is_empty());
+        assert!(session.profile_traces.is_empty());
     }
 
     #[test]

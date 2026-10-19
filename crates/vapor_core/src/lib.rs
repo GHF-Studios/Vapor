@@ -109,9 +109,9 @@ pub use managed_tool::{
 pub use manifest::{ContentHeader, ContentManifest, ManifestError, parse_content_manifest};
 
 pub use operation::{
-    OperationContext, OperationEvent, OperationEventSink, OperationId, OperationOutput,
-    OperationOutputStream, OperationPhase, OperationRequest, OperationService, OperationStatus,
-    Progress,
+    OperationCancellation, OperationContext, OperationEvent, OperationEventSink, OperationId,
+    OperationOutput, OperationOutputStream, OperationPhase, OperationRequest, OperationService,
+    OperationStatus, Progress,
 };
 
 pub use registry::{RegisteredEcosystem, RegisteredRepository, RegistryClient, RegistryError};

@@ -98,9 +98,33 @@ pub fn run_selected_with_events(
     selection: &WorkspaceProjectSelection,
     runtime_targets: &[String],
     report_progress: impl FnMut(usize, usize, &str),
+    report_output: impl FnMut(OperationOutputStream, &str),
+) -> Result<BuildReport, String> {
+    run_selected_with_events_cancellable(
+        paths,
+        mode,
+        selection,
+        runtime_targets,
+        report_progress,
+        || false,
+        report_output,
+    )
+}
+
+/// Run a selected managed workspace operation with cooperative cancellation.
+pub fn run_selected_with_events_cancellable(
+    paths: &EnvironmentPaths,
+    mode: BuildMode,
+    selection: &WorkspaceProjectSelection,
+    runtime_targets: &[String],
+    report_progress: impl FnMut(usize, usize, &str),
+    mut is_cancelled: impl FnMut() -> bool,
     mut report_output: impl FnMut(OperationOutputStream, &str),
 ) -> Result<BuildReport, String> {
     validate_targets(runtime_targets)?;
+    if is_cancelled() {
+        return Err("operation cancelled".to_owned());
+    }
     let manifest = WorkspaceManifest::load(paths)?;
     let projects = match selection {
         WorkspaceProjectSelection::All => manifest.cargo_projects().iter().collect::<Vec<_>>(),
@@ -143,9 +167,19 @@ pub fn run_selected_with_events(
         targets.len(),
         steps.len(),
         |project, target, step| {
+            if is_cancelled() {
+                return Err("operation cancelled".to_owned());
+            }
             let project = projects[project];
             let step = steps[step];
-            run_step(paths, project, step, targets[target], &mut report_output)?;
+            run_step(
+                paths,
+                project,
+                step,
+                targets[target],
+                &mut is_cancelled,
+                &mut report_output,
+            )?;
             let target = targets[target]
                 .map(|target| format!(" for {target}"))
                 .unwrap_or_default();
@@ -283,6 +317,7 @@ fn run_step(
     project: &CargoProject,
     step: CargoStep,
     target: Option<&str>,
+    is_cancelled: &mut impl FnMut() -> bool,
     report_output: &mut impl FnMut(OperationOutputStream, &str),
 ) -> Result<(), String> {
     let cargo = paths
@@ -345,13 +380,14 @@ fn run_step(
         command.env("RUSTDOCFLAGS", "-D warnings");
     }
     eprintln!("==> {}: {}", project.name(), step_label(step, target));
-    let status = process_output::run(&mut command, report_output).map_err(|error| {
-        format!(
-            "failed to run {} for '{}': {error}",
-            step_label(step, target),
-            project.name()
-        )
-    })?;
+    let status = process_output::run_cancellable(&mut command, is_cancelled, report_output)
+        .map_err(|error| {
+            format!(
+                "failed to run {} for '{}': {error}",
+                step_label(step, target),
+                project.name()
+            )
+        })?;
     if status.success() {
         Ok(())
     } else {

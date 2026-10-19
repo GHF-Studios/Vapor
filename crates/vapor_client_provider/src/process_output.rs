@@ -5,6 +5,7 @@ use std::{
     process::{Command, ExitStatus, Stdio},
     sync::mpsc,
     thread,
+    time::Duration,
 };
 use vapor_core::OperationOutputStream;
 
@@ -13,9 +14,23 @@ const MAX_OPERATION_OUTPUT_LINE_BYTES: usize = 8 * 1024;
 /// Run a managed child while forwarding bounded stdout and stderr lines.
 pub(crate) fn run(
     command: &mut Command,
+    report_output: impl FnMut(OperationOutputStream, &str),
+) -> Result<ExitStatus, String> {
+    run_cancellable(command, || false, report_output)
+}
+
+/// Run a managed child while forwarding output and polling for cancellation.
+pub(crate) fn run_cancellable(
+    command: &mut Command,
+    mut is_cancelled: impl FnMut() -> bool,
     mut report_output: impl FnMut(OperationOutputStream, &str),
 ) -> Result<ExitStatus, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to start managed child process: {error}"))?;
@@ -35,8 +50,35 @@ pub(crate) fn run(
         thread::spawn(move || forward_output(stdout, OperationOutputStream::Stdout, stdout_sender));
     let stderr_reader =
         thread::spawn(move || forward_output(stderr, OperationOutputStream::Stderr, sender));
-    for (stream, text) in receiver {
-        report_output(stream, &text);
+    let mut cancellation_sent = false;
+    loop {
+        if !cancellation_sent && is_cancelled() {
+            cancellation_sent = true;
+            if let Err(error) = terminate_child_tree(&mut child)
+                && child.try_wait().ok().flatten().is_none()
+            {
+                return Err(format!("failed to stop managed child process: {error}"));
+            }
+        }
+        match receiver.recv_timeout(Duration::from_millis(40)) {
+            Ok((stream, text)) => report_output(stream, &text),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if cancellation_sent {
+                    // The pipe readers finish after the child exits; continue draining their
+                    // bounded output so neither pipe can block the child during shutdown.
+                    match child.try_wait() {
+                        Ok(Some(_)) => {}
+                        Ok(None) => continue,
+                        Err(error) => {
+                            return Err(format!(
+                                "failed waiting for managed child process: {error}"
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
     }
     let status = child
         .wait()
@@ -47,7 +89,55 @@ pub(crate) fn run(
     stderr_reader
         .join()
         .map_err(|_| "managed child stderr reader panicked".to_owned())??;
-    Ok(status)
+    if cancellation_sent {
+        Err("operation cancelled".to_owned())
+    } else {
+        Ok(status)
+    }
+}
+
+fn terminate_child_tree(child: &mut std::process::Child) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    {
+        let process_group = format!("-{}", child.id());
+        // The child starts in a fresh process group so Cargo and its compiler
+        // descendants are stopped together, rather than leaving builds behind.
+        let result = Command::new("kill")
+            .args(["-KILL", "--", &process_group])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if matches!(result, Ok(status) if status.success()) {
+            return Ok(());
+        }
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        Err(result.err().unwrap_or_else(|| {
+            std::io::Error::other("could not terminate managed child process group")
+        }))
+    }
+    #[cfg(windows)]
+    {
+        let status = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if matches!(status, Ok(status) if status.success()) {
+            return Ok(());
+        }
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        child.kill()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        child.kill()
+    }
 }
 
 fn forward_output(
@@ -191,6 +281,45 @@ mod tests {
         if mode == "failure" {
             panic!("child failure marker");
         }
+    }
+
+    #[test]
+    fn cancellation_child_fixture() {
+        if std::env::var_os("VAPOR_PROCESS_OUTPUT_CANCEL_GRANDCHILD").is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        } else if std::env::var_os("VAPOR_PROCESS_OUTPUT_CANCEL_CHILD").is_some() {
+            let executable = std::env::current_exe().expect("test executable path");
+            let mut grandchild = Command::new(executable)
+                .arg("--exact")
+                .arg("process_output::tests::cancellation_child_fixture")
+                .arg("--nocapture")
+                .env("VAPOR_PROCESS_OUTPUT_CANCEL_GRANDCHILD", "1")
+                .spawn()
+                .expect("spawn the descendant fixture");
+            let _ = grandchild.wait();
+        }
+    }
+
+    #[test]
+    fn cancellation_stops_a_managed_child_process() {
+        let executable = std::env::current_exe().expect("test executable path");
+        let mut command = Command::new(executable);
+        command
+            .arg("--exact")
+            .arg("process_output::tests::cancellation_child_fixture")
+            .arg("--nocapture")
+            .env("VAPOR_PROCESS_OUTPUT_CANCEL_CHILD", "1");
+        let started = std::time::Instant::now();
+        let result = super::run_cancellable(
+            &mut command,
+            || started.elapsed() >= std::time::Duration::from_millis(100),
+            |_, _| {},
+        );
+        assert_eq!(result.unwrap_err(), "operation cancelled");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "cancellation should stop descendants that inherited the output pipes"
+        );
     }
 
     #[test]

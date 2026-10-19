@@ -152,7 +152,7 @@ impl ClientSession {
             }
             Err(message) => (false, message),
         };
-        self.active_operation = None;
+        self.clear_active_operation();
         self.revision.0 = self.revision.0.saturating_add(1);
         self.operation_events
             .push_back(ClientEvent::OperationChanged(OperationEvent {

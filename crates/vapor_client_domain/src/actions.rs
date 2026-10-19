@@ -23,6 +23,9 @@ pub enum SessionAction {
         editor_drafts: Option<String>,
         operation_history: Option<String>,
     },
+    CancelOperation {
+        operation_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -469,6 +472,7 @@ impl ClientAction {
             Self::Session(SessionAction::CheckpointLocalState { .. }) => {
                 "session.checkpoint-local-state"
             }
+            Self::Session(SessionAction::CancelOperation { .. }) => "session.cancel-operation",
         }
     }
 }

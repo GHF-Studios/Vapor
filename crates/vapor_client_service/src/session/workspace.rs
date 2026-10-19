@@ -382,7 +382,7 @@ impl ClientSession {
                 error
             }
         };
-        self.active_operation = None;
+        self.clear_active_operation();
         self.revision.0 = self.revision.0.saturating_add(1);
         let succeeded = operation_succeeded;
         self.operation_events
@@ -625,28 +625,13 @@ fn execute_workspace_operation(
                     .map(|_| WorkspaceOperationResult::Completed)
                     .map_err(|error| error.to_string())
             } else {
-                let progress_context = context.clone();
-                let output_context = context.clone();
-                vapor_client_application::run_workspace_tool_with_events(
+                vapor_client_application::run_workspace_tool_with_context(
                     executable,
                     root,
                     operation,
                     &project_selection,
                     &target_triples,
-                    move |completed, total, message| {
-                        progress_context.report_progress(application::Progress {
-                            completed: completed as u64,
-                            total: Some(total as u64),
-                            unit: "Cargo steps".to_owned(),
-                            message: Some(message.to_owned()),
-                        });
-                    },
-                    move |stream, text| {
-                        output_context.report_output(application::OperationOutput {
-                            stream,
-                            text: text.to_owned(),
-                        });
-                    },
+                    &context,
                 )
                 .map(|_| WorkspaceOperationResult::Completed)
             }

@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 const MAX_OPERATION_OUTPUT_BYTES: usize = 8 * 1024;
@@ -44,6 +44,7 @@ pub enum OperationPhase {
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum OperationStatus {
     Running,
+    Cancelling,
     Succeeded { summary: String },
     Failed { message: String },
     Cancelled,
@@ -111,19 +112,43 @@ pub struct OperationRequest {
 /// Callback used by a host to consume operation lifecycle events.
 pub type OperationEventSink = Arc<dyn Fn(OperationEvent) + Send + Sync + 'static>;
 
+/// Shared cancellation request for one operation and all of its worker contexts.
+#[derive(Debug, Clone, Default)]
+pub struct OperationCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl OperationCancellation {
+    /// Request that the operation stop at its next cancellation checkpoint.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Whether the host has requested cancellation.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
 /// Cooperative reporting context passed into one operation body.
 #[derive(Clone)]
 pub struct OperationContext {
     request: OperationRequest,
     sink: OperationEventSink,
+    cancellation: OperationCancellation,
     state: Arc<Mutex<(OperationPhase, Option<Progress>)>>,
 }
 
 impl OperationContext {
-    fn new(request: OperationRequest, sink: OperationEventSink) -> Self {
+    fn new(
+        request: OperationRequest,
+        sink: OperationEventSink,
+        cancellation: OperationCancellation,
+    ) -> Self {
         Self {
             request,
             sink,
+            cancellation,
             state: Arc::new(Mutex::new((OperationPhase::Running, None))),
         }
     }
@@ -131,6 +156,11 @@ impl OperationContext {
     /// The identity of the executing operation.
     pub fn id(&self) -> OperationId {
         self.request.id
+    }
+
+    /// Whether the host has requested cancellation of this operation.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
     }
 
     /// Update the coarse phase and notify the host.
@@ -212,6 +242,23 @@ impl OperationService {
         body: impl FnOnce(OperationContext) -> T,
         outcome: impl FnOnce(&T) -> Result<String, String>,
     ) -> T {
+        Self::run_observed_cancellable(
+            request,
+            sink,
+            OperationCancellation::default(),
+            body,
+            outcome,
+        )
+    }
+
+    /// Run an observed operation with a host-owned cancellation request.
+    pub fn run_observed_cancellable<T>(
+        request: OperationRequest,
+        sink: OperationEventSink,
+        cancellation: OperationCancellation,
+        body: impl FnOnce(OperationContext) -> T,
+        outcome: impl FnOnce(&T) -> Result<String, String>,
+    ) -> T {
         sink(OperationEvent {
             id: request.id,
             domain: request.domain.clone(),
@@ -221,13 +268,17 @@ impl OperationService {
             output: None,
             status: OperationStatus::Running,
         });
-        let context = OperationContext::new(request, Arc::clone(&sink));
+        let context = OperationContext::new(request, Arc::clone(&sink), cancellation.clone());
         context.emit(OperationStatus::Running);
         let result = body(context.clone());
         context.set_phase(OperationPhase::Finalizing);
-        match outcome(&result) {
-            Ok(summary) => context.emit(OperationStatus::Succeeded { summary }),
-            Err(message) => context.emit(OperationStatus::Failed { message }),
+        if cancellation.is_cancelled() {
+            context.emit(OperationStatus::Cancelled);
+        } else {
+            match outcome(&result) {
+                Ok(summary) => context.emit(OperationStatus::Succeeded { summary }),
+                Err(message) => context.emit(OperationStatus::Failed { message }),
+            }
         }
         result
     }
@@ -237,6 +288,47 @@ impl OperationService {
 mod tests {
     use super::*;
     use std::sync::{Mutex, MutexGuard};
+
+    #[test]
+    fn cancellation_is_shared_across_operation_context_clones() {
+        let cancellation = OperationCancellation::default();
+        let worker = cancellation.clone();
+
+        assert!(!worker.is_cancelled());
+        cancellation.cancel();
+        assert!(worker.is_cancelled());
+    }
+
+    #[test]
+    fn cancelled_operation_emits_cancelled_terminal_status() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&events);
+        let sink: OperationEventSink = Arc::new(move |event| {
+            observed.lock().unwrap().push(event);
+        });
+        let request = OperationRequest {
+            id: OperationId::fresh(),
+            domain: "workspace".to_owned(),
+            action: "build".to_owned(),
+        };
+        let cancellation = OperationCancellation::default();
+        let worker_cancellation = cancellation.clone();
+
+        OperationService::run_observed_cancellable(
+            request,
+            sink,
+            cancellation,
+            move |_| {
+                worker_cancellation.cancel();
+            },
+            |_| Ok("must not be reported as successful".to_owned()),
+        );
+
+        assert!(matches!(
+            events.lock().unwrap().last().map(|event| &event.status),
+            Some(OperationStatus::Cancelled)
+        ));
+    }
 
     #[test]
     fn operation_context_forwards_child_output_with_its_stream() {

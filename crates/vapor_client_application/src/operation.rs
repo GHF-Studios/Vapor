@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 pub use vapor_core::{
-    OperationContext, OperationEvent as CoreOperationEvent, OperationEventSink, OperationId,
-    OperationOutput, OperationOutputStream, OperationPhase,
+    OperationCancellation, OperationContext, OperationEvent as CoreOperationEvent,
+    OperationEventSink, OperationId, OperationOutput, OperationOutputStream, OperationPhase,
     OperationRequest as CoreOperationRequest, OperationService, OperationStatus, Progress,
 };
 

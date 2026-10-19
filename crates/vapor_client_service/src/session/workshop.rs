@@ -709,7 +709,7 @@ impl ClientSession {
             }
             Err(_) => {}
         }
-        self.active_operation = None;
+        self.clear_active_operation();
         self.revision.0 = self.revision.0.saturating_add(1);
         let action = workshop_operation_action_id(&completion.action).to_owned();
         let message = failure.or(summary);

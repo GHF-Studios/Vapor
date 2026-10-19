@@ -633,6 +633,7 @@ pub enum OperationPhase {
 #[serde(tag = "status", content = "detail", rename_all = "kebab-case")]
 pub enum OperationStatus {
     Running,
+    Cancelling,
     Succeeded,
     Failed { message: String },
     Cancelled,

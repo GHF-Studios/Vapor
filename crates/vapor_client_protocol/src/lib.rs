@@ -110,6 +110,9 @@ mod tests {
                 editor_drafts: Some("{}".into()),
                 operation_history: Some("[]".into()),
             }),
+            ClientAction::Session(SessionAction::CancelOperation {
+                operation_id: "42".into(),
+            }),
             ClientAction::Library(LibraryAction::Install {
                 selector: "moon@1.0.0".into(),
                 account: None,
@@ -377,7 +380,7 @@ mod tests {
         ];
         assert_eq!(
             actions.len(),
-            89,
+            90,
             "update this catalog when adding/removing action variants"
         );
         for action in actions {
@@ -698,6 +701,16 @@ mod tests {
             status: OperationStatus::Succeeded,
             progress: Some(1.0),
             message: Some("Done".into()),
+        }));
+        assert_round_trip(ClientEvent::OperationChanged(OperationEvent {
+            revision: ClientRevision(5),
+            id: "operation-2".into(),
+            composition_id: None,
+            action: "workspace.test".into(),
+            phase: OperationPhase::Building,
+            status: OperationStatus::Cancelling,
+            progress: None,
+            message: Some("Cancellation requested".into()),
         }));
         assert_round_trip(ServiceError {
             code: ServiceErrorCode::StaleRevision,

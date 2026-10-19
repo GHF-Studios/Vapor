@@ -172,7 +172,7 @@ impl ClientSession {
             }
         }
         if let Some(message) = failure {
-            self.active_operation = None;
+            self.clear_active_operation();
             self.revision.0 = self.revision.0.saturating_add(1);
             self.operation_events
                 .push_back(ClientEvent::OperationChanged(OperationEvent {
@@ -190,7 +190,7 @@ impl ClientSession {
             return;
         }
         let summary = outcome.unwrap_or_else(|_| "Completed".to_owned());
-        self.active_operation = None;
+        self.clear_active_operation();
         if matches!(
             completion.action,
             CompositionOperationKind::Install
@@ -270,7 +270,7 @@ impl ClientSession {
                 ),
             }
         };
-        self.active_operation = None;
+        self.clear_active_operation();
         self.revision.0 = self.revision.0.saturating_add(1);
         self.operation_events
             .push_back(ClientEvent::OperationChanged(OperationEvent {
@@ -400,6 +400,7 @@ pub(super) fn protocol_status(
 ) -> (OperationStatus, Option<String>) {
     match status {
         application::OperationStatus::Running => (OperationStatus::Running, None),
+        application::OperationStatus::Cancelling => (OperationStatus::Cancelling, None),
         application::OperationStatus::Succeeded { summary } => {
             (OperationStatus::Succeeded, Some(summary))
         }

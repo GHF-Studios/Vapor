@@ -136,25 +136,72 @@ pub fn run_workspace_tool_with_events(
     report_progress: impl FnMut(usize, usize, &str),
     report_output: impl FnMut(vapor_core::OperationOutputStream, &str),
 ) -> Result<(), String> {
-    let mode = match operation {
+    let mode = workspace_tool_build_mode(operation);
+    let paths = workspace_tool_environment(application_executable, workspace_root)?;
+    vapor_client_provider::workspace_build::run_selected_with_events_cancellable(
+        &paths,
+        mode,
+        project_selection,
+        target_triples,
+        report_progress,
+        || false,
+        report_output,
+    )
+    .map(|_| ())
+}
+
+/// Run a Studio workspace tool through its shared operation context.
+pub fn run_workspace_tool_with_context(
+    application_executable: &Path,
+    workspace_root: &Path,
+    operation: vapor_client_domain::WorkspaceToolOperation,
+    project_selection: &vapor_client_domain::WorkspaceProjectSelection,
+    target_triples: &[String],
+    context: &vapor_core::OperationContext,
+) -> Result<(), String> {
+    let mode = workspace_tool_build_mode(operation);
+    let paths = workspace_tool_environment(application_executable, workspace_root)?;
+    vapor_client_provider::workspace_build::run_selected_with_events_cancellable(
+        &paths,
+        mode,
+        project_selection,
+        target_triples,
+        |completed, total, message| {
+            context.report_progress(vapor_core::Progress {
+                completed: completed as u64,
+                total: Some(total as u64),
+                unit: "Cargo steps".to_owned(),
+                message: Some(message.to_owned()),
+            });
+        },
+        || context.is_cancelled(),
+        |stream, text| {
+            context.report_output(vapor_core::OperationOutput {
+                stream,
+                text: text.to_owned(),
+            });
+        },
+    )
+    .map(|_| ())
+}
+
+fn workspace_tool_build_mode(operation: vapor_client_domain::WorkspaceToolOperation) -> BuildMode {
+    match operation {
         vapor_client_domain::WorkspaceToolOperation::Format => BuildMode::Format,
         vapor_client_domain::WorkspaceToolOperation::Check => BuildMode::Check,
         vapor_client_domain::WorkspaceToolOperation::Test => BuildMode::Test,
         vapor_client_domain::WorkspaceToolOperation::Build => BuildMode::Build,
         vapor_client_domain::WorkspaceToolOperation::BuildRelease => BuildMode::BuildRelease,
         vapor_client_domain::WorkspaceToolOperation::Validate => BuildMode::Validate,
-    };
+    }
+}
+
+fn workspace_tool_environment(
+    application_executable: &Path,
+    workspace_root: &Path,
+) -> Result<EnvironmentPaths, String> {
     let installation = InstallationPaths::from_application_executable(application_executable)?;
-    let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
-    vapor_client_provider::workspace_build::run_selected_with_events(
-        &paths,
-        mode,
-        project_selection,
-        target_triples,
-        report_progress,
-        report_output,
-    )
-    .map(|_| ())
+    EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)
 }
 
 /// Validate, build, and promote the source workspace's complete release matrix.
