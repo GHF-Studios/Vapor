@@ -130,7 +130,10 @@ mod tests {
     use super::{
         MAX_OPERATION_OUTPUT_LINE_BYTES, format_output_line, forward_output, read_bounded_line,
     };
-    use std::io::{BufReader, Cursor};
+    use std::{
+        io::{BufReader, Cursor},
+        process::Command,
+    };
     use vapor_core::OperationOutputStream;
 
     #[test]
@@ -174,5 +177,67 @@ mod tests {
         let event = receiver.recv().unwrap();
         assert_eq!(event.0, OperationOutputStream::Stdout);
         assert_eq!(event.1, "stdout line");
+    }
+
+    #[test]
+    fn child_process_output_fixture() {
+        let Some(mode) = std::env::var_os("VAPOR_PROCESS_OUTPUT_TEST_CHILD") else {
+            return;
+        };
+        for index in 0..128 {
+            println!("stdout marker {index}");
+            eprintln!("stderr marker {index}");
+        }
+        if mode == "failure" {
+            panic!("child failure marker");
+        }
+    }
+
+    #[test]
+    fn child_process_output_drains_both_bounded_pipes_and_preserves_failure_text() {
+        let executable = std::env::current_exe().expect("test executable path");
+        let fixture = "process_output::tests::child_process_output_fixture";
+
+        for (mode, should_succeed) in [("success", true), ("failure", false)] {
+            let mut command = Command::new(&executable);
+            command
+                .arg("--exact")
+                .arg(fixture)
+                .arg("--nocapture")
+                .env("VAPOR_PROCESS_OUTPUT_TEST_CHILD", mode);
+            let mut output = Vec::new();
+            let status = super::run(&mut command, |stream, text| {
+                output.push((stream, text.to_owned()));
+            })
+            .expect("spawn the child test process");
+
+            assert_eq!(status.success(), should_succeed);
+            assert_eq!(
+                output
+                    .iter()
+                    .filter(|(stream, text)| {
+                        *stream == OperationOutputStream::Stdout
+                            && text.starts_with("stdout marker ")
+                    })
+                    .count(),
+                128
+            );
+            assert_eq!(
+                output
+                    .iter()
+                    .filter(|(stream, text)| {
+                        *stream == OperationOutputStream::Stderr
+                            && text.starts_with("stderr marker ")
+                    })
+                    .count(),
+                128
+            );
+            if !should_succeed {
+                assert!(output.iter().any(|(stream, text)| {
+                    *stream == OperationOutputStream::Stderr
+                        && text.contains("child failure marker")
+                }));
+            }
+        }
     }
 }
