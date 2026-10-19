@@ -17,7 +17,7 @@ use composition::{protocol_phase, protocol_status};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::mpsc::{self, Receiver, SyncSender},
     thread,
 };
 use vapor_client::ClientHostConfig;
@@ -43,6 +43,10 @@ use workspace::is_isolated_fixture_workspace;
 const MAX_WORKSPACE_PROJECTS: usize = 10_000;
 const MAX_WORKSPACE_DIAGNOSTICS: usize = 1_000;
 const MAX_WORKSHOP_REVIEW_FILE_PATHS: usize = 50;
+// Output is also bounded at the provider reader and session event queue. This
+// middle queue applies backpressure between those layers instead of retaining
+// an unbounded burst when a frontend is slow to poll.
+const MAX_PENDING_BACKGROUND_OPERATION_MESSAGES: usize = 256;
 const MAX_BUFFERED_OPERATION_OUTPUT_EVENTS: usize = 512;
 const OPERATION_OUTPUT_OMISSION_NOTICE: &str =
     "Older output omitted because the service buffer reached its limit.";
@@ -127,7 +131,7 @@ pub struct ClientSession {
     fixture_acquisitions: BTreeMap<String, WorkshopAcquisitionSnapshot>,
     operation_events: VecDeque<ClientEvent>,
     operation_receiver: Receiver<BackgroundOperationMessage>,
-    operation_sender: Sender<BackgroundOperationMessage>,
+    operation_sender: SyncSender<BackgroundOperationMessage>,
 }
 
 enum BackgroundOperationMessage {
@@ -481,7 +485,8 @@ impl ClientSession {
         superworkspace_setup_error: Option<String>,
     ) -> Self {
         let active_composition_id = Some(durable_state.active_composition_id.clone());
-        let (operation_sender, operation_receiver) = mpsc::channel();
+        let (operation_sender, operation_receiver) =
+            mpsc::sync_channel(MAX_PENDING_BACKGROUND_OPERATION_MESSAGES);
         Self {
             bootstrap,
             revision: ClientRevision(0),
@@ -1525,6 +1530,42 @@ mod tests {
             events.front(),
             Some(ClientEvent::OperationChanged(_))
         ));
+    }
+
+    #[test]
+    fn pending_background_operation_messages_apply_backpressure_at_a_fixed_limit() {
+        let session = session();
+        let event = || application::CoreOperationEvent {
+            id: application::OperationId(1),
+            domain: "workspace".to_owned(),
+            action: "test".to_owned(),
+            phase: application::OperationPhase::Running,
+            progress: None,
+            output: Some(application::OperationOutput {
+                stream: application::OperationOutputStream::Stdout,
+                text: "compiler output".to_owned(),
+            }),
+            status: application::OperationStatus::Running,
+        };
+
+        for _ in 0..MAX_PENDING_BACKGROUND_OPERATION_MESSAGES {
+            assert!(
+                session
+                    .operation_sender
+                    .try_send(BackgroundOperationMessage::Lifecycle(event()))
+                    .is_ok()
+            );
+        }
+        assert!(matches!(
+            session
+                .operation_sender
+                .try_send(BackgroundOperationMessage::Lifecycle(event())),
+            Err(mpsc::TrySendError::Full(_))
+        ));
+        assert_eq!(
+            session.operation_receiver.try_iter().count(),
+            MAX_PENDING_BACKGROUND_OPERATION_MESSAGES
+        );
     }
 
     fn session() -> ClientSession {
