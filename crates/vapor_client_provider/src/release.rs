@@ -3,6 +3,7 @@
 use crate::{
     cross_toolchain,
     discovery::{EnvironmentPaths, ensure_contained},
+    process_output,
     target::host_runtime_target,
     workspace::{CargoProject, WorkspaceManifest},
 };
@@ -11,8 +12,9 @@ use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::Command,
 };
+use vapor_core::OperationOutputStream;
 
 /// Summary of the Rust work completed before an application release is staged.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +33,23 @@ pub struct ReleaseBuildReport {
 pub fn build_application_release(
     paths: &EnvironmentPaths,
     runtime_targets: &[String],
+) -> Result<ReleaseBuildReport, String> {
+    build_application_release_with_events(
+        paths,
+        runtime_targets,
+        |_, _, _| {},
+        |_, text| {
+            eprintln!("{text}");
+        },
+    )
+}
+
+/// Build a release while reporting completed steps and bounded child output.
+pub fn build_application_release_with_events(
+    paths: &EnvironmentPaths,
+    runtime_targets: &[String],
+    mut report_progress: impl FnMut(usize, usize, &str),
+    mut report_output: impl FnMut(OperationOutputStream, &str),
 ) -> Result<ReleaseBuildReport, String> {
     if runtime_targets.is_empty() {
         return Err("application release needs at least one runtime target".to_owned());
@@ -85,18 +104,26 @@ pub fn build_application_release(
         cargo,
     };
 
+    const STEPS: [BuildStep; 6] = [
+        BuildStep::Fmt,
+        BuildStep::Check,
+        BuildStep::Test,
+        BuildStep::Clippy,
+        BuildStep::Doc,
+        BuildStep::Release,
+    ];
+    let total_steps = projects.len() * runtime_targets.len() * STEPS.len();
+    let mut completed_steps = 0;
     for project in &projects {
         for target in runtime_targets {
-            for step in [
-                BuildStep::Fmt,
-                BuildStep::Check,
-                BuildStep::Test,
-                BuildStep::Clippy,
-                BuildStep::Doc,
-                BuildStep::Release,
-            ] {
-                let output = run_step(paths, &toolchain, project, target, step)?;
-                forward_process_output(&output.stdout, &output.stderr);
+            for step in STEPS {
+                run_step(paths, &toolchain, project, target, step, &mut report_output)?;
+                completed_steps += 1;
+                report_progress(
+                    completed_steps,
+                    total_steps,
+                    &format!("{} {} for {target}", project.name(), step.label(target)),
+                );
             }
         }
     }
@@ -166,7 +193,8 @@ fn run_step(
     project: &CargoProject,
     target: &str,
     step: BuildStep,
-) -> Result<Output, String> {
+    report_output: &mut impl FnMut(OperationOutputStream, &str),
+) -> Result<(), String> {
     let installation = paths.installation();
     let source_manifest = paths.source().root().join(project.manifest());
     let working_directory = source_manifest.parent().ok_or_else(|| {
@@ -213,22 +241,21 @@ fn run_step(
         command.env("RUSTDOCFLAGS", "-D warnings");
     }
     eprintln!("==> {}: {}", project.name(), step.label(target));
-    let output = command.output().map_err(|error| {
+    let status = process_output::run(&mut command, report_output).map_err(|error| {
         format!(
             "failed to run {} for '{}': {error}",
             step.label(target),
             project.name()
         )
     })?;
-    if output.status.success() {
-        Ok(output)
+    if status.success() {
+        Ok(())
     } else {
-        forward_process_output(&output.stdout, &output.stderr);
         Err(format!(
             "{} failed for project '{}' target '{target}' with {}",
             step.label(target),
             project.name(),
-            output.status
+            status
         ))
     }
 }
@@ -375,20 +402,6 @@ fn is_raw_app_tool_path(root: &Path, entry: &Path) -> bool {
     .any(|raw_path| entry == raw_path)
         || (entry.starts_with(root.join("rustup-home/toolchains"))
             && entry.file_name().is_some_and(|name| name == "bin"))
-}
-
-fn forward_process_output(stdout: &[u8], stderr: &[u8]) {
-    use std::io::Write;
-    let mut log = std::io::stderr().lock();
-    for stream in [stdout, stderr] {
-        if !stream.is_empty() {
-            let _ = log.write_all(stream);
-            if !stream.ends_with(b"\n") {
-                let _ = log.write_all(b"\n");
-            }
-        }
-    }
-    let _ = log.flush();
 }
 
 fn executable(name: &str) -> String {

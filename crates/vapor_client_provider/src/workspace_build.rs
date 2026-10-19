@@ -3,17 +3,12 @@
 use crate::{
     cross_toolchain,
     discovery::EnvironmentPaths,
+    process_output,
     release::managed_path,
     target::{host_runtime_target, validate_runtime_target},
     workspace::{CargoProject, WorkspaceManifest},
 };
-use std::{
-    env,
-    io::{self, BufRead, BufReader, Read, Write},
-    process::{Command, Stdio},
-    sync::mpsc,
-    thread,
-};
+use std::{env, process::Command};
 use vapor_client_domain::WorkspaceProjectSelection;
 use vapor_core::OperationOutputStream;
 
@@ -92,7 +87,7 @@ pub fn run_selected_with_progress(
         selection,
         runtime_targets,
         report_progress,
-        write_output_to_terminal,
+        process_output::write_to_terminal,
     )
 }
 
@@ -350,44 +345,13 @@ fn run_step(
         command.env("RUSTDOCFLAGS", "-D warnings");
     }
     eprintln!("==> {}: {}", project.name(), step_label(step, target));
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| {
+    let status = process_output::run(&mut command, report_output).map_err(|error| {
         format!(
             "failed to run {} for '{}': {error}",
             step_label(step, target),
             project.name()
         )
     })?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "managed Cargo stdout pipe was not available".to_owned())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "managed Cargo stderr pipe was not available".to_owned())?;
-    let (sender, receiver) = mpsc::channel();
-    let stdout_sender = sender.clone();
-    let stdout_reader =
-        thread::spawn(move || forward_output(stdout, OperationOutputStream::Stdout, stdout_sender));
-    let stderr_reader =
-        thread::spawn(move || forward_output(stderr, OperationOutputStream::Stderr, sender));
-    for (stream, text) in receiver {
-        report_output(stream, &text);
-    }
-    let status = child.wait().map_err(|error| {
-        format!(
-            "failed to wait for {} for '{}': {error}",
-            step_label(step, target),
-            project.name()
-        )
-    })?;
-    stdout_reader
-        .join()
-        .map_err(|_| "managed Cargo stdout reader panicked".to_owned())??;
-    stderr_reader
-        .join()
-        .map_err(|_| "managed Cargo stderr reader panicked".to_owned())??;
     if status.success() {
         Ok(())
     } else {
@@ -397,82 +361,6 @@ fn run_step(
             project.name()
         ))
     }
-}
-
-const MAX_OPERATION_OUTPUT_LINE_BYTES: usize = 8 * 1024;
-
-fn forward_output(
-    reader: impl Read,
-    stream: OperationOutputStream,
-    sender: mpsc::Sender<(OperationOutputStream, String)>,
-) -> Result<(), String> {
-    let mut reader = BufReader::new(reader);
-    let mut bytes = Vec::new();
-    loop {
-        let Some(truncated) = read_bounded_line(&mut reader, &mut bytes)? else {
-            return Ok(());
-        };
-        let text = String::from_utf8_lossy(&bytes);
-        let text = format_output_line(&text, truncated);
-        sender
-            .send((stream, text))
-            .map_err(|_| "Vapor Client stopped receiving managed Cargo output".to_owned())?;
-    }
-}
-
-fn write_output_to_terminal(stream: OperationOutputStream, text: &str) {
-    match stream {
-        OperationOutputStream::Stdout => {
-            let _ = writeln!(io::stdout().lock(), "{text}");
-        }
-        OperationOutputStream::Stderr => {
-            let _ = writeln!(io::stderr().lock(), "{text}");
-        }
-    }
-}
-
-fn read_bounded_line(
-    reader: &mut impl BufRead,
-    line: &mut Vec<u8>,
-) -> Result<Option<bool>, String> {
-    line.clear();
-    let mut truncated = false;
-    loop {
-        let available = reader
-            .fill_buf()
-            .map_err(|error| format!("failed to read managed Cargo output: {error}"))?;
-        if available.is_empty() {
-            return Ok((!line.is_empty()).then_some(truncated));
-        }
-
-        let newline = available.iter().position(|byte| *byte == b'\n');
-        let content_length = newline.unwrap_or(available.len());
-        let retained_length = content_length.min(MAX_OPERATION_OUTPUT_LINE_BYTES - line.len());
-        line.extend_from_slice(&available[..retained_length]);
-        truncated |= retained_length < content_length;
-
-        let consumed = newline.map_or(available.len(), |index| index + 1);
-        let completed = newline.is_some();
-        reader.consume(consumed);
-        if completed {
-            if matches!(line.last(), Some(b'\r')) {
-                line.pop();
-            }
-            return Ok(Some(truncated));
-        }
-    }
-}
-
-fn format_output_line(line: &str, truncated: bool) -> String {
-    if !truncated && line.len() <= MAX_OPERATION_OUTPUT_LINE_BYTES {
-        return line.to_owned();
-    }
-    let suffix = " … [truncated]";
-    let mut end = MAX_OPERATION_OUTPUT_LINE_BYTES.saturating_sub(suffix.len());
-    while !line.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}{suffix}", &line[..end])
 }
 
 fn step_label(step: CargoStep, target: Option<&str>) -> &'static str {
@@ -507,11 +395,9 @@ fn executable(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CargoStep, MAX_OPERATION_OUTPUT_LINE_BYTES, cargo_args, cargo_invocation_args,
-        format_output_line, read_bounded_line, run_plan_steps, validation_steps,
+        CargoStep, cargo_args, cargo_invocation_args, run_plan_steps, validation_steps,
         validation_steps_with_build,
     };
-    use std::io::{BufReader, Cursor};
 
     #[test]
     fn workspace_plan_reports_progress_after_each_successful_step() {
@@ -597,36 +483,6 @@ mod tests {
             ]
             .map(std::ffi::OsString::from)
         );
-    }
-
-    #[test]
-    fn operation_output_lines_are_bounded_without_splitting_utf8() {
-        let line = format!("{}🌌", "x".repeat(MAX_OPERATION_OUTPUT_LINE_BYTES));
-        let bounded = format_output_line(&line, true);
-        assert!(bounded.len() <= MAX_OPERATION_OUTPUT_LINE_BYTES);
-        assert!(bounded.is_char_boundary(bounded.len()));
-        assert!(bounded.ends_with("[truncated]"));
-    }
-
-    #[test]
-    fn oversized_operation_output_is_drained_before_the_next_line() {
-        let source = format!(
-            "{}tail\nnext line\n",
-            "x".repeat(MAX_OPERATION_OUTPUT_LINE_BYTES * 2)
-        );
-        let mut reader = BufReader::new(Cursor::new(source));
-        let mut line = Vec::new();
-
-        assert!(read_bounded_line(&mut reader, &mut line).unwrap().unwrap());
-        assert!(line.len() <= MAX_OPERATION_OUTPUT_LINE_BYTES);
-        assert_eq!(
-            String::from_utf8_lossy(&line),
-            "x".repeat(MAX_OPERATION_OUTPUT_LINE_BYTES)
-        );
-
-        assert!(!read_bounded_line(&mut reader, &mut line).unwrap().unwrap());
-        assert_eq!(line, b"next line");
-        assert!(read_bounded_line(&mut reader, &mut line).unwrap().is_none());
     }
 
     #[test]

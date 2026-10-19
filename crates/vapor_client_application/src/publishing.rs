@@ -168,6 +168,24 @@ pub fn build_application_release(
     vapor_client_provider::release::build_application_release(&paths, runtime_targets)
 }
 
+/// Build a release while forwarding shared operation progress and output.
+pub fn build_application_release_with_events(
+    application_executable: &Path,
+    workspace_root: &Path,
+    runtime_targets: &[String],
+    report_progress: impl FnMut(usize, usize, &str),
+    report_output: impl FnMut(vapor_core::OperationOutputStream, &str),
+) -> Result<vapor_client_provider::release::ReleaseBuildReport, String> {
+    let installation = InstallationPaths::from_application_executable(application_executable)?;
+    let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
+    vapor_client_provider::release::build_application_release_with_events(
+        &paths,
+        runtime_targets,
+        report_progress,
+        report_output,
+    )
+}
+
 /// Validate an app-release request before starting its potentially long build.
 pub fn validate_application_release_request(
     application_executable: &Path,

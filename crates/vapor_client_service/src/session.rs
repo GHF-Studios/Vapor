@@ -27,11 +27,11 @@ use vapor_client_protocol::{
     AuthoringResultKind, AvailableSuperworkspaceRepositorySnapshot, CatalogAction, ClientAction,
     ClientEvent, ClientRequest, ClientResponse, ClientResponseKind, ClientRevision, Composition,
     CompositionAction, ContentReference, DeveloperAction, InstallationState, LegacyStorageSeed,
-    LibraryAction, OperationEvent, OperationPhase, OperationStatus, OperationSummary,
-    ProfileReportSnapshot, ProfileTraceSnapshot, PublishingAction, RootPublishingSnapshot,
-    ServiceError, ServiceErrorCode, SessionAction, SourceMetadataRepairAction,
-    WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot, WorkshopAction,
-    WorkshopItemSnapshot, WorkshopMetadataDraft, WorkshopPackagePreviewSnapshot,
+    LibraryAction, OperationEvent, OperationOutputEvent, OperationPhase, OperationStatus,
+    OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot, PublishingAction,
+    RootPublishingSnapshot, ServiceError, ServiceErrorCode, SessionAction,
+    SourceMetadataRepairAction, WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot,
+    WorkshopAction, WorkshopItemSnapshot, WorkshopMetadataDraft, WorkshopPackagePreviewSnapshot,
     WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
     WorkspaceAction, WorkspaceAssociation, WorkspaceContentSnapshot, WorkspaceFileResult,
     WorkspaceProjectSelection, WorkspaceToolOperation,
@@ -43,6 +43,56 @@ use workspace::is_isolated_fixture_workspace;
 const MAX_WORKSPACE_PROJECTS: usize = 10_000;
 const MAX_WORKSPACE_DIAGNOSTICS: usize = 1_000;
 const MAX_WORKSHOP_REVIEW_FILE_PATHS: usize = 50;
+const MAX_BUFFERED_OPERATION_OUTPUT_EVENTS: usize = 512;
+const OPERATION_OUTPUT_OMISSION_NOTICE: &str =
+    "Older output omitted because the service buffer reached its limit.";
+
+fn queue_operation_output(events: &mut VecDeque<ClientEvent>, output: OperationOutputEvent) {
+    let buffered_outputs = events
+        .iter()
+        .filter(|event| matches!(event, ClientEvent::OperationOutput(_)))
+        .count();
+    let has_omission_notice = events.iter().any(|event| {
+        matches!(event, ClientEvent::OperationOutput(output) if output.text == OPERATION_OUTPUT_OMISSION_NOTICE)
+    });
+
+    let mut to_evict = buffered_outputs
+        .saturating_add(1)
+        .saturating_sub(MAX_BUFFERED_OPERATION_OUTPUT_EVENTS);
+    if to_evict == 0 {
+        events.push_back(ClientEvent::OperationOutput(output));
+        return;
+    }
+    if !has_omission_notice {
+        to_evict += 1;
+    }
+
+    while to_evict > 0 {
+        let Some(index) = events.iter().position(|event| {
+            matches!(event, ClientEvent::OperationOutput(output) if output.text != OPERATION_OUTPUT_OMISSION_NOTICE)
+        }) else {
+            break;
+        };
+        events.remove(index);
+        to_evict -= 1;
+    }
+
+    if !has_omission_notice {
+        let notice_index = events
+            .iter()
+            .position(|event| matches!(event, ClientEvent::OperationOutput(_)))
+            .unwrap_or(events.len());
+        events.insert(
+            notice_index,
+            ClientEvent::OperationOutput(OperationOutputEvent {
+                id: output.id.clone(),
+                stream: vapor_client_protocol::OperationOutputStream::Stderr,
+                text: OPERATION_OUTPUT_OMISSION_NOTICE.to_owned(),
+            }),
+        );
+    }
+    events.push_back(ClientEvent::OperationOutput(output));
+}
 
 #[cfg(test)]
 fn library_action_can_invalidate_composition(action: &LibraryAction) -> bool {
@@ -1209,21 +1259,21 @@ impl ClientSession {
                             .map(|total| (progress.completed as f32 / total as f32).clamp(0.0, 1.0))
                     });
                     if let Some(output) = event.output {
-                        self.operation_events
-                            .push_back(ClientEvent::OperationOutput(
-                                vapor_client_protocol::OperationOutputEvent {
-                                    id,
-                                    stream: match output.stream {
-                                        application::OperationOutputStream::Stdout => {
-                                            vapor_client_protocol::OperationOutputStream::Stdout
-                                        }
-                                        application::OperationOutputStream::Stderr => {
-                                            vapor_client_protocol::OperationOutputStream::Stderr
-                                        }
-                                    },
-                                    text: output.text,
+                        queue_operation_output(
+                            &mut self.operation_events,
+                            vapor_client_protocol::OperationOutputEvent {
+                                id,
+                                stream: match output.stream {
+                                    application::OperationOutputStream::Stdout => {
+                                        vapor_client_protocol::OperationOutputStream::Stdout
+                                    }
+                                    application::OperationOutputStream::Stderr => {
+                                        vapor_client_protocol::OperationOutputStream::Stderr
+                                    }
                                 },
-                            ));
+                                text: output.text,
+                            },
+                        );
                         continue;
                     }
                     let (status, message) = protocol_status(event.status);
@@ -1427,6 +1477,55 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
     use vapor_client_protocol::{ClientAction, ClientRequest, RequestId};
+
+    #[test]
+    fn buffered_operation_output_is_capped_without_dropping_lifecycle_events() {
+        let mut events = VecDeque::from([ClientEvent::OperationChanged(OperationEvent {
+            revision: ClientRevision(1),
+            id: "operation-1".to_owned(),
+            composition_id: None,
+            action: "workspace.test".to_owned(),
+            phase: OperationPhase::Running,
+            status: OperationStatus::Running,
+            progress: None,
+            message: None,
+        })]);
+
+        for index in 0..=MAX_BUFFERED_OPERATION_OUTPUT_EVENTS {
+            queue_operation_output(
+                &mut events,
+                OperationOutputEvent {
+                    id: "operation-1".to_owned(),
+                    stream: vapor_client_protocol::OperationOutputStream::Stdout,
+                    text: format!("line-{index}"),
+                },
+            );
+        }
+
+        let outputs = events
+            .iter()
+            .filter_map(|event| match event {
+                ClientEvent::OperationOutput(output) => Some(output),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(outputs.len(), MAX_BUFFERED_OPERATION_OUTPUT_EVENTS);
+        assert_eq!(
+            outputs.last().map(|output| output.text.as_str()),
+            Some("line-512")
+        );
+        assert_eq!(
+            outputs
+                .iter()
+                .filter(|output| output.text == OPERATION_OUTPUT_OMISSION_NOTICE)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            events.front(),
+            Some(ClientEvent::OperationChanged(_))
+        ));
+    }
 
     fn session() -> ClientSession {
         ClientSession::new(ClientHostConfig {

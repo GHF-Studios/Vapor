@@ -258,10 +258,26 @@ impl ClientSession {
                     )?;
                     if build_release {
                         context.set_phase(application::OperationPhase::Building);
-                        application::build_application_release(
+                        let progress_context = context.clone();
+                        let output_context = context.clone();
+                        application::build_application_release_with_events(
                             &executable,
                             &workspace_root,
                             &runtime_targets,
+                            move |completed, total, message| {
+                                progress_context.report_progress(application::Progress {
+                                    completed: completed as u64,
+                                    total: Some(total as u64),
+                                    unit: "steps".to_owned(),
+                                    message: Some(message.to_owned()),
+                                });
+                            },
+                            move |stream, text| {
+                                output_context.report_output(application::OperationOutput {
+                                    stream,
+                                    text: text.to_owned(),
+                                });
+                            },
                         )?;
                     }
                     context.set_phase(application::OperationPhase::Staging);

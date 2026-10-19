@@ -9,6 +9,7 @@
 
 /// App-local cross-compilation tool inspection and Cargo environment setup.
 pub mod cross_toolchain;
+mod process_output;
 mod source;
 mod target;
 pub mod workspace_build;
