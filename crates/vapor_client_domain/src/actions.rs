@@ -332,13 +332,6 @@ pub enum DeveloperAction {
         trace_id: String,
         options: ProfileAnalysisOptions,
     },
-    Format,
-    Check,
-    Test,
-    Build,
-    Clean {
-        confirmation: String,
-    },
 }
 
 impl ClientAction {
@@ -463,11 +456,6 @@ impl ClientAction {
                 DeveloperAction::RefreshProfileTraces => "developer.refresh-profile-traces",
                 DeveloperAction::ImportProfileTrace { .. } => "developer.import-profile-trace",
                 DeveloperAction::AnalyzeProfileTrace { .. } => "developer.analyze-profile-trace",
-                DeveloperAction::Format => "developer.format",
-                DeveloperAction::Check => "developer.check",
-                DeveloperAction::Test => "developer.test",
-                DeveloperAction::Build => "developer.build",
-                DeveloperAction::Clean { .. } => "developer.clean",
             },
             Self::Session(SessionAction::CheckpointLocalState { .. }) => {
                 "session.checkpoint-local-state"

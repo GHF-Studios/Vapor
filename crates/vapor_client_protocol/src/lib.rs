@@ -355,7 +355,6 @@ mod tests {
                 confirmation: "PUBLISH APPLICATION 2122620 TO vapor-dev".into(),
             }),
             ClientAction::Publishing(PublishingAction::DiscardRootReview),
-            ClientAction::Developer(DeveloperAction::Format),
             ClientAction::Developer(DeveloperAction::SubscribeTelemetry { enabled: true }),
             ClientAction::Developer(DeveloperAction::OpenProfiler),
             ClientAction::Developer(DeveloperAction::RefreshProfileTraces),
@@ -371,16 +370,10 @@ mod tests {
                     self_time: true,
                 },
             }),
-            ClientAction::Developer(DeveloperAction::Check),
-            ClientAction::Developer(DeveloperAction::Test),
-            ClientAction::Developer(DeveloperAction::Build),
-            ClientAction::Developer(DeveloperAction::Clean {
-                confirmation: "clean-1".into(),
-            }),
         ];
         assert_eq!(
             actions.len(),
-            90,
+            85,
             "update this catalog when adding/removing action variants"
         );
         for action in actions {
