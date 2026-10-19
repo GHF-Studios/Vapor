@@ -3,17 +3,17 @@
 use crate::{
     InstallationError, ManagedToolchain, RunConfiguration, RunConfigurationError, ToolchainError,
     VaporInstallation, VaporProject, VaporWorkspace, WorkspaceError, development_target_dir,
+    managed_process,
 };
+use crate::{OperationContext, OperationOutput, OperationOutputStream, OperationPhase};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
-use std::thread;
+use std::process::ExitStatus;
 use vapor_telemetry::{
     TELEMETRY_ADDR_ENV, TELEMETRY_SESSION_ENV, TelemetryBroker, TelemetryPayload,
-    TelemetryPublisher,
 };
 
 const SESSION_ROOT: &str = "development/sessions";
@@ -201,6 +201,46 @@ pub fn run_workspace_configuration_with_profile_hint(
     name: &str,
     profiling: bool,
 ) -> Result<(), DevelopmentRunError> {
+    run_workspace_configuration_with_callbacks(
+        workspace,
+        name,
+        profiling,
+        || false,
+        write_run_output,
+    )
+}
+
+/// Run a workspace configuration through a shared service operation context.
+/// Output is forwarded to every connected frontend, and cancellation stops the
+/// complete Cargo process tree.
+pub fn run_workspace_configuration_with_context(
+    workspace: &VaporWorkspace,
+    name: &str,
+    profiling: bool,
+    context: &OperationContext,
+) -> Result<(), DevelopmentRunError> {
+    context.set_phase(OperationPhase::Running);
+    run_workspace_configuration_with_callbacks(
+        workspace,
+        name,
+        profiling,
+        || context.is_cancelled(),
+        |stream, text| {
+            context.report_output(OperationOutput {
+                stream,
+                text: text.to_owned(),
+            });
+        },
+    )
+}
+
+fn run_workspace_configuration_with_callbacks(
+    workspace: &VaporWorkspace,
+    name: &str,
+    profiling: bool,
+    mut is_cancelled: impl FnMut() -> bool,
+    mut report_output: impl FnMut(OperationOutputStream, &str),
+) -> Result<(), DevelopmentRunError> {
     let configuration = workspace
         .run_configuration(name)
         .map_err(DevelopmentRunError::Configuration)?;
@@ -239,66 +279,87 @@ pub fn run_workspace_configuration_with_profile_hint(
         command.arg("--").args(&configuration.arguments);
     }
 
-    if !configuration.telemetry {
-        let status = command
-            .status()
-            .map_err(|source| DevelopmentRunError::CargoStart {
-                configuration: name.to_owned(),
-                source,
-            })?;
-        return cargo_result(name, status);
+    let mut session = configuration
+        .telemetry
+        .then(|| DevelopmentSession::start(&toolchain, workspace, name, profiling))
+        .transpose()?;
+    let publisher = session.as_ref().map(|session| session.broker.publisher());
+    if let Some(session) = session.as_ref() {
+        command
+            .env(TELEMETRY_ADDR_ENV, &session.info.address)
+            .env(TELEMETRY_SESSION_ENV, &session.info.id);
+        report_output(
+            OperationOutputStream::Stderr,
+            &format!(
+                "Development Session {} · telemetry {} · {}",
+                session.info.id,
+                session.info.address,
+                if profiling {
+                    "profiling run · open `vapor profile` and Tracy when wanted"
+                } else {
+                    "telemetry run · open `vapor profile` to observe"
+                },
+            ),
+        );
     }
 
-    let mut session = DevelopmentSession::start(&toolchain, workspace, name, profiling)?;
-    println!(
-        "Development Session {} · telemetry {} · {}",
-        session.info.id,
-        session.info.address,
-        if profiling {
-            "profiling run · open `vapor profile` and Tracy when wanted"
-        } else {
-            "telemetry run · open `vapor profile` to observe"
+    let mut session_start_error = None;
+    let result = managed_process::run_cancellable_with_started(
+        &mut command,
+        &mut is_cancelled,
+        |process_id| {
+            if let Some(session) = session.as_mut()
+                && let Err(error) = session.mark_running(process_id)
+            {
+                let message = error.to_string();
+                session_start_error = Some(error);
+                return Err(message);
+            }
+            Ok(())
+        },
+        |stream, text| {
+            report_output(stream, text);
+            if let Some(publisher) = publisher.as_ref() {
+                publisher.payload(
+                    "process",
+                    TelemetryPayload::Log {
+                        stream: match stream {
+                            OperationOutputStream::Stdout => "stdout",
+                            OperationOutputStream::Stderr => "stderr",
+                        }
+                        .to_owned(),
+                        message: text.to_owned(),
+                    },
+                );
+            }
         },
     );
-    command
-        .env(TELEMETRY_ADDR_ENV, &session.info.address)
-        .env(TELEMETRY_SESSION_ENV, &session.info.id)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = command
-        .spawn()
-        .map_err(|source| DevelopmentRunError::CargoStart {
-            configuration: name.to_owned(),
-            source,
-        })?;
-    session.mark_running(child.id())?;
-
-    let publisher = session.broker.publisher();
-    let stdout = child
-        .stdout
-        .take()
-        .map(|stdout| forward_lines(stdout, "stdout", publisher.clone(), false));
-    let stderr = child
-        .stderr
-        .take()
-        .map(|stderr| forward_lines(stderr, "stderr", publisher, true));
-
-    let status = child
-        .wait()
-        .map_err(|source| DevelopmentRunError::CargoStart {
-            configuration: name.to_owned(),
-            source,
-        })?;
-
-    if let Some(thread) = stdout {
-        let _ = thread.join();
+    if let Some(error) = session_start_error {
+        if let Some(session) = session {
+            let _ = session.finish(false);
+        }
+        return Err(error);
     }
-    if let Some(thread) = stderr {
-        let _ = thread.join();
+    let status = match result {
+        Ok(status) => status,
+        Err(_) if is_cancelled() => {
+            if let Some(session) = session {
+                let _ = session.finish(false);
+            }
+            return Err(DevelopmentRunError::Cancelled {
+                configuration: name.to_owned(),
+            });
+        }
+        Err(error) => {
+            if let Some(session) = session {
+                let _ = session.finish(false);
+            }
+            return Err(DevelopmentRunError::Process(error));
+        }
+    };
+    if let Some(session) = session {
+        session.finish(status.success())?;
     }
-
-    session.finish(status.success())?;
     cargo_result(name, status)
 }
 
@@ -327,28 +388,15 @@ fn select_project<'a>(
     }
 }
 
-fn forward_lines<R: Read + Send + 'static>(
-    reader: R,
-    stream: &'static str,
-    publisher: TelemetryPublisher,
-    stderr: bool,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        for line in BufReader::new(reader).lines().map_while(Result::ok) {
-            if stderr {
-                eprintln!("{line}");
-            } else {
-                println!("{line}");
-            }
-            publisher.payload(
-                "process",
-                TelemetryPayload::Log {
-                    stream: stream.to_owned(),
-                    message: line,
-                },
-            );
+fn write_run_output(stream: OperationOutputStream, text: &str) {
+    match stream {
+        OperationOutputStream::Stdout => {
+            let _ = writeln!(io::stdout().lock(), "{text}");
         }
-    })
+        OperationOutputStream::Stderr => {
+            let _ = writeln!(io::stderr().lock(), "{text}");
+        }
+    }
 }
 
 fn cargo_result(name: &str, status: ExitStatus) -> Result<(), DevelopmentRunError> {
@@ -392,6 +440,10 @@ pub enum DevelopmentRunError {
         configuration: String,
         status: ExitStatus,
     },
+    Cancelled {
+        configuration: String,
+    },
+    Process(String),
     Telemetry(io::Error),
     Io {
         path: PathBuf,
@@ -440,6 +492,13 @@ impl fmt::Display for DevelopmentRunError {
                 formatter,
                 "Run Configuration `{configuration}` exited with {status}"
             ),
+            Self::Cancelled { configuration } => {
+                write!(
+                    formatter,
+                    "Run Configuration `{configuration}` was cancelled"
+                )
+            }
+            Self::Process(error) => formatter.write_str(error),
             Self::Telemetry(error) => {
                 write!(formatter, "failed to start telemetry broker: {error}")
             }

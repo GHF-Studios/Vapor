@@ -73,6 +73,13 @@ pub enum WorkspaceAction {
         #[serde(default)]
         target_triples: Vec<String>,
     },
+    /// Run an authored workspace configuration through the shared Client service.
+    RunConfiguration {
+        workspace_root: String,
+        configuration: String,
+        #[serde(default)]
+        profiling: bool,
+    },
     Clean {
         confirmed_workspace_root: String,
     },
@@ -399,6 +406,7 @@ impl ClientAction {
                     WorkspaceToolOperation::BuildRelease => "workspace.build-release",
                     WorkspaceToolOperation::Validate => "workspace.validate",
                 },
+                WorkspaceAction::RunConfiguration { .. } => "workspace.run-configuration",
                 WorkspaceAction::Clean { .. } => "workspace.clean",
                 WorkspaceAction::Remember => "workspace.remember",
                 WorkspaceAction::Create { .. } => "workspace.create",

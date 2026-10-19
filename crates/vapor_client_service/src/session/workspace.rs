@@ -13,6 +13,19 @@ impl ClientSession {
             WorkspaceAction::DiscoverSuperworkspaceRepositories
                 | WorkspaceAction::AcquireSuperworkspaceRepositories { .. }
         );
+        let run_configuration_root = match &action {
+            WorkspaceAction::RunConfiguration { workspace_root, .. } => {
+                Some(PathBuf::from(workspace_root))
+            }
+            _ => None,
+        };
+        if run_configuration_root.is_some() && self.bootstrap.fixture_mode {
+            return Err(ServiceError {
+                code: ServiceErrorCode::ActionUnavailable,
+                message: "Fixture sessions cannot run source workspaces.".to_owned(),
+                retryable: false,
+            });
+        }
         if is_superworkspace_operation && self.bootstrap.fixture_mode {
             return Err(ServiceError {
                 code: ServiceErrorCode::ActionUnavailable,
@@ -27,6 +40,15 @@ impl ClientSession {
                 code: ServiceErrorCode::ActionUnavailable,
                 message,
                 retryable: true,
+            })?
+        } else if let Some(requested) = run_configuration_root {
+            if !requested.is_absolute() {
+                return Err(invalid_workspace_request(
+                    "A Run Configuration must name an absolute workspace path.",
+                ));
+            }
+            requested.canonicalize().map_err(|error| {
+                invalid_workspace_request(&format!("{}: {error}", requested.display()))
             })?
         } else {
             self.bootstrap
@@ -111,6 +133,21 @@ impl ClientSession {
                     ));
                 }
                 WorkspaceOperationKind::RunTool(operation, project_selection, target_triples)
+            }
+            WorkspaceAction::RunConfiguration {
+                workspace_root: _,
+                configuration,
+                profiling,
+            } => {
+                if configuration.trim().is_empty() || configuration.len() > 128 {
+                    return Err(invalid_workspace_request(
+                        "Choose a Run Configuration name of 1 to 128 bytes.",
+                    ));
+                }
+                WorkspaceOperationKind::RunConfiguration {
+                    name: configuration,
+                    profiling,
+                }
             }
             WorkspaceAction::Clean {
                 confirmed_workspace_root,
@@ -218,6 +255,10 @@ impl ClientSession {
             configured_superworkspace_root().ok().as_deref() == Some(completion.root.as_path())
         } else {
             self.bootstrap.workspace_root.as_deref() == Some(&completion.root)
+                || matches!(
+                    &completion.action,
+                    WorkspaceOperationKind::RunConfiguration { .. }
+                )
         };
         let mut result = completion.result;
         if !source_context_is_current {
@@ -315,6 +356,10 @@ impl ClientSession {
                     operation_id: completion.id.clone(),
                 });
                 match &completion.action {
+                    WorkspaceOperationKind::RunConfiguration { name, .. } => {
+                        workspace_file_result = None;
+                        format!("Run Configuration `{name}` finished.")
+                    }
                     WorkspaceOperationKind::Validate => {
                         "Workspace validation completed.".to_owned()
                     }
@@ -485,6 +530,7 @@ fn workspace_operation_action_id(kind: &WorkspaceOperationKind) -> &'static str 
         WorkspaceOperationKind::RunTool(WorkspaceToolOperation::Validate, _, _) => {
             "workspace.validate"
         }
+        WorkspaceOperationKind::RunConfiguration { .. } => "workspace.run-configuration",
         WorkspaceOperationKind::Clean => "workspace.clean",
         WorkspaceOperationKind::Remember => "workspace.remember",
         WorkspaceOperationKind::AdoptProject(_) => "workspace.adopt-project",
@@ -505,6 +551,7 @@ fn workspace_operation_phase(kind: &WorkspaceOperationKind) -> OperationPhase {
         WorkspaceOperationKind::RunTool(..) | WorkspaceOperationKind::Clean => {
             OperationPhase::Building
         }
+        WorkspaceOperationKind::RunConfiguration { .. } => OperationPhase::Running,
         WorkspaceOperationKind::Validate
         | WorkspaceOperationKind::Remember
         | WorkspaceOperationKind::AdoptProject(_)
@@ -635,6 +682,16 @@ fn execute_workspace_operation(
                 )
                 .map(|_| WorkspaceOperationResult::Completed)
             }
+        }
+        WorkspaceOperationKind::RunConfiguration { name, profiling } => {
+            context.set_phase(application::OperationPhase::Resolving);
+            let workspace = vapor_core::VaporWorkspace::discover_from(root)
+                .map_err(|error| error.to_string())?;
+            vapor_core::run_workspace_configuration_with_context(
+                &workspace, &name, profiling, &context,
+            )
+            .map(|_| WorkspaceOperationResult::Completed)
+            .map_err(|error| error.to_string())
         }
         WorkspaceOperationKind::Clean => vapor_core::run_workspace_operation_at_with_context(
             root,

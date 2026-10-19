@@ -329,6 +329,10 @@ enum WorkspaceOperationKind {
         WorkspaceProjectSelection,
         Vec<String>,
     ),
+    RunConfiguration {
+        name: String,
+        profiling: bool,
+    },
     Clean,
     Remember,
     AdoptProject(PathBuf),
@@ -800,6 +804,7 @@ impl ClientSession {
                     | WorkspaceAction::CreateFile { .. }
                     | WorkspaceAction::Validate
                     | WorkspaceAction::RunTool { .. }
+                    | WorkspaceAction::RunConfiguration { .. }
                     | WorkspaceAction::Clean { .. }
                     | WorkspaceAction::Remember
                     | WorkspaceAction::AdoptProject { .. }
@@ -1298,7 +1303,11 @@ impl ClientSession {
         let id = operation_id.0.to_string();
         let cancellable = matches!(
             spec.action,
-            "workspace.fmt" | "workspace.check" | "workspace.test" | "workspace.build"
+            "workspace.fmt"
+                | "workspace.check"
+                | "workspace.test"
+                | "workspace.build"
+                | "workspace.run-configuration"
         ) && !self.bootstrap.fixture_mode;
         let cancellation = application::OperationCancellation::default();
         self.active_operation_cancellation = Some(cancellation.clone());

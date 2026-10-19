@@ -17,6 +17,7 @@ pub mod install;
 pub mod installation;
 pub mod local;
 pub mod maintenance;
+pub mod managed_process;
 pub mod managed_tool;
 pub mod manifest;
 pub mod operation;
@@ -125,7 +126,7 @@ pub use resolution::{
 
 pub use run::{
     ActiveDevelopmentSession, DevelopmentRunError, active_development_session,
-    development_sessions, run_workspace_configuration,
+    development_sessions, run_workspace_configuration, run_workspace_configuration_with_context,
     run_workspace_configuration_with_profile_hint,
 };
 

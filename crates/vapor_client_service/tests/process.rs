@@ -262,6 +262,140 @@ fn managed_workspace_tool_contract_round_trips_and_fixture_process_refuses_execu
 }
 
 #[test]
+fn fixture_service_rejects_workspace_run_configuration_requests() {
+    let root = std::env::temp_dir().join(format!(
+        "vapor-client-service-process-run-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).expect("create fixture workspace");
+    let executable = service_executable();
+    let mut client = Client::spawn(
+        &executable,
+        ClientHostConfig {
+            application_executable: executable.clone(),
+            workshop_app_id: None,
+            workspace_root: Some(root.clone()),
+            active_composition_id: Some("default".to_owned()),
+            fixture_mode: true,
+            legacy_storage: LegacyStorageSeed::default(),
+            state_directory: None,
+        },
+    )
+    .expect("fixture service starts");
+    client
+        .send(
+            ClientAction::Workspace(WorkspaceAction::RunConfiguration {
+                workspace_root: root.display().to_string(),
+                configuration: "default".into(),
+                profiling: false,
+            }),
+            Some(client.latest_snapshot().revision),
+        )
+        .expect("send workspace Run Configuration");
+    let ProtocolFrame::Response(response) = client
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive fixture policy response")
+    else {
+        panic!("expected a service response");
+    };
+    assert_eq!(response.kind, ClientResponseKind::Rejected);
+    assert!(
+        response
+            .error
+            .is_some_and(|error| error.message.contains("cannot run source workspaces"))
+    );
+    client
+        .shutdown(Duration::from_secs(2))
+        .expect("fixture service shuts down");
+    fs::remove_dir_all(root).expect("remove fixture workspace");
+}
+
+#[test]
+fn production_service_owns_workspace_run_configuration_resolution() {
+    let root = std::env::temp_dir().join(format!(
+        "vapor-client-service-process-run-route-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(root.join("src")).expect("create source workspace");
+    fs::write(
+        root.join("Workspace.vapor.toml"),
+        "schema = 1\n\n[workspace]\nname = \"run-route\"\norganization = \"ghf-studios\"\nversion = \"0.1.0\"\nrepository = \"https://example.invalid/run-route\"\n\n[toolchain]\nchannel = \"stable\"\nversion = \"1.97.0\"\ndate = \"2026-07-09\"\n\n[[project]]\nname = \"run-route\"\npath = \".\"\n",
+    )
+    .expect("write Vapor workspace manifest");
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"run-route\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .expect("write Cargo manifest");
+    fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write Rust entrypoint");
+
+    let executable = service_executable();
+    let state_directory = root.with_extension("state");
+    let mut client = Client::spawn(
+        &executable,
+        ClientHostConfig {
+            application_executable: executable.clone(),
+            workshop_app_id: None,
+            workspace_root: Some(root.clone()),
+            active_composition_id: Some("default".to_owned()),
+            fixture_mode: false,
+            legacy_storage: LegacyStorageSeed::default(),
+            state_directory: Some(state_directory.clone()),
+        },
+    )
+    .expect("production service starts");
+    client
+        .send(
+            ClientAction::Workspace(WorkspaceAction::RunConfiguration {
+                workspace_root: root.display().to_string(),
+                configuration: "default".into(),
+                profiling: false,
+            }),
+            Some(client.latest_snapshot().revision),
+        )
+        .expect("send workspace Run Configuration");
+    let ProtocolFrame::Response(response) = client
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive accepted workspace operation")
+    else {
+        panic!("expected a service response");
+    };
+    assert_eq!(response.kind, ClientResponseKind::OperationAccepted);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut service_resolved_run_configuration = false;
+    while std::time::Instant::now() < deadline {
+        if let ProtocolFrame::Event(ClientEvent::OperationChanged(event)) = client
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .expect("receive Run Configuration result")
+            && event.action == "workspace.run-configuration"
+            && let vapor_client_protocol::OperationStatus::Failed { message } = event.status
+        {
+            assert!(message.contains("declares no Run Configuration `default`"));
+            service_resolved_run_configuration = true;
+            break;
+        }
+    }
+    assert!(
+        service_resolved_run_configuration,
+        "the service resolves the workspace and reports its Run Configuration error"
+    );
+    client
+        .shutdown(Duration::from_secs(2))
+        .expect("production service shuts down");
+    fs::remove_dir_all(state_directory).expect("remove temporary service state");
+    fs::remove_dir_all(root).expect("remove source workspace");
+}
+
+#[test]
 fn fixture_workshop_acquisition_round_trips_through_the_service_process() {
     let mut client = fixture_client();
     client
