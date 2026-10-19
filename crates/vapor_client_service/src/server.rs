@@ -137,20 +137,35 @@ fn serve_local(
                 if !clients.contains_key(&client_id) || authenticated.contains(&client_id) {
                     continue;
                 }
-                let Some(client) = clients.get(&client_id) else {
-                    continue;
-                };
-                let _ = client.try_send(ProtocolFrame::Event(ClientEvent::ServiceReady {
-                    protocol_version: PROTOCOL_VERSION,
-                }));
+                send_to_client(
+                    &mut clients,
+                    &mut authenticated,
+                    &mut telemetry_subscribers,
+                    client_id,
+                    ProtocolFrame::Event(ClientEvent::ServiceReady {
+                        protocol_version: PROTOCOL_VERSION,
+                    }),
+                );
                 if protocol_version != PROTOCOL_VERSION {
-                    let _ = client.try_send(ProtocolFrame::Event(ClientEvent::ProtocolError(ServiceError {
-                        code: ServiceErrorCode::UnsupportedProtocol,
-                        message: format!("client protocol {protocol_version} is unsupported; service protocol is {PROTOCOL_VERSION}"),
-                        retryable: false,
-                    })));
-                    clients.remove(&client_id);
-                    authenticated.remove(&client_id);
+                    send_to_client(
+                        &mut clients,
+                        &mut authenticated,
+                        &mut telemetry_subscribers,
+                        client_id,
+                        ProtocolFrame::Event(ClientEvent::ProtocolError(ServiceError {
+                            code: ServiceErrorCode::UnsupportedProtocol,
+                            message: format!(
+                                "client protocol {protocol_version} is unsupported; service protocol is {PROTOCOL_VERSION}"
+                            ),
+                            retryable: false,
+                        })),
+                    );
+                    disconnect_client(
+                        &mut clients,
+                        &mut authenticated,
+                        &mut telemetry_subscribers,
+                        client_id,
+                    );
                     continue;
                 }
                 if session.is_none()
@@ -164,14 +179,23 @@ fn serve_local(
                     ) {
                         Ok(initialized) => session = Some(initialized),
                         Err(error) => {
-                            let _ = client.try_send(ProtocolFrame::Event(
-                                ClientEvent::ProtocolError(ServiceError {
+                            send_to_client(
+                                &mut clients,
+                                &mut authenticated,
+                                &mut telemetry_subscribers,
+                                client_id,
+                                ProtocolFrame::Event(ClientEvent::ProtocolError(ServiceError {
                                     code: ServiceErrorCode::PersistenceFailure,
                                     message: error,
                                     retryable: true,
-                                }),
-                            ));
-                            clients.remove(&client_id);
+                                })),
+                            );
+                            disconnect_client(
+                                &mut clients,
+                                &mut authenticated,
+                                &mut telemetry_subscribers,
+                                client_id,
+                            );
                             continue;
                         }
                     }
@@ -182,14 +206,20 @@ fn serve_local(
                     continue;
                 };
                 authenticated.insert(client_id);
-                let _ = client.try_send(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(
-                    session.snapshot(),
-                ))));
+                send_to_client(
+                    &mut clients,
+                    &mut authenticated,
+                    &mut telemetry_subscribers,
+                    client_id,
+                    ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(session.snapshot()))),
+                );
             }
             Ok(LocalInput::Frame(client_id, Ok(ProtocolFrame::Request(request)))) => {
                 if !authenticated.contains(&client_id) {
                     send_protocol_error(
-                        &clients,
+                        &mut clients,
+                        &mut authenticated,
+                        &mut telemetry_subscribers,
                         client_id,
                         "client must negotiate the service protocol before sending requests",
                     );
@@ -232,36 +262,62 @@ fn serve_local(
                         telemetry_subscribers.remove(&client_id);
                     }
                 }
-                if let Some(client) = clients.get(&client_id) {
-                    let _ = client.try_send(ProtocolFrame::Response(Box::new(response)));
-                }
+                send_to_client(
+                    &mut clients,
+                    &mut authenticated,
+                    &mut telemetry_subscribers,
+                    client_id,
+                    ProtocolFrame::Response(Box::new(response)),
+                );
                 if telemetry_subscription == Some(true)
                     && let Some(event) = development_status.clone()
-                    && let Some(client) = clients.get(&client_id)
                 {
-                    let _ = client.try_send(ProtocolFrame::Event(event));
+                    send_to_client(
+                        &mut clients,
+                        &mut authenticated,
+                        &mut telemetry_subscribers,
+                        client_id,
+                        ProtocolFrame::Event(event),
+                    );
                 }
                 broadcast(
-                    &clients,
+                    &mut clients,
+                    &mut authenticated,
+                    &mut telemetry_subscribers,
                     ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(session.snapshot()))),
                 );
             }
             Ok(LocalInput::Frame(client_id, Ok(_))) => {
                 send_protocol_error(
-                    &clients,
+                    &mut clients,
+                    &mut authenticated,
+                    &mut telemetry_subscribers,
                     client_id,
                     "service accepts Connect and Request frames only",
                 );
             }
             Ok(LocalInput::Frame(client_id, Err(message))) => {
-                send_protocol_error(&clients, client_id, &message);
-                clients.remove(&client_id);
-                authenticated.remove(&client_id);
+                send_protocol_error(
+                    &mut clients,
+                    &mut authenticated,
+                    &mut telemetry_subscribers,
+                    client_id,
+                    &message,
+                );
+                disconnect_client(
+                    &mut clients,
+                    &mut authenticated,
+                    &mut telemetry_subscribers,
+                    client_id,
+                );
             }
             Ok(LocalInput::Disconnected(client_id)) => {
-                clients.remove(&client_id);
-                authenticated.remove(&client_id);
-                telemetry_subscribers.remove(&client_id);
+                disconnect_client(
+                    &mut clients,
+                    &mut authenticated,
+                    &mut telemetry_subscribers,
+                    client_id,
+                );
                 if clients.is_empty() {
                     idle_since = Some(Instant::now());
                 }
@@ -279,25 +335,34 @@ fn serve_local(
                 for event in events {
                     if matches!(&event, ClientEvent::ProfileAnalysis(_)) {
                         broadcast_development_event(
-                            &clients,
-                            &telemetry_subscribers,
+                            &mut clients,
+                            &mut authenticated,
+                            &mut telemetry_subscribers,
                             event,
                             &mut latest_development_status,
                         );
                     } else {
-                        broadcast(&clients, ProtocolFrame::Event(event));
+                        broadcast(
+                            &mut clients,
+                            &mut authenticated,
+                            &mut telemetry_subscribers,
+                            ProtocolFrame::Event(event),
+                        );
                     }
                 }
                 broadcast(
-                    &clients,
+                    &mut clients,
+                    &mut authenticated,
+                    &mut telemetry_subscribers,
                     ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(session.snapshot()))),
                 );
             }
         }
         while let Ok(event) = telemetry_events.try_recv() {
             broadcast_development_event(
-                &clients,
-                &telemetry_subscribers,
+                &mut clients,
+                &mut authenticated,
+                &mut telemetry_subscribers,
                 event,
                 &mut development_status,
             );
@@ -373,34 +438,81 @@ fn read_local_frames(
     }
 }
 
-fn send_protocol_error(
-    clients: &std::collections::HashMap<u64, std::sync::mpsc::SyncSender<ProtocolFrame>>,
+type ServiceClients = std::collections::HashMap<u64, SyncSender<ProtocolFrame>>;
+type ClientIds = std::collections::HashSet<u64>;
+
+/// A client that cannot accept the next protocol frame has missed state and
+/// cannot safely continue the session. Removing its sender closes the writer
+/// once already-queued frames have drained, so the frontend reconnects from a
+/// fresh snapshot instead of observing a silently incomplete event stream.
+fn send_to_client(
+    clients: &mut ServiceClients,
+    authenticated: &mut ClientIds,
+    telemetry_subscribers: &mut ClientIds,
     client_id: u64,
-    message: &str,
+    frame: ProtocolFrame,
 ) {
-    if let Some(client) = clients.get(&client_id) {
-        let _ = client.try_send(ProtocolFrame::Event(ClientEvent::ProtocolError(
-            ServiceError {
-                code: ServiceErrorCode::InvalidRequest,
-                message: message.to_owned(),
-                retryable: false,
-            },
-        )));
+    let delivery_failed = clients
+        .get(&client_id)
+        .is_some_and(|client| client.try_send(frame).is_err());
+    if delivery_failed {
+        disconnect_client(clients, authenticated, telemetry_subscribers, client_id);
     }
 }
 
+fn disconnect_client(
+    clients: &mut ServiceClients,
+    authenticated: &mut ClientIds,
+    telemetry_subscribers: &mut ClientIds,
+    client_id: u64,
+) {
+    clients.remove(&client_id);
+    authenticated.remove(&client_id);
+    telemetry_subscribers.remove(&client_id);
+}
+
+fn send_protocol_error(
+    clients: &mut ServiceClients,
+    authenticated: &mut ClientIds,
+    telemetry_subscribers: &mut ClientIds,
+    client_id: u64,
+    message: &str,
+) {
+    send_to_client(
+        clients,
+        authenticated,
+        telemetry_subscribers,
+        client_id,
+        ProtocolFrame::Event(ClientEvent::ProtocolError(ServiceError {
+            code: ServiceErrorCode::InvalidRequest,
+            message: message.to_owned(),
+            retryable: false,
+        })),
+    );
+}
+
 fn broadcast(
-    clients: &std::collections::HashMap<u64, std::sync::mpsc::SyncSender<ProtocolFrame>>,
+    clients: &mut ServiceClients,
+    authenticated: &mut ClientIds,
+    telemetry_subscribers: &mut ClientIds,
     frame: ProtocolFrame,
 ) {
-    for client in clients.values() {
-        let _ = client.try_send(frame.clone());
+    let client_ids = clients.keys().copied().collect::<Vec<_>>();
+    for client_id in client_ids {
+        send_to_client(
+            clients,
+            authenticated,
+            telemetry_subscribers,
+            client_id,
+            frame.clone(),
+        );
     }
 }
 
 fn broadcast_development_event(
-    clients: &std::collections::HashMap<u64, SyncSender<ProtocolFrame>>,
-    subscribers: &std::collections::HashSet<u64>,
+    clients: &mut ServiceClients,
+    authenticated: &mut ClientIds,
+    subscribers: &mut ClientIds,
     event: ClientEvent,
     latest_status: &mut Option<ClientEvent>,
 ) {
@@ -413,10 +525,15 @@ fn broadcast_development_event(
         return;
     }
     let frame = ProtocolFrame::Event(event);
-    for client_id in subscribers {
-        if let Some(client) = clients.get(client_id) {
-            let _ = client.try_send(frame.clone());
-        }
+    let subscriber_ids = subscribers.iter().copied().collect::<Vec<_>>();
+    for client_id in subscriber_ids {
+        send_to_client(
+            clients,
+            authenticated,
+            subscribers,
+            client_id,
+            frame.clone(),
+        );
     }
 }
 
@@ -783,13 +900,15 @@ mod tests {
     fn development_telemetry_only_reaches_subscribed_clients() {
         let (first_sender, first_receiver) = std::sync::mpsc::sync_channel(1);
         let (second_sender, second_receiver) = std::sync::mpsc::sync_channel(1);
-        let clients = std::collections::HashMap::from([(1, first_sender), (2, second_sender)]);
-        let subscribers = std::collections::HashSet::from([2]);
+        let mut clients = std::collections::HashMap::from([(1, first_sender), (2, second_sender)]);
+        let mut authenticated = std::collections::HashSet::from([1, 2]);
+        let mut subscribers = std::collections::HashSet::from([2]);
         let mut latest_status = None;
 
         broadcast_development_event(
-            &clients,
-            &subscribers,
+            &mut clients,
+            &mut authenticated,
+            &mut subscribers,
             ClientEvent::Telemetry(vapor_telemetry::TelemetryEvent::new(
                 "engine",
                 vapor_telemetry::TelemetryPayload::Lifecycle {
@@ -807,8 +926,9 @@ mod tests {
         ));
 
         broadcast_development_event(
-            &clients,
-            &subscribers,
+            &mut clients,
+            &mut authenticated,
+            &mut subscribers,
             ClientEvent::ProfileAnalysis(Err("trace analysis failed".to_owned())),
             &mut latest_status,
         );
@@ -816,6 +936,37 @@ mod tests {
         assert!(matches!(
             second_receiver.try_recv(),
             Ok(ProtocolFrame::Event(ClientEvent::ProfileAnalysis(Err(_))))
+        ));
+    }
+
+    #[test]
+    fn a_client_that_cannot_receive_protocol_frames_is_removed_from_all_subscriptions() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        sender
+            .try_send(ProtocolFrame::Event(ClientEvent::ServiceReady {
+                protocol_version: PROTOCOL_VERSION,
+            }))
+            .unwrap();
+        let mut clients = std::collections::HashMap::from([(7, sender)]);
+        let mut authenticated = std::collections::HashSet::from([7]);
+        let mut subscribers = std::collections::HashSet::from([7]);
+
+        send_to_client(
+            &mut clients,
+            &mut authenticated,
+            &mut subscribers,
+            7,
+            ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(
+                fixture_session().snapshot(),
+            ))),
+        );
+
+        assert!(!clients.contains_key(&7));
+        assert!(!authenticated.contains(&7));
+        assert!(!subscribers.contains(&7));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(ProtocolFrame::Event(ClientEvent::ServiceReady { .. }))
         ));
     }
 }
