@@ -47,7 +47,7 @@ const MAX_WORKSHOP_REVIEW_FILE_PATHS: usize = 50;
 // middle queue applies backpressure between those layers instead of retaining
 // an unbounded burst when a frontend is slow to poll.
 const MAX_PENDING_BACKGROUND_OPERATION_MESSAGES: usize = 256;
-const MAX_BUFFERED_OPERATION_OUTPUT_EVENTS: usize = 512;
+pub(super) const MAX_BUFFERED_OPERATION_OUTPUT_EVENTS: usize = 512;
 const OPERATION_OUTPUT_OMISSION_NOTICE: &str =
     "Older output omitted because the service buffer reached its limit.";
 

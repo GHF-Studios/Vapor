@@ -1,5 +1,6 @@
 use crate::{
     ClientHostConfig, ClientSession, host::ClientHostContext, persistence::ClientStateStore,
+    session::MAX_BUFFERED_OPERATION_OUTPUT_EVENTS,
 };
 use std::{
     io::{self, BufRead, BufReader, BufWriter, Read, Write},
@@ -15,6 +16,11 @@ use vapor_client_protocol::{
 const MAX_FRAME_BYTES: usize = MAX_PROTOCOL_FRAME_BYTES;
 
 const SERVICE_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_PENDING_LOCAL_INPUTS: usize = 8;
+// A service poll can release the session's full output window in one batch.
+// Keep extra outbound capacity for lifecycle and snapshot frames so healthy
+// frontends do not get disconnected mid-operation.
+const MAX_PENDING_CLIENT_FRAMES: usize = MAX_BUFFERED_OPERATION_OUTPUT_EVENTS + 64;
 
 // Protocol frames carry heap-backed request payloads; keeping this local event
 // value inline avoids one allocation for every message on the service channel.
@@ -60,7 +66,7 @@ fn serve_local(
     use interprocess::local_socket::traits::{Listener as _, Stream as _};
     use std::sync::mpsc::{self, SyncSender};
 
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = local_input_channel();
     let listener = std::sync::Arc::new(listener);
     let accept_sender = sender.clone();
     let accept_listener = listener.clone();
@@ -99,7 +105,7 @@ fn serve_local(
                 let client_id = next_client_id;
                 next_client_id = next_client_id.saturating_add(1);
                 let (reader, writer) = stream.split();
-                let (outbound, outbound_receiver) = mpsc::sync_channel(64);
+                let (outbound, outbound_receiver) = mpsc::sync_channel(MAX_PENDING_CLIENT_FRAMES);
                 clients.insert(client_id, outbound);
 
                 let writer_sender = sender.clone();
@@ -382,11 +388,7 @@ fn serve_local(
     }
 }
 
-fn read_local_frames(
-    reader: impl Read,
-    client_id: u64,
-    sender: std::sync::mpsc::Sender<LocalInput>,
-) {
+fn read_local_frames(reader: impl Read, client_id: u64, sender: SyncSender<LocalInput>) {
     let mut reader = BufReader::new(reader);
     let mut buffer = Vec::new();
     loop {
@@ -436,6 +438,10 @@ fn read_local_frames(
             }
         }
     }
+}
+
+fn local_input_channel() -> (SyncSender<LocalInput>, mpsc::Receiver<LocalInput>) {
+    mpsc::sync_channel(MAX_PENDING_LOCAL_INPUTS)
 }
 
 type ServiceClients = std::collections::HashMap<u64, SyncSender<ProtocolFrame>>;
@@ -968,5 +974,26 @@ mod tests {
             receiver.try_recv(),
             Ok(ProtocolFrame::Event(ClientEvent::ServiceReady { .. }))
         ));
+    }
+
+    #[test]
+    fn local_input_queue_applies_backpressure_at_its_fixed_capacity() {
+        let (sender, receiver) = local_input_channel();
+        for _ in 0..MAX_PENDING_LOCAL_INPUTS {
+            sender
+                .try_send(LocalInput::ListenerFailed("queued".to_owned()))
+                .expect("configured input capacity accepts the initial burst");
+        }
+
+        assert!(matches!(
+            sender.try_send(LocalInput::ListenerFailed("next".to_owned())),
+            Err(mpsc::TrySendError::Full(_))
+        ));
+        receiver
+            .recv()
+            .expect("freeing a slot unblocks the producer");
+        sender
+            .try_send(LocalInput::ListenerFailed("next".to_owned()))
+            .expect("freeing a slot lets the next frame enter the queue");
     }
 }
