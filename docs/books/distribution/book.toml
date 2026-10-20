@@ -1,5 +1,6 @@
 [book]
 title = "The Vapor Distribution Book"
+description = "Understand Steam, Workshop, registries, trust, and release delivery."
 authors = ["Leslie-John Richardson"]
 language = "en"
 src = "src"

@@ -1,5 +1,6 @@
 [book]
 title = "The Vapor Book"
+description = "Understand Vapor content, tools, compositions, and distribution."
 authors = ["Leslie-John Richardson"]
 language = "en"
 src = "src"

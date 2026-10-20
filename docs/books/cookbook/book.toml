@@ -1,5 +1,6 @@
 [book]
 title = "The Vapor Cookbook"
+description = "Follow concise recipes for common Vapor workflows."
 authors = ["Leslie-John Richardson"]
 language = "en"
 src = "src"

@@ -1,5 +1,6 @@
 [book]
 title = "The Vapor SDK Book"
+description = "Create, validate, package, and publish Vapor content."
 authors = ["Leslie-John Richardson"]
 language = "en"
 src = "src"

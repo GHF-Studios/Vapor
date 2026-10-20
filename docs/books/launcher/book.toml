@@ -1,5 +1,6 @@
 [book]
 title = "The Vapor Launcher Book"
+description = "Install, compose, update, and launch content as a player or creator."
 authors = ["Leslie-John Richardson"]
 language = "en"
 src = "src"

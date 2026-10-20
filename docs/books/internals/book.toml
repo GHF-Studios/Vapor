@@ -1,5 +1,6 @@
 [book]
 title = "The Vapor Internals Book"
+description = "Contribute to Vapor's repositories and implementation."
 authors = ["Leslie-John Richardson"]
 language = "en"
 src = "src"

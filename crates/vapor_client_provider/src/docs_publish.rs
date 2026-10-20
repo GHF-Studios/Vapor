@@ -2,6 +2,7 @@
 
 use crate::discovery::EnvironmentPaths;
 use reqwest::{Url, blocking::Client, header::AUTHORIZATION};
+use serde::Deserialize;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -191,7 +192,35 @@ impl Drop for TemporarySite {
     }
 }
 
-fn build_books(books_root: &Path, site: &Path) -> Result<Vec<(String, String)>, String> {
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct BookMetadata {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MdBookConfig {
+    book: BookMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BookLink {
+    title: String,
+    description: Option<String>,
+    path: String,
+}
+
+fn parse_book_metadata(contents: &str) -> Result<BookMetadata, String> {
+    let config: MdBookConfig = toml::from_str(contents)
+        .map_err(|error| format!("could not read mdBook metadata: {error}"))?;
+    if config.book.title.trim().is_empty() {
+        return Err("mdBook metadata must declare a non-empty title".to_owned());
+    }
+    Ok(config.book)
+}
+
+fn build_books(books_root: &Path, site: &Path) -> Result<Vec<BookLink>, String> {
     if !books_root.is_dir() {
         return Ok(Vec::new());
     }
@@ -208,12 +237,16 @@ fn build_books(books_root: &Path, site: &Path) -> Result<Vec<(String, String)>, 
         .is_ok_and(|output| output.status.success());
     let mut links = Vec::new();
     for book in books {
-        let name = book
+        let directory = book
             .parent()
             .and_then(Path::file_name)
             .and_then(|name| name.to_str())
             .ok_or_else(|| format!("invalid mdBook path '{}'", book.display()))?;
-        let output = site.join("books").join(name);
+        let metadata = parse_book_metadata(
+            &fs::read_to_string(&book)
+                .map_err(|error| format!("could not read '{}': {error}", book.display()))?,
+        )?;
+        let output = site.join("books").join(directory);
         if mdbook_available {
             let result = Command::new("mdbook")
                 .arg("build")
@@ -221,14 +254,18 @@ fn build_books(books_root: &Path, site: &Path) -> Result<Vec<(String, String)>, 
                 .arg("--dest-dir")
                 .arg(&output)
                 .output()
-                .map_err(|error| format!("could not build mdBook '{name}': {error}"))?;
+                .map_err(|error| format!("could not build mdBook '{directory}': {error}"))?;
             if !result.status.success() {
                 return Err(format!(
-                    "mdBook '{name}' failed: {}",
+                    "mdBook '{directory}' failed: {}",
                     String::from_utf8_lossy(&result.stderr).trim()
                 ));
             }
-            links.push((name.to_owned(), format!("books/{name}/index.html")));
+            links.push(BookLink {
+                title: metadata.title,
+                description: metadata.description,
+                path: format!("books/{directory}/index.html"),
+            });
         } else {
             let source = book.parent().expect("book has parent").join("src");
             let output = output.join("src");
@@ -241,7 +278,11 @@ fn build_books(books_root: &Path, site: &Path) -> Result<Vec<(String, String)>, 
                     .join("book.toml"),
             )
             .map_err(|error| error.to_string())?;
-            links.push((name.to_owned(), format!("books/{name}/src/SUMMARY.md")));
+            links.push(BookLink {
+                title: metadata.title,
+                description: metadata.description,
+                path: format!("books/{directory}/src/SUMMARY.md"),
+            });
         }
     }
     Ok(links)
@@ -290,14 +331,18 @@ fn validate_site_tree(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_site_index(root: &Path, books: &[(String, String)]) -> Result<(), String> {
+fn write_site_index(root: &Path, books: &[BookLink]) -> Result<(), String> {
     let book_links = books
         .iter()
-        .map(|(name, path)| {
+        .map(|book| {
+            let description = book
+                .description
+                .as_deref()
+                .map_or_else(String::new, |text| format!("<p>{}</p>", html_escape(text)));
             format!(
-                "<li><a href=\"{}\">{}</a></li>",
-                html_escape(path),
-                html_escape(name)
+                "<li><a href=\"{}\">{}</a>{description}</li>",
+                html_escape(&book.path),
+                html_escape(&book.title),
             )
         })
         .collect::<String>();
@@ -318,7 +363,10 @@ fn html_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TemporarySite, build_bundle, upload_bundle, upload_url, write_site_index};
+    use super::{
+        BookLink, TemporarySite, build_bundle, parse_book_metadata, upload_bundle, upload_url,
+        write_site_index,
+    };
     use std::{
         fs,
         io::{Read, Write},
@@ -341,6 +389,17 @@ mod tests {
     fn upload_url_allows_cleartext_loopback_for_local_server_testing() {
         let url = upload_url("http://127.0.0.1:7112/docs").expect("loopback endpoint");
         assert_eq!(url.as_str(), "http://127.0.0.1:7112/docs/current.tar.gz");
+    }
+
+    #[test]
+    fn book_metadata_reads_display_title_and_description_from_book_toml() {
+        let metadata = parse_book_metadata(
+            "[book]\ntitle = \"A Human-Friendly Book\"\ndescription = \"A short guide.\"\n",
+        )
+        .expect("valid book metadata");
+
+        assert_eq!(metadata.title, "A Human-Friendly Book");
+        assert_eq!(metadata.description.as_deref(), Some("A short guide."));
     }
 
     #[test]
@@ -375,12 +434,17 @@ mod tests {
         let site = TemporarySite::create().expect("temporary site");
         write_site_index(
             &site.path,
-            &[("<book>".into(), "books/a&b/index.html".into())],
+            &[BookLink {
+                title: "<book>".into(),
+                description: Some("A & B guide".into()),
+                path: "books/a&b/index.html".into(),
+            }],
         )
         .expect("write index");
         let index = fs::read_to_string(site.path.join("index.html")).unwrap();
         assert!(index.contains("&lt;book&gt;"));
         assert!(index.contains("a&amp;b"));
+        assert!(index.contains("A &amp; B guide"));
     }
 
     #[test]

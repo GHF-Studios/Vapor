@@ -1,5 +1,6 @@
 [book]
 title = "Vapor Books"
+description = "Find the right Vapor guide and see what each book covers."
 authors = ["Leslie-John Richardson"]
 language = "en"
 src = "src"
