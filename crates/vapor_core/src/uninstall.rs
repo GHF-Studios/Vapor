@@ -44,10 +44,18 @@ pub fn uninstall_installation(
     options: UninstallOptions,
 ) -> Result<UninstallReport, UninstallError> {
     let installation = VaporInstallation::discover().map_err(UninstallError::Installation)?;
+    uninstall_installation_for(&installation, options)
+}
+
+/// Uninstall integration for a specific Vapor Installation.
+pub fn uninstall_installation_for(
+    installation: &VaporInstallation,
+    options: UninstallOptions,
+) -> Result<UninstallReport, UninstallError> {
     let user_data_root = installation.user_data_root();
 
     let superworkspace_root = if options.purge_superworkspace {
-        Some(active_superworkspace(&installation)?)
+        Some(active_superworkspace(installation)?)
     } else {
         None
     };
@@ -55,7 +63,7 @@ pub fn uninstall_installation(
     // Phase 1: resolve and validate every safety-sensitive operation before
     // mutating integration, user data, or authored source.
     let preflight = preflight_uninstall(
-        &installation,
+        installation,
         &user_data_root,
         superworkspace_root.as_deref(),
         options,
@@ -67,7 +75,7 @@ pub fn uninstall_installation(
             .map_err(UninstallError::Installation)?;
     }
 
-    let legacy_app_state_removed = remove_legacy_app_mutable_state(&installation)?;
+    let legacy_app_state_removed = remove_legacy_app_mutable_state(installation)?;
 
     let mut app_external_purged = false;
     let mut superworkspace_purged = false;
@@ -91,10 +99,10 @@ pub fn uninstall_installation(
 
     // Machine integration is committed last. Safety validation above has
     // already completed, so a refused purge cannot partially uninstall Vapor.
-    let integration = remove_machine_integration(&installation)?;
+    let integration = remove_machine_integration(installation)?;
 
     Ok(UninstallReport {
-        installation_root: installation.root,
+        installation_root: installation.root.clone(),
         user_data_root,
         superworkspace_root,
         integration,
@@ -284,6 +292,7 @@ fn remove_machine_integration(
 
     if let Some(anchor) = legacy_anchor_file()
         && anchor.is_file()
+        && anchor_targets_installation(&anchor, &installation.root)?
     {
         fs::remove_file(&anchor).map_err(|source| UninstallError::Io {
             path: anchor.clone(),
@@ -305,13 +314,13 @@ fn remove_machine_integration(
         }
 
         for variable in [VAPOR_HOME_ENV, LEGACY_APP_ROOT_ENV] {
-            if remove_windows_user_environment(variable)? {
+            if remove_windows_user_environment(variable, &installation.root)? {
                 removed.push(format!("removed user environment variable {variable}"));
             }
         }
     } else {
         for profile in shell_profiles() {
-            if remove_managed_profile_block(&profile)? {
+            if remove_managed_profile_block(&profile, &installation.root)? {
                 removed.push(format!(
                     "removed managed Vapor PATH block from {}",
                     profile.display()
@@ -351,7 +360,10 @@ fn shell_profiles() -> Vec<PathBuf> {
         .collect()
 }
 
-fn remove_managed_profile_block(path: &Path) -> Result<bool, UninstallError> {
+fn remove_managed_profile_block(
+    path: &Path,
+    installation_root: &Path,
+) -> Result<bool, UninstallError> {
     let source = match fs::read_to_string(path) {
         Ok(source) => source,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -362,6 +374,10 @@ fn remove_managed_profile_block(path: &Path) -> Result<bool, UninstallError> {
             });
         }
     };
+
+    if !managed_profile_block_targets(&source, installation_root) {
+        return Ok(false);
+    }
 
     let mut changed = false;
     let mut inside = false;
@@ -450,36 +466,82 @@ if ($filtered.Count -ne $entries.Count) {
     Ok(String::from_utf8_lossy(&output.stdout).contains("removed"))
 }
 
-fn remove_windows_user_environment(variable: &str) -> Result<bool, UninstallError> {
-    let key = r"HKCU\Environment";
-    let query = Command::new("reg")
-        .args(["query", key, "/V", variable])
+fn remove_windows_user_environment(
+    variable: &str,
+    installation_root: &Path,
+) -> Result<bool, UninstallError> {
+    let script = r#"
+$name = $args[0]
+$expected = [IO.Path]::GetFullPath($args[1])
+$current = [Environment]::GetEnvironmentVariable($name, 'User')
+if ([string]::IsNullOrWhiteSpace($current)) { exit 0 }
+try { $actual = [IO.Path]::GetFullPath($current) } catch { exit 0 }
+if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+    [Environment]::SetEnvironmentVariable($name, $null, 'User')
+    Write-Output 'removed'
+}
+"#;
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .arg(variable)
+        .arg(installation_root)
         .output()
         .map_err(|source| UninstallError::CommandStart {
-            command: format!("reg query {key} /V {variable}"),
+            command: format!("PowerShell user environment cleanup for {variable}"),
             source,
         })?;
 
-    if !query.status.success() {
-        return Ok(false);
-    }
-
-    let delete = Command::new("reg")
-        .args(["delete", key, "/V", variable, "/F"])
-        .output()
-        .map_err(|source| UninstallError::CommandStart {
-            command: format!("reg delete {key} /V {variable} /F"),
-            source,
-        })?;
-
-    if !delete.status.success() {
+    if !output.status.success() {
         return Err(UninstallError::CommandFailed {
-            command: format!("reg delete {key} /V {variable} /F"),
-            status: delete.status.to_string(),
+            command: format!("PowerShell user environment cleanup for {variable}"),
+            status: output.status.to_string(),
         });
     }
 
-    Ok(true)
+    Ok(String::from_utf8_lossy(&output.stdout).contains("removed"))
+}
+
+fn anchor_targets_installation(
+    anchor: &Path,
+    installation_root: &Path,
+) -> Result<bool, UninstallError> {
+    let contents = fs::read_to_string(anchor).map_err(|source| UninstallError::Io {
+        path: anchor.to_path_buf(),
+        source,
+    })?;
+    Ok(anchor_contents_target_installation(
+        &contents,
+        installation_root,
+    ))
+}
+
+fn anchor_contents_target_installation(contents: &str, installation_root: &Path) -> bool {
+    contents.trim() == installation_root.to_string_lossy()
+}
+
+fn managed_profile_block_targets(source: &str, installation_root: &Path) -> bool {
+    let expected = format!(
+        "export {VAPOR_HOME_ENV}={}",
+        shell_single_quote(&installation_root.to_string_lossy())
+    );
+    let mut inside = false;
+    for line in source.lines() {
+        if line == PROFILE_BLOCK_START {
+            inside = true;
+            continue;
+        }
+        if inside && line == PROFILE_BLOCK_END {
+            break;
+        }
+        if inside && line == expected {
+            return true;
+        }
+    }
+    false
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn ensure_superworkspace_purge_safe(root: &Path) -> Result<(), UninstallError> {
@@ -783,5 +845,43 @@ impl std::error::Error for UninstallError {
             Self::CommandStart { source, .. } | Self::Io { source, .. } => Some(source),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PROFILE_BLOCK_END, PROFILE_BLOCK_START, anchor_contents_target_installation,
+        managed_profile_block_targets,
+    };
+    use crate::VAPOR_HOME_ENV;
+    use std::path::Path;
+
+    #[test]
+    fn managed_profile_cleanup_matches_only_the_selected_installation() {
+        let primary = Path::new("/opt/vapor-primary");
+        let other = Path::new("/opt/vapor-other");
+        let profile = format!(
+            "{PROFILE_BLOCK_START}\nexport {VAPOR_HOME_ENV}='{}'\nexport PATH=\"${{{VAPOR_HOME_ENV}}}/bin/x86_64-unknown-linux-gnu:$PATH\"\n{PROFILE_BLOCK_END}\n",
+            primary.display()
+        );
+
+        assert!(managed_profile_block_targets(&profile, primary));
+        assert!(!managed_profile_block_targets(&profile, other));
+    }
+
+    #[test]
+    fn legacy_anchor_cleanup_matches_only_the_selected_installation() {
+        let primary = Path::new("/opt/vapor-primary");
+        let other = Path::new("/opt/vapor-other");
+
+        assert!(anchor_contents_target_installation(
+            " /opt/vapor-primary\n",
+            primary
+        ));
+        assert!(!anchor_contents_target_installation(
+            "/opt/vapor-primary\n",
+            other
+        ));
     }
 }

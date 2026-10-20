@@ -23,6 +23,7 @@ const STATE_DIR: &str = "state";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallationRootSource {
+    Explicit,
     Environment,
     Executable,
 }
@@ -30,6 +31,7 @@ pub enum InstallationRootSource {
 impl fmt::Display for InstallationRootSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::Explicit => "explicit app root",
             Self::Environment => VAPOR_HOME_ENV,
             Self::Executable => "executable root",
         })
@@ -43,6 +45,45 @@ pub struct VaporInstallation {
 }
 
 impl VaporInstallation {
+    /// Construct an installation context from a caller-selected app root.
+    ///
+    /// Use this when an operation receives an explicit installation target;
+    /// it keeps every downstream path calculation tied to that target instead
+    /// of rediscovering a potentially different root from process state.
+    pub fn from_explicit_root(root: PathBuf) -> Result<Self, InstallationError> {
+        let canonical_root = fs::canonicalize(&root).map_err(|source| InstallationError::Io {
+            path: root.clone(),
+            source,
+        })?;
+        if canonical_root.join("Vapor-Client.vapor.toml").is_file() {
+            return Err(InstallationError::InvalidExplicitRoot {
+                root: canonical_root,
+                reason: "this is an app source root, not an installed app root",
+            });
+        }
+        let manifest = canonical_root.join("App.vapor.toml");
+        if !manifest.is_file() {
+            return Err(InstallationError::InvalidExplicitRoot {
+                root: canonical_root,
+                reason: "App.vapor.toml is missing",
+            });
+        }
+        let source = fs::read_to_string(&manifest).map_err(|source| InstallationError::Io {
+            path: manifest.clone(),
+            source,
+        })?;
+        if !source.lines().any(|line| line.trim() == "[root]") {
+            return Err(InstallationError::InvalidExplicitRoot {
+                root: canonical_root,
+                reason: "App.vapor.toml does not declare [root]",
+            });
+        }
+        Ok(Self {
+            root: canonical_root,
+            root_source: InstallationRootSource::Explicit,
+        })
+    }
+
     /// Discover the active Vapor Installation.
     ///
     /// Resolution order:
@@ -250,6 +291,8 @@ pub enum InstallationError {
 
     NotFound { executable: PathBuf },
 
+    InvalidExplicitRoot { root: PathBuf, reason: &'static str },
+
     Io { path: PathBuf, source: io::Error },
 }
 
@@ -273,6 +316,12 @@ impl fmt::Display for InstallationError {
                 )
             }
 
+            Self::InvalidExplicitRoot { root, reason } => write!(
+                formatter,
+                "invalid explicit Vapor app root `{}`: {reason}",
+                root.display(),
+            ),
+
             Self::Io { path, source } => {
                 write!(
                     formatter,
@@ -290,6 +339,58 @@ impl std::error::Error for InstallationError {
             Self::CurrentExecutable(error) => Some(error),
             Self::Io { source, .. } => Some(source),
             Self::NotFound { .. } => None,
+            Self::InvalidExplicitRoot { .. } => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InstallationRootSource, VaporInstallation};
+
+    #[test]
+    fn explicit_installation_context_keeps_the_selected_root() {
+        let root = std::env::temp_dir().join(format!(
+            "vapor-explicit-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after UNIX epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create explicit app root");
+        std::fs::write(root.join("App.vapor.toml"), "[root]\n").expect("write app manifest");
+
+        let installation = VaporInstallation::from_explicit_root(root.clone())
+            .expect("construct explicit installation context");
+
+        assert_eq!(
+            installation.root,
+            std::fs::canonicalize(&root).expect("canonicalize root")
+        );
+        assert_eq!(installation.root_source, InstallationRootSource::Explicit);
+        std::fs::remove_dir_all(root).expect("remove test app root");
+    }
+
+    #[test]
+    fn explicit_installation_context_rejects_unmarked_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "vapor-unmarked-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after UNIX epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create unmarked directory");
+
+        let error = VaporInstallation::from_explicit_root(root.clone())
+            .expect_err("unmarked directory must not become an installation");
+
+        assert!(matches!(
+            error,
+            super::InstallationError::InvalidExplicitRoot { .. }
+        ));
+        std::fs::remove_dir_all(root).expect("remove test directory");
     }
 }

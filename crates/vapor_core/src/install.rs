@@ -28,17 +28,24 @@ pub struct InstallReport {
 
 pub fn install_installation() -> Result<InstallReport, InstallError> {
     let installation = VaporInstallation::discover().map_err(InstallError::Installation)?;
+    install_installation_for(&installation)
+}
+
+/// Install Vapor's machine integration for a specific app root.
+pub fn install_installation_for(
+    installation: &VaporInstallation,
+) -> Result<InstallReport, InstallError> {
     let user_data_root = installation.user_data_root();
 
     installation
         .ensure_state_root()
         .map_err(InstallError::Installation)?;
 
-    let superworkspace = ensure_canonical_superworkspace(&installation)?;
-    let integration = install_machine_integration(&installation)?;
+    let superworkspace = ensure_canonical_superworkspace(installation)?;
+    let integration = install_machine_integration(installation)?;
 
     Ok(InstallReport {
-        installation_root: installation.root,
+        installation_root: installation.root.clone(),
         user_data_root,
         superworkspace_root: superworkspace.root,
         integration,

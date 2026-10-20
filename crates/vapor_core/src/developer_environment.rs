@@ -46,7 +46,15 @@ impl DeveloperEnvironment {
     pub fn discover() -> Result<Self, DeveloperEnvironmentError> {
         let installation =
             VaporInstallation::discover().map_err(DeveloperEnvironmentError::Installation)?;
-        let rust = ManagedToolchain::discover().map_err(DeveloperEnvironmentError::Toolchain)?;
+        Self::discover_for_installation(&installation)
+    }
+
+    /// Discover developer tools for a specific Vapor Installation.
+    pub fn discover_for_installation(
+        installation: &VaporInstallation,
+    ) -> Result<Self, DeveloperEnvironmentError> {
+        let rust = ManagedToolchain::discover_for_installation(installation)
+            .map_err(DeveloperEnvironmentError::Toolchain)?;
         let tracy = ManagedTracyToolset::discover(&installation.user_data_root())
             .map_err(DeveloperEnvironmentError::Tracy)?;
         Ok(Self { rust, tracy })

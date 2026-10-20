@@ -77,14 +77,21 @@ impl ManagedToolchain {
     pub fn discover() -> Result<Self, ToolchainError> {
         let installation = VaporInstallation::discover().map_err(ToolchainError::Installation)?;
 
-        if let Some(pin) = read_installation_toolchain_metadata(&installation)? {
-            return Self::for_installation(&installation, installation.root.clone(), pin);
+        Self::discover_for_installation(&installation)
+    }
+
+    /// Discover the toolchain using a caller-selected installation root.
+    pub fn discover_for_installation(
+        installation: &VaporInstallation,
+    ) -> Result<Self, ToolchainError> {
+        if let Some(pin) = read_installation_toolchain_metadata(installation)? {
+            return Self::for_installation(installation, installation.root.clone(), pin);
         }
 
         let workspace = VaporWorkspace::discover().map_err(ToolchainError::Workspace)?;
 
         Self::for_installation(
-            &installation,
+            installation,
             workspace.root.clone(),
             workspace.manifest.toolchain.clone(),
         )
@@ -503,5 +510,50 @@ impl std::error::Error for ToolchainError {
 
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ManagedToolchain;
+    use crate::VaporInstallation;
+    use std::fs;
+
+    #[test]
+    fn selected_installation_supplies_the_toolchain_root() {
+        let root = std::env::temp_dir().join(format!(
+            "vapor-explicit-installation-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let metadata = root.join("metadata/toolchain.toml");
+        fs::create_dir_all(metadata.parent().expect("metadata parent"))
+            .expect("create installation metadata directory");
+        fs::write(
+            &metadata,
+            "schema = 1\nchannel = \"stable\"\nversion = \"1.97.0\"\ndate = \"2026-01-01\"\n",
+        )
+        .expect("write installation toolchain metadata");
+        fs::write(root.join("App.vapor.toml"), "[root]\n").expect("write app manifest");
+
+        let installation = VaporInstallation::from_explicit_root(root.clone())
+            .expect("construct explicit installation context");
+        let toolchain = ManagedToolchain::discover_for_installation(&installation)
+            .expect("discover toolchain for selected installation");
+
+        assert_eq!(toolchain.vapor_home, root);
+        assert_eq!(
+            toolchain.installation_source,
+            crate::InstallationRootSource::Explicit
+        );
+
+        fs::remove_dir_all(&installation.root).expect("remove test installation");
+    }
+
+    fn unique_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after UNIX epoch")
+            .as_nanos()
     }
 }

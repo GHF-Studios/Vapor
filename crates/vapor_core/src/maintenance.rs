@@ -85,12 +85,19 @@ pub struct MaintenanceRepairReport {
 /// merely by existing.
 pub fn diagnose_managed_state() -> Result<MaintenanceStatus, MaintenanceError> {
     let installation = VaporInstallation::discover().map_err(MaintenanceError::Installation)?;
+    diagnose_managed_state_for(&installation)
+}
 
-    let toolchain = ManagedToolchain::discover().map_err(MaintenanceError::Toolchain)?;
-    let role = installed_role(&installation).map_err(MaintenanceError::Role)?;
+/// Inspect managed state under a caller-selected Vapor Installation.
+pub fn diagnose_managed_state_for(
+    installation: &VaporInstallation,
+) -> Result<MaintenanceStatus, MaintenanceError> {
+    let toolchain = ManagedToolchain::discover_for_installation(installation)
+        .map_err(MaintenanceError::Toolchain)?;
+    let role = installed_role(installation).map_err(MaintenanceError::Role)?;
     let developer_environment = if role >= VaporRole::ContentDeveloper {
         Some(
-            DeveloperEnvironment::discover()
+            DeveloperEnvironment::discover_for_installation(installation)
                 .map_err(MaintenanceError::DeveloperEnvironment)?
                 .status(),
         )
@@ -99,7 +106,7 @@ pub fn diagnose_managed_state() -> Result<MaintenanceStatus, MaintenanceError> {
     };
 
     let source_context =
-        resolve_source_context(&installation, None).map_err(MaintenanceError::Source)?;
+        resolve_source_context(installation, None).map_err(MaintenanceError::Source)?;
 
     let superworkspace = optional_superworkspace(&source_context.root)?;
 
@@ -146,7 +153,7 @@ pub fn diagnose_managed_state() -> Result<MaintenanceStatus, MaintenanceError> {
     }
 
     Ok(MaintenanceStatus {
-        installation_root: installation.root,
+        installation_root: installation.root.clone(),
         installation_source: installation.root_source,
 
         toolchain_version: toolchain.pin.version.clone(),
@@ -179,12 +186,19 @@ pub fn diagnose_managed_state() -> Result<MaintenanceStatus, MaintenanceError> {
 /// found legacy or incompatible repositories.
 pub fn repair_managed_state() -> Result<MaintenanceRepairReport, MaintenanceError> {
     let installation = VaporInstallation::discover().map_err(MaintenanceError::Installation)?;
-    let role = installed_role(&installation).map_err(MaintenanceError::Role)?;
+    repair_managed_state_for(&installation)
+}
+
+/// Repair managed state under a caller-selected Vapor Installation.
+pub fn repair_managed_state_for(
+    installation: &VaporInstallation,
+) -> Result<MaintenanceRepairReport, MaintenanceError> {
+    let role = installed_role(installation).map_err(MaintenanceError::Role)?;
     let mut developer_environment_changed = false;
 
     if role >= VaporRole::ContentDeveloper {
-        let mut environment =
-            DeveloperEnvironment::discover().map_err(MaintenanceError::DeveloperEnvironment)?;
+        let mut environment = DeveloperEnvironment::discover_for_installation(installation)
+            .map_err(MaintenanceError::DeveloperEnvironment)?;
         let report = environment
             .reconcile()
             .map_err(MaintenanceError::DeveloperEnvironment)?;
@@ -192,11 +206,12 @@ pub fn repair_managed_state() -> Result<MaintenanceRepairReport, MaintenanceErro
     }
 
     let source_context =
-        resolve_source_context(&installation, None).map_err(MaintenanceError::Source)?;
+        resolve_source_context(installation, None).map_err(MaintenanceError::Source)?;
 
-    let development_changes = reconcile_existing_development_environment(&source_context.root)?;
+    let development_changes =
+        reconcile_existing_development_environment_for(installation, &source_context.root)?;
 
-    let status = diagnose_managed_state()?;
+    let status = diagnose_managed_state_for(installation)?;
 
     Ok(MaintenanceRepairReport {
         developer_environment_changed,
@@ -215,6 +230,15 @@ pub fn repair_managed_state() -> Result<MaintenanceRepairReport, MaintenanceErro
 pub fn reconcile_existing_development_environment(
     source_root: &Path,
 ) -> Result<Vec<PathBuf>, MaintenanceError> {
+    let installation = VaporInstallation::discover().map_err(MaintenanceError::Installation)?;
+    reconcile_existing_development_environment_for(&installation, source_root)
+}
+
+/// Reconcile source development integration using a selected Installation.
+pub fn reconcile_existing_development_environment_for(
+    installation: &VaporInstallation,
+    source_root: &Path,
+) -> Result<Vec<PathBuf>, MaintenanceError> {
     let Some(superworkspace) = optional_superworkspace(source_root)? else {
         return Ok(Vec::new());
     };
@@ -223,7 +247,8 @@ pub fn reconcile_existing_development_environment(
         return Ok(Vec::new());
     }
 
-    let toolchain = ManagedToolchain::discover().map_err(MaintenanceError::Toolchain)?;
+    let toolchain = ManagedToolchain::discover_for_installation(installation)
+        .map_err(MaintenanceError::Toolchain)?;
 
     if !toolchain.is_installed() {
         return Ok(Vec::new());

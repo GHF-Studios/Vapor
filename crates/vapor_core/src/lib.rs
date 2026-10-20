@@ -85,6 +85,7 @@ pub use host::{
 
 pub use install::{
     InstallError, InstallReport, ensure_canonical_superworkspace, install_installation,
+    install_installation_for,
 };
 
 pub use installation::{
@@ -98,7 +99,8 @@ pub use local::{
 
 pub use maintenance::{
     MaintenanceError, MaintenanceIssue, MaintenanceRepairReport, MaintenanceStatus,
-    diagnose_managed_state, reconcile_existing_development_environment, repair_managed_state,
+    diagnose_managed_state, diagnose_managed_state_for, reconcile_existing_development_environment,
+    reconcile_existing_development_environment_for, repair_managed_state, repair_managed_state_for,
 };
 
 pub use managed_tool::{
@@ -161,7 +163,10 @@ pub use toolchain::{ManagedToolchain, ToolchainError};
 
 pub use tracy::{ManagedTracyRepair, ManagedTracyToolset, TRACY_PROFILER_VERSION, TracyError};
 
-pub use uninstall::{UninstallError, UninstallOptions, UninstallReport, uninstall_installation};
+pub use uninstall::{
+    UninstallError, UninstallOptions, UninstallReport, uninstall_installation,
+    uninstall_installation_for,
+};
 
 pub use workspace::{
     RunConfiguration, RunConfigurationError, RunConfigurationSpec, ToolchainPin, VaporProject,
