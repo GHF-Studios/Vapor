@@ -709,7 +709,11 @@ impl Drop for TemporaryDirectory {
 
 #[cfg(test)]
 mod target_tests {
-    use super::RuntimeTarget;
+    use super::{RuntimeTarget, TemporaryDirectory};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn explicit_host_target_uses_default_build_output_layout() {
@@ -719,5 +723,28 @@ mod target_tests {
             .remove(0);
         assert!(!target.explicit);
         assert_eq!(target.triple(), host);
+    }
+
+    #[test]
+    fn temporary_package_staging_stays_under_the_selected_output_root() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_nanos();
+        let output_root = std::env::temp_dir().join(format!(
+            "vapor-provider-output-test-{}-{stamp}",
+            std::process::id()
+        ));
+        let staging = TemporaryDirectory::new(&output_root, "package-review", "org.game")
+            .expect("temporary package directory is created");
+        let staging_path = staging.path().to_path_buf();
+
+        assert!(staging_path.starts_with(&output_root));
+        assert!(staging_path.is_dir());
+
+        drop(staging);
+
+        assert!(!staging_path.exists());
+        fs::remove_dir(output_root).expect("empty output root is removed");
     }
 }
