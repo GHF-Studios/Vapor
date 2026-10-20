@@ -417,7 +417,15 @@ fn binary_suffix(target: &str) -> &'static str {
 
 fn library_file_names(stem: &str, target: &str) -> Vec<String> {
     if target.contains("windows") {
-        vec![format!("{stem}.dll"), format!("{stem}.lib")]
+        let mut names = vec![format!("{stem}.dll"), format!("{stem}.lib")];
+        if target.contains("windows-gnu") {
+            names.extend([
+                format!("lib{stem}.dll.a"),
+                format!("lib{stem}.a"),
+                format!("lib{stem}.rlib"),
+            ]);
+        }
+        names
     } else if target.contains("darwin") || target.contains("apple") {
         vec![format!("lib{stem}.dylib"), format!("lib{stem}.rlib")]
     } else {
@@ -709,7 +717,7 @@ impl Drop for TemporaryDirectory {
 
 #[cfg(test)]
 mod target_tests {
-    use super::{RuntimeTarget, TemporaryDirectory};
+    use super::{RuntimeTarget, TemporaryDirectory, library_file_names};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -723,6 +731,24 @@ mod target_tests {
             .remove(0);
         assert!(!target.explicit);
         assert_eq!(target.triple(), host);
+    }
+
+    #[test]
+    fn windows_gnu_crates_resolve_static_archives_and_import_libraries() {
+        assert_eq!(
+            library_file_names("wheel_core", "x86_64-pc-windows-gnullvm"),
+            [
+                "wheel_core.dll",
+                "wheel_core.lib",
+                "libwheel_core.dll.a",
+                "libwheel_core.a",
+                "libwheel_core.rlib",
+            ]
+        );
+        assert_eq!(
+            library_file_names("wheel_core", "x86_64-pc-windows-msvc"),
+            ["wheel_core.dll", "wheel_core.lib"]
+        );
     }
 
     #[test]
