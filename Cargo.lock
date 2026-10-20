@@ -3989,6 +3989,7 @@ dependencies = [
 name = "vapor_client_provider"
 version = "0.5.0"
 dependencies = [
+ "reqwest",
  "semver",
  "serde",
  "toml",

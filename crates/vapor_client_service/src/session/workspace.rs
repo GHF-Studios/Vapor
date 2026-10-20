@@ -121,6 +121,7 @@ impl ClientSession {
             }
             WorkspaceAction::Validate => WorkspaceOperationKind::Validate,
             WorkspaceAction::BuildDocumentation => WorkspaceOperationKind::BuildDocumentation,
+            WorkspaceAction::PublishDocumentation => WorkspaceOperationKind::PublishDocumentation,
             WorkspaceAction::RunTool {
                 operation,
                 project_selection,
@@ -280,6 +281,7 @@ impl ClientSession {
                     WorkspaceOperationKind::RunConfiguration { .. }
                         | WorkspaceOperationKind::DeployApplication { .. }
                         | WorkspaceOperationKind::PackageApplication { .. }
+                        | WorkspaceOperationKind::PublishDocumentation
                 )
         };
         let mut result = completion.result;
@@ -397,6 +399,9 @@ impl ClientSession {
                     }
                     WorkspaceOperationKind::BuildDocumentation => {
                         "Workspace documentation build completed.".to_owned()
+                    }
+                    WorkspaceOperationKind::PublishDocumentation => {
+                        "Workspace documentation published.".to_owned()
                     }
                     WorkspaceOperationKind::RunTool(operation, _, _) => format!(
                         "Workspace {} completed.",
@@ -556,6 +561,7 @@ fn workspace_operation_action_id(kind: &WorkspaceOperationKind) -> &'static str 
         WorkspaceOperationKind::CreateFile(_) => "workspace.create-file",
         WorkspaceOperationKind::Validate => "workspace.validate",
         WorkspaceOperationKind::BuildDocumentation => "workspace.build-documentation",
+        WorkspaceOperationKind::PublishDocumentation => "workspace.publish-documentation",
         WorkspaceOperationKind::RunTool(WorkspaceToolOperation::Format, _, _) => "workspace.fmt",
         WorkspaceOperationKind::RunTool(WorkspaceToolOperation::Check, _, _) => "workspace.check",
         WorkspaceOperationKind::RunTool(WorkspaceToolOperation::Test, _, _) => "workspace.test",
@@ -589,6 +595,7 @@ fn workspace_operation_phase(kind: &WorkspaceOperationKind) -> OperationPhase {
         WorkspaceOperationKind::RunTool(..)
         | WorkspaceOperationKind::BuildDocumentation
         | WorkspaceOperationKind::Clean => OperationPhase::Building,
+        WorkspaceOperationKind::PublishDocumentation => OperationPhase::Publishing,
         WorkspaceOperationKind::RunConfiguration { .. } => OperationPhase::Running,
         WorkspaceOperationKind::DeployApplication { .. } => OperationPhase::Staging,
         WorkspaceOperationKind::PackageApplication { .. } => OperationPhase::Building,
@@ -698,6 +705,10 @@ fn execute_workspace_operation(
         }
         WorkspaceOperationKind::BuildDocumentation => {
             vapor_client_application::build_documentation_with_context(executable, root, &context)
+                .map(WorkspaceOperationResult::CompletedWithSummary)
+        }
+        WorkspaceOperationKind::PublishDocumentation => {
+            vapor_client_application::publish_documentation_with_context(executable, root, &context)
                 .map(WorkspaceOperationResult::CompletedWithSummary)
         }
         WorkspaceOperationKind::RunTool(operation, project_selection, target_triples) => {

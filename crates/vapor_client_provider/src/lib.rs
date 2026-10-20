@@ -22,6 +22,8 @@ pub mod content;
 pub mod discovery;
 /// App distribution staging and SteamPipe publishing.
 pub mod distribution;
+/// Publishing the curated product documentation site.
+pub mod docs_publish;
 /// Building and installing Rustdoc.
 pub mod documentation;
 /// Role-specific Vapor manifest parsing.

@@ -348,7 +348,7 @@ impl RuntimeTarget {
                 validate_runtime_target(target)?;
                 Ok(Self {
                     triple: target.to_owned(),
-                    explicit: true,
+                    explicit: target != host_runtime_target(),
                 })
             }
             None => Ok(Self::host()),
@@ -700,5 +700,20 @@ impl TemporaryDirectory {
 impl Drop for TemporaryDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::RuntimeTarget;
+
+    #[test]
+    fn explicit_host_target_uses_default_build_output_layout() {
+        let host = crate::host_runtime_target();
+        let target = RuntimeTarget::many(std::slice::from_ref(&host))
+            .expect("valid host target")
+            .remove(0);
+        assert!(!target.explicit);
+        assert_eq!(target.triple(), host);
     }
 }

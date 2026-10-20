@@ -190,6 +190,14 @@ impl BuildStep {
     }
 }
 
+fn cargo_target_args(target: &str) -> Vec<&str> {
+    if target == host_runtime_target() {
+        Vec::new()
+    } else {
+        vec!["--target", target]
+    }
+}
+
 fn run_step(
     paths: &EnvironmentPaths,
     toolchain: &ManagedToolchain,
@@ -233,9 +241,9 @@ fn run_step(
         .env_remove("RUSTC_WRAPPER");
     if matches!(step, BuildStep::Fmt) {
         command.args(["--", "--check"]);
-    } else {
+    } else if target != host_runtime_target() {
         cross_toolchain::configure_linker_env(&mut command, installation.root(), target)?;
-        command.args(["--target", target]);
+        command.args(cargo_target_args(target));
     }
     if matches!(step, BuildStep::Clippy) {
         command.args(["--", "-D", "warnings"]);
@@ -272,11 +280,7 @@ fn promote_release_outputs(
     let mut promoted = 0;
     for project in projects {
         for target in runtime_targets {
-            let output_root = installation
-                .join("output/release")
-                .join(project.name())
-                .join(target)
-                .join("release");
+            let output_root = release_output_root(installation, project.name(), target);
             for binary in project.binaries() {
                 let name = if target.contains("windows") && !binary.ends_with(".exe") {
                     format!("{binary}.exe")
@@ -320,6 +324,15 @@ fn promote_release_outputs(
         }
     }
     Ok(promoted)
+}
+
+fn release_output_root(installation: &Path, project: &str, target: &str) -> PathBuf {
+    let root = installation.join("output/release").join(project);
+    if target == host_runtime_target() {
+        root.join("release")
+    } else {
+        root.join(target).join("release")
+    }
 }
 
 fn promote_file(source: &Path, destination: &Path) -> Result<(), String> {
@@ -409,4 +422,38 @@ fn is_raw_app_tool_path(root: &Path, entry: &Path) -> bool {
 
 fn executable(name: &str) -> String {
     format!("{name}{}", env::consts::EXE_SUFFIX)
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::{cargo_target_args, release_output_root};
+    use std::path::Path;
+
+    #[test]
+    fn release_build_omits_the_target_flag_for_the_host_triple() {
+        let host = crate::host_runtime_target();
+        assert!(cargo_target_args(&host).is_empty());
+    }
+
+    #[test]
+    fn release_build_keeps_foreign_target_selection() {
+        assert_eq!(
+            cargo_target_args("x86_64-pc-windows-gnullvm"),
+            ["--target", "x86_64-pc-windows-gnullvm"]
+        );
+    }
+
+    #[test]
+    fn release_promotion_uses_default_layout_for_host_and_triple_layout_for_cross_target() {
+        let installation = Path::new("/vapor");
+        let host = crate::host_runtime_target();
+        assert_eq!(
+            release_output_root(installation, "vapor", &host),
+            Path::new("/vapor/output/release/vapor/release")
+        );
+        assert_eq!(
+            release_output_root(installation, "vapor", "x86_64-pc-windows-gnullvm"),
+            Path::new("/vapor/output/release/vapor/x86_64-pc-windows-gnullvm/release")
+        );
+    }
 }

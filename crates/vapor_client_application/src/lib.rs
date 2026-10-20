@@ -34,6 +34,7 @@ pub use content::{
 };
 pub use deployment::{deploy_application_with_context, package_application_with_context};
 pub use documentation::build_documentation_with_context;
+pub use documentation::publish_documentation_with_context;
 pub use operation::{
     CoreOperationEvent, CoreOperationRequest, OperationCancellation, OperationContext,
     OperationEvent, OperationEventSink, OperationId, OperationKind, OperationOutput,

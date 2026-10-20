@@ -1,7 +1,7 @@
 use crate::{ClientAction, ClientEvent, ClientRevision, ClientSnapshot, LegacyStorageSeed};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 26;
+pub const PROTOCOL_VERSION: u16 = 27;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

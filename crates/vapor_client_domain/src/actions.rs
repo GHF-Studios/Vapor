@@ -67,6 +67,7 @@ pub enum WorkspaceAction {
     },
     Validate,
     BuildDocumentation,
+    PublishDocumentation,
     RunTool {
         operation: WorkspaceToolOperation,
         #[serde(default)]
@@ -412,6 +413,7 @@ impl ClientAction {
                 WorkspaceAction::Open { .. } => "workspace.open",
                 WorkspaceAction::Validate => "workspace.validate",
                 WorkspaceAction::BuildDocumentation => "workspace.build-documentation",
+                WorkspaceAction::PublishDocumentation => "workspace.publish-documentation",
                 WorkspaceAction::RunTool { operation, .. } => match operation {
                     WorkspaceToolOperation::Format => "workspace.fmt",
                     WorkspaceToolOperation::Check => "workspace.check",

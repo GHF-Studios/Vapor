@@ -325,6 +325,7 @@ enum WorkspaceOperationKind {
     CreateFile(PathBuf),
     Validate,
     BuildDocumentation,
+    PublishDocumentation,
     RunTool(
         WorkspaceToolOperation,
         WorkspaceProjectSelection,
@@ -813,6 +814,7 @@ impl ClientSession {
                     | WorkspaceAction::CreateFile { .. }
                     | WorkspaceAction::Validate
                     | WorkspaceAction::BuildDocumentation
+                    | WorkspaceAction::PublishDocumentation
                     | WorkspaceAction::RunTool { .. }
                     | WorkspaceAction::RunConfiguration { .. }
                     | WorkspaceAction::DeployApplication { .. }

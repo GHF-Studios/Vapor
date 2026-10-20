@@ -287,6 +287,7 @@ fn cargo_args(step: CargoStep, target: Option<&str>) -> Vec<String> {
     .collect::<Vec<_>>();
     if !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
         && let Some(target) = target
+        && target != host_runtime_target()
     {
         args.extend(["--target".to_owned(), target.to_owned()]);
     }
@@ -373,6 +374,7 @@ fn run_step(
         .env_remove("RUSTC_WRAPPER");
     if !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
         && let Some(target) = target
+        && target != host_runtime_target()
     {
         cross_toolchain::configure_linker_env(&mut command, installation, target)?;
     }
@@ -532,6 +534,13 @@ mod tests {
             cargo_args(CargoStep::Build, None),
             ["build", "--workspace", "--locked"]
         );
+    }
+
+    #[test]
+    fn explicitly_selected_host_target_reuses_cargo_default_output() {
+        let host = super::host_runtime_target();
+        let args = cargo_args(CargoStep::Build, Some(&host));
+        assert!(!args.iter().any(|argument| argument == "--target"));
     }
 
     #[test]

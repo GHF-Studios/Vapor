@@ -189,6 +189,7 @@ mod tests {
             ClientAction::Workspace(WorkspaceAction::Open { root: ".".into() }),
             ClientAction::Workspace(WorkspaceAction::Validate),
             ClientAction::Workspace(WorkspaceAction::BuildDocumentation),
+            ClientAction::Workspace(WorkspaceAction::PublishDocumentation),
             ClientAction::Workspace(WorkspaceAction::RunTool {
                 operation: vapor_client_domain::WorkspaceToolOperation::Build,
                 project_selection: vapor_client_domain::WorkspaceProjectSelection::Installable,
@@ -386,7 +387,7 @@ mod tests {
         ];
         assert_eq!(
             actions.len(),
-            89,
+            90,
             "update this catalog when adding/removing action variants"
         );
         for action in actions {

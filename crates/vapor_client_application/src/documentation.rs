@@ -25,3 +25,18 @@ pub fn build_documentation_with_context(
     }
     Ok(format!("Documentation built at {}.", output.display()))
 }
+
+/// Build the product docs and publish the curated public site through Vapor Docs.
+pub fn publish_documentation_with_context(
+    application_executable: &Path,
+    workspace_root: &Path,
+    context: &vapor_core::OperationContext,
+) -> Result<String, String> {
+    if context.is_cancelled() {
+        return Err("documentation publication was cancelled before it started".to_owned());
+    }
+    let installation = InstallationPaths::from_application_executable(application_executable)?;
+    let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
+    context.set_phase(vapor_core::OperationPhase::Publishing);
+    vapor_client_provider::docs_publish::publish(&paths)
+}

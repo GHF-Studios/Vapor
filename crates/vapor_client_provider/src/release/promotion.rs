@@ -147,9 +147,10 @@ impl RuntimeTarget {
                 if !seen.insert(target.clone()) {
                     return Err(format!("duplicate runtime target: {target}"));
                 }
+                let explicit = target != &host_runtime_target();
                 Ok(Self {
                     triple: target.clone(),
-                    explicit: true,
+                    explicit,
                 })
             })
             .collect()
@@ -235,6 +236,17 @@ mod tests {
         assert_eq!(
             target.build_output_root(installation, "vapor", "release"),
             Path::new("/vapor/output/release/vapor/x86_64-unknown-linux-gnu/release")
+        );
+    }
+
+    #[test]
+    fn explicit_host_target_uses_the_default_cargo_artifact_root() {
+        let target = RuntimeTarget::many(&[crate::host_runtime_target()])
+            .expect("host target")
+            .remove(0);
+        assert_eq!(
+            target.build_output_root(Path::new("/vapor"), "vapor", "dev"),
+            Path::new("/vapor/output/dev/vapor/debug")
         );
     }
 }
