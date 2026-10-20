@@ -88,7 +88,11 @@ pub(super) fn package_with_runtime_targets(
     let runtime_target_label = runtime_target_label(&runtime_targets);
 
     if dry_run {
-        let temporary_root = TemporaryDirectory::new("vapor-content-package", artifact.id())?;
+        let temporary_root = TemporaryDirectory::new(
+            layout.output_temporary(),
+            "vapor-content-package",
+            artifact.id(),
+        )?;
         stage_deployed_artifact(paths, temporary_root.path(), artifact, &runtime_targets)?;
         let fingerprint = fingerprint_tree(temporary_root.path())?;
         return Ok(PackageReport {
@@ -661,11 +665,11 @@ pub(super) struct TemporaryDirectory {
 }
 
 impl TemporaryDirectory {
-    pub(super) fn new(prefix: &str, artifact_id: &str) -> Result<Self, String> {
+    pub(super) fn new(base: &Path, prefix: &str, artifact_id: &str) -> Result<Self, String> {
+        fs::create_dir_all(base).map_err(io("create temporary staging root", base))?;
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
-        let base = std::env::temp_dir();
         for attempt in 0..16 {
             let path = base.join(format!(
                 "{}-{}-{}-{}-{}",

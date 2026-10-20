@@ -147,7 +147,12 @@ fn create_workshop_item_for_targets_checked(
     let package = package_for_targets(paths, artifact.id(), false, target_triples)?;
     let (upload_root, _reviewed_stage, package_fingerprint) =
         if let Some(expected) = expected_fingerprint {
-            let staged = TemporaryDirectory::new("vapor-workshop-reviewed", artifact.id())?;
+            let layout = ContentLayout::new(paths.installation());
+            let staged = TemporaryDirectory::new(
+                layout.output_temporary(),
+                "vapor-workshop-reviewed",
+                artifact.id(),
+            )?;
             copy_tree(package.root(), staged.path(), package.root(), &[])?;
             let fingerprint = fingerprint_tree(staged.path())?;
             let fingerprint = format!("{}:{}", fingerprint.algorithm(), fingerprint.hash());
@@ -560,7 +565,12 @@ fn publish_workshop_items_for_targets_checked(
             .iter()
             .find(|(reviewed_selector, _)| selector == reviewed_selector)
         {
-            let reviewed = TemporaryDirectory::new("vapor-workshop-reviewed", artifact.id())?;
+            let layout = ContentLayout::new(paths.installation());
+            let reviewed = TemporaryDirectory::new(
+                layout.output_temporary(),
+                "vapor-workshop-reviewed",
+                artifact.id(),
+            )?;
             copy_tree(package.root(), reviewed.path(), package.root(), &[])?;
             let fingerprint = fingerprint_tree(reviewed.path())?;
             let fingerprint = format!("{}:{}", fingerprint.algorithm(), fingerprint.hash());

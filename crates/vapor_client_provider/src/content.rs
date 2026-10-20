@@ -61,6 +61,7 @@ pub struct ContentLayout {
     disabled: PathBuf,
     quarantine: PathBuf,
     output_packages: PathBuf,
+    output_temporary: PathBuf,
     output_scripts: PathBuf,
     state: PathBuf,
     locks: PathBuf,
@@ -81,6 +82,7 @@ impl ContentLayout {
             disabled: app_content.join("disabled"),
             quarantine: app_content.join("quarantine"),
             output_packages: installation.root().join("output/content/packages"),
+            output_temporary: installation.root().join("output/content/temporary"),
             output_scripts: installation.root().join("output/content/scripts"),
             app_content,
             locks: state.join("locks"),
@@ -124,6 +126,11 @@ impl ContentLayout {
     /// Content package staging output.
     pub fn output_packages(&self) -> &Path {
         &self.output_packages
+    }
+
+    /// Temporary staging roots confined to the app-owned content output tree.
+    pub fn output_temporary(&self) -> &Path {
+        &self.output_temporary
     }
 
     /// Steam/Workshop script preview output.
