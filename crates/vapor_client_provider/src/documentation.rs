@@ -2,32 +2,17 @@
 
 use crate::{
     discovery::{EnvironmentPaths, ensure_contained},
-    release,
+    managed_cargo::ApplicationCargo,
     workspace::WorkspaceManifest,
 };
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 /// Build Rustdoc for every workspace declared by the source manifest.
 pub fn build(paths: &EnvironmentPaths, manifest: &WorkspaceManifest) -> Result<PathBuf, String> {
-    let cargo = paths
-        .installation()
-        .bundled_cargo()
-        .ok_or_else(|| "bundled Cargo is unavailable".to_owned())?;
-    let toolchain_bin = cargo
-        .parent()
-        .ok_or_else(|| format!("bundled Cargo has no parent directory: {}", cargo.display()))?;
-    let rustc = toolchain_bin.join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
-    let rustdoc = toolchain_bin.join(format!("rustdoc{}", std::env::consts::EXE_SUFFIX));
-    if !rustc.is_file() || !rustdoc.is_file() {
-        return Err(format!(
-            "bundled Cargo toolchain is incomplete: expected rustc and rustdoc beside {}",
-            cargo.display()
-        ));
-    }
+    let cargo = ApplicationCargo::discover(paths)?;
     let installation_root = paths.installation().root();
     let docs_root = installation_root.join("docs");
     ensure_contained(paths.installation().root(), &docs_root)?;
@@ -49,26 +34,10 @@ pub fn build(paths: &EnvironmentPaths, manifest: &WorkspaceManifest) -> Result<P
                 format!("failed to clear '{}': {error}", generated_docs.display())
             })?;
         }
-        let status = Command::new(&cargo)
+        let status = cargo
+            .command()
             .args(["doc", "--workspace", "--no-deps", "--manifest-path"])
             .arg(&cargo_manifest)
-            .env("VAPOR_HOME", paths.installation().root())
-            .env("CARGO_HOME", paths.installation().root().join("cargo-home"))
-            .env(
-                "RUSTUP_HOME",
-                paths.installation().root().join("rustup-home"),
-            )
-            .env("PATH", release::managed_path(paths, toolchain_bin)?)
-            .env(
-                "RUSTUP_TOOLCHAIN",
-                toolchain_bin
-                    .parent()
-                    .and_then(Path::file_name)
-                    .unwrap_or_default(),
-            )
-            .env("RUSTC", &rustc)
-            .env("RUSTDOC", &rustdoc)
-            .env_remove("RUSTC_WRAPPER")
             .env("CARGO_TARGET_DIR", &target)
             .current_dir(paths.source().root())
             .status()

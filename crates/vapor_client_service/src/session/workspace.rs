@@ -769,18 +769,19 @@ fn execute_workspace_operation(
             .map(WorkspaceOperationResult::CompletedWithSummary)
         }
         WorkspaceOperationKind::Clean => {
-            if !fixture_mode {
+            if fixture_mode {
+                vapor_core::run_workspace_operation_at_with_context(
+                    root,
+                    vapor_core::DevelopmentOperation::Clean,
+                    &context,
+                )
+                .map_err(|error| error.to_string())?;
+            } else {
                 vapor_client_application::clean_workspace_build_cache_with_context(
                     executable, root, &context,
                 )?;
             }
-            vapor_core::run_workspace_operation_at_with_context(
-                root,
-                vapor_core::DevelopmentOperation::Clean,
-                &context,
-            )
-            .map(|_| WorkspaceOperationResult::Completed)
-            .map_err(|error| error.to_string())
+            Ok(WorkspaceOperationResult::Completed)
         }
         WorkspaceOperationKind::Remember => vapor_client_application::remember_workspace(root)
             .map(WorkspaceOperationResult::Remembered),

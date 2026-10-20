@@ -10,7 +10,7 @@ use vapor_client_provider::{
     distribution::{DistributionManifest, StageOptions},
     documentation,
     steam::{self, PublishOptions},
-    workspace::WorkspaceManifest,
+    workspace::{SourceRootKind, WorkspaceManifest},
 };
 
 pub const MAX_WORKSHOP_REVIEW_BATCH: usize = 32;
@@ -253,6 +253,7 @@ pub fn clean_workspace_build_cache_with_context(
     context: &vapor_core::OperationContext,
 ) -> Result<(), String> {
     let paths = workspace_tool_environment(application_executable, workspace_root)?;
+    let manifest = WorkspaceManifest::load(&paths)?;
     vapor_client_provider::workspace_build::clean_development_cache(
         &paths,
         || context.is_cancelled(),
@@ -264,7 +265,48 @@ pub fn clean_workspace_build_cache_with_context(
                 message: Some(format!("Cleared development build output for {project}")),
             });
         },
-    )
+    )?;
+
+    // The installed app-root dev outputs and the authoring user-data targets
+    // are separate caches. Derive the latter only from this source root's
+    // validated Cargo manifest entries, never from every workspace in the
+    // surrounding Superworkspace.
+    let workspace_roots = match manifest.kind() {
+        SourceRootKind::Root => manifest
+            .cargo_projects()
+            .iter()
+            .map(|project| {
+                paths
+                    .source()
+                    .root()
+                    .join(project.manifest())
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .ok_or_else(|| {
+                        format!(
+                            "Cargo manifest '{}' has no workspace directory",
+                            project.manifest().display()
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        SourceRootKind::Workspace => vec![paths.source().root().to_path_buf()],
+    };
+    if workspace_roots.is_empty() {
+        return Err(format!(
+            "source root '{}' has no Cargo workspaces to clean",
+            manifest.id()
+        ));
+    }
+    for root in workspace_roots {
+        vapor_core::run_workspace_operation_at_with_context(
+            &root,
+            vapor_core::DevelopmentOperation::Clean,
+            context,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn workspace_tool_build_mode(operation: vapor_client_domain::WorkspaceToolOperation) -> BuildMode {

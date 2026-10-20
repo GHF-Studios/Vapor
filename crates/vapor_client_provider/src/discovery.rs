@@ -19,6 +19,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
 };
+use vapor_core::{ManagedToolchain, VaporInstallation};
 
 /// Conventional installation directory containing runtime libraries.
 pub const LIBRARY_DIR: &str = "lib";
@@ -244,7 +245,7 @@ impl InstallationPaths {
         let identity_id = require_installation_marker(&marker, &root)?;
 
         let libraries = optional_directory(&root, LIBRARY_DIR)?;
-        let cargo = bundled_cargo_candidates(&root)
+        let cargo = bundled_cargo_candidates(&root)?
             .into_iter()
             .find(|candidate| candidate.is_file());
 
@@ -295,9 +296,13 @@ impl InstallationPaths {
 
     /// Rescan the installation for Cargo after script-managed tools change.
     pub fn bundled_cargo(&self) -> Option<PathBuf> {
+        self.try_bundled_cargo().ok().flatten()
+    }
+
+    /// Rescan the app instance for Cargo and report an invalid installed pin.
+    pub fn try_bundled_cargo(&self) -> Result<Option<PathBuf>, String> {
         bundled_cargo_candidates(&self.root)
-            .into_iter()
-            .find(|candidate| candidate.is_file())
+            .map(|candidates| candidates.into_iter().find(|candidate| candidate.is_file()))
     }
 
     /// Stable identity declared by the installation marker.
@@ -559,10 +564,13 @@ fn optional_directory(root: &Path, name: &str) -> Result<Option<PathBuf>, String
     Ok(Some(canonical))
 }
 
-fn bundled_cargo_candidates(root: &Path) -> Vec<PathBuf> {
+fn bundled_cargo_candidates(root: &Path) -> Result<Vec<PathBuf>, String> {
     let executable = format!("cargo{}", env::consts::EXE_SUFFIX);
     let toolchains_root = root.join("rustup-home").join("toolchains");
-    let selected_toolchain = env::var_os("RUSTUP_TOOLCHAIN");
+    let installation = VaporInstallation::from_explicit_root(root.to_path_buf())
+        .map_err(|error| error.to_string())?;
+    let pin =
+        ManagedToolchain::installation_pin(&installation).map_err(|error| error.to_string())?;
     let mut toolchains = fs::read_dir(&toolchains_root)
         .into_iter()
         .flatten()
@@ -570,20 +578,23 @@ fn bundled_cargo_candidates(root: &Path) -> Vec<PathBuf> {
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .collect::<Vec<_>>();
 
+    if let Some(pin) = pin {
+        let prefix = format!("{}-", pin.identifier());
+        return Ok(toolchains
+            .into_iter()
+            .filter(|entry| {
+                let name = entry.file_name();
+                name == pin.identifier() || name.to_string_lossy().starts_with(&prefix)
+            })
+            .map(|entry| entry.path().join("bin").join(&executable))
+            .collect());
+    }
+
     toolchains.sort_by(|left, right| {
         let left_name = left.file_name().to_string_lossy().into_owned();
         let right_name = right.file_name().to_string_lossy().into_owned();
-        let left_selected = selected_toolchain
-            .as_deref()
-            .is_some_and(|value| left_name.starts_with(value.to_string_lossy().as_ref()));
-        let right_selected = selected_toolchain
-            .as_deref()
-            .is_some_and(|value| right_name.starts_with(value.to_string_lossy().as_ref()));
-        right_selected
-            .cmp(&left_selected)
-            .then_with(|| {
-                toolchain_version_key(&right_name).cmp(&toolchain_version_key(&left_name))
-            })
+        toolchain_version_key(&right_name)
+            .cmp(&toolchain_version_key(&left_name))
             .then_with(|| right_name.cmp(&left_name))
     });
 
@@ -593,7 +604,7 @@ fn bundled_cargo_candidates(root: &Path) -> Vec<PathBuf> {
         .collect::<Vec<_>>();
     candidates.push(root.join("cargo-home").join("bin").join(&executable));
     candidates.push(root.join("bin").join(executable));
-    candidates
+    Ok(candidates)
 }
 
 fn toolchain_version_key(name: &str) -> Vec<u32> {
@@ -603,4 +614,52 @@ fn toolchain_version_key(name: &str) -> Vec<u32> {
         .split('.')
         .map(|part| part.parse::<u32>().unwrap_or(0))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bundled_cargo_candidates;
+    use std::{env, fs, path::Path};
+
+    #[test]
+    fn installed_toolchain_metadata_selects_exact_cargo_independent_of_ambient_override() {
+        let root = env::temp_dir().join(format!(
+            "vapor-pinned-cargo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after epoch")
+                .as_nanos()
+        ));
+        let toolchains = root.join("rustup-home/toolchains");
+        let pinned = toolchains.join("1.97.0-x86_64-unknown-linux-gnu/bin/cargo");
+        let ambient = toolchains.join("1.83.0-x86_64-unknown-linux-gnu/bin/cargo");
+        fs::create_dir_all(pinned.parent().expect("pinned cargo parent"))
+            .expect("create pinned toolchain");
+        fs::create_dir_all(ambient.parent().expect("ambient cargo parent"))
+            .expect("create other toolchain");
+        fs::write(&pinned, "").expect("write pinned cargo marker");
+        fs::write(&ambient, "").expect("write other cargo marker");
+        let metadata = root.join("metadata/toolchain.toml");
+        fs::create_dir_all(metadata.parent().expect("metadata parent"))
+            .expect("create metadata directory");
+        fs::write(
+            &metadata,
+            "schema = 1\nchannel = \"stable\"\nversion = \"1.97.0\"\ndate = \"2026-07-09\"\n",
+        )
+        .expect("write installed pin");
+        fs::write(root.join("App.vapor.toml"), "[root]\n").expect("write app installation marker");
+
+        let candidates = bundled_cargo_candidates(&root).expect("discover bundled Cargo");
+
+        assert_eq!(candidates.first(), Some(&pinned));
+        assert!(!candidates.iter().any(|candidate| candidate == &ambient));
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.starts_with(Path::new(&root)))
+        );
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
 }

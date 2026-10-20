@@ -6,16 +6,14 @@ pub mod promotion;
 use crate::{
     cross_toolchain,
     discovery::{EnvironmentPaths, ensure_contained},
+    managed_cargo::ApplicationCargo,
     process_output,
     target::host_runtime_target,
     workspace::{CargoProject, WorkspaceManifest},
 };
 use std::{
-    env,
-    ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 use vapor_core::OperationOutputStream;
 
@@ -78,34 +76,7 @@ pub fn build_application_release_with_events(
         ));
     }
 
-    let cargo = paths
-        .installation()
-        .bundled_cargo()
-        .ok_or_else(|| "Steam installation has no bundled Cargo executable".to_owned())?;
-    let toolchain_bin = cargo
-        .parent()
-        .ok_or_else(|| format!("bundled Cargo has no parent: {}", cargo.display()))?;
-    let rustc = toolchain_bin.join(executable("rustc"));
-    let rustdoc = toolchain_bin.join(executable("rustdoc"));
-    if !rustc.is_file() || !rustdoc.is_file() {
-        return Err(format!(
-            "bundled Cargo toolchain is incomplete beside {}",
-            cargo.display()
-        ));
-    }
-    let toolchain = toolchain_bin
-        .parent()
-        .and_then(Path::file_name)
-        .ok_or_else(|| "bundled Rust toolchain has no stable directory name".to_owned())?
-        .to_string_lossy()
-        .into_owned();
-    let toolchain = ManagedToolchain {
-        rustc,
-        rustdoc,
-        name: toolchain,
-        path: managed_path(paths, toolchain_bin)?,
-        cargo,
-    };
+    let toolchain = ApplicationCargo::discover(paths)?;
 
     const STEPS: [BuildStep; 6] = [
         BuildStep::Fmt,
@@ -136,14 +107,6 @@ pub fn build_application_release_with_events(
         projects: projects.len(),
         promoted_files,
     })
-}
-
-struct ManagedToolchain {
-    cargo: PathBuf,
-    rustc: PathBuf,
-    rustdoc: PathBuf,
-    name: String,
-    path: OsString,
 }
 
 #[derive(Clone, Copy)]
@@ -200,7 +163,7 @@ fn cargo_target_args(target: &str) -> Vec<&str> {
 
 fn run_step(
     paths: &EnvironmentPaths,
-    toolchain: &ManagedToolchain,
+    toolchain: &ApplicationCargo,
     project: &CargoProject,
     target: &str,
     step: BuildStep,
@@ -224,21 +187,13 @@ fn run_step(
         .join("output")
         .join(output_profile)
         .join(project.name());
-    let mut command = Command::new(&toolchain.cargo);
+    let mut command = toolchain.command();
     command
         .args(step.cargo_args(target))
         .arg("--manifest-path")
         .arg(&source_manifest)
         .current_dir(working_directory)
-        .env("VAPOR_HOME", installation.root())
-        .env("CARGO_HOME", installation.root().join("cargo-home"))
-        .env("RUSTUP_HOME", installation.root().join("rustup-home"))
-        .env("RUSTUP_TOOLCHAIN", &toolchain.name)
-        .env("RUSTC", &toolchain.rustc)
-        .env("RUSTDOC", &toolchain.rustdoc)
-        .env("CARGO_TARGET_DIR", target_directory)
-        .env("PATH", &toolchain.path)
-        .env_remove("RUSTC_WRAPPER");
+        .env("CARGO_TARGET_DIR", target_directory);
     if matches!(step, BuildStep::Fmt) {
         command.args(["--", "--check"]);
     } else if target != host_runtime_target() {
@@ -385,43 +340,6 @@ fn promote_file(source: &Path, destination: &Path) -> Result<(), String> {
         })?;
     }
     Ok(())
-}
-
-pub(crate) fn managed_path(
-    paths: &EnvironmentPaths,
-    toolchain_bin: &Path,
-) -> Result<std::ffi::OsString, String> {
-    let mut entries = vec![
-        toolchain_bin.to_path_buf(),
-        paths.installation().binaries().to_path_buf(),
-        paths.installation().root().join("bin"),
-    ];
-    if let Some(existing) = env::var_os("PATH") {
-        entries.extend(
-            env::split_paths(&existing)
-                .filter(|entry| !is_raw_app_tool_path(paths.installation().root(), entry)),
-        );
-    }
-    env::join_paths(entries).map_err(|error| format!("failed to construct managed PATH: {error}"))
-}
-
-fn is_raw_app_tool_path(root: &Path, entry: &Path) -> bool {
-    [
-        root.join("cargo-home/bin"),
-        root.join("rustup/bin"),
-        root.join("tools/steamcmd"),
-        root.join("tools/zig"),
-        root.join("tools/cross/bin"),
-        root.join("tools/llvm-mingw/bin"),
-    ]
-    .iter()
-    .any(|raw_path| entry == raw_path)
-        || (entry.starts_with(root.join("rustup-home/toolchains"))
-            && entry.file_name().is_some_and(|name| name == "bin"))
-}
-
-fn executable(name: &str) -> String {
-    format!("{name}{}", env::consts::EXE_SUFFIX)
 }
 
 #[cfg(test)]

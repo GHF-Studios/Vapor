@@ -9,6 +9,8 @@
 
 /// App-local cross-compilation tool inspection and Cargo environment setup.
 pub mod cross_toolchain;
+/// Commands using the Rust toolchain bundled with the selected Vapor app.
+pub mod managed_cargo;
 mod process_output;
 mod source;
 mod target;

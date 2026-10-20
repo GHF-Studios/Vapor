@@ -3,12 +3,12 @@
 use crate::{
     cross_toolchain,
     discovery::EnvironmentPaths,
+    managed_cargo::ApplicationCargo,
     process_output,
-    release::managed_path,
     target::{host_runtime_target, validate_runtime_target},
     workspace::{CargoProject, WorkspaceManifest},
 };
-use std::{env, fs, path::Path, process::Command};
+use std::{fs, path::Path};
 use vapor_client_domain::WorkspaceProjectSelection;
 use vapor_core::OperationOutputStream;
 
@@ -162,6 +162,7 @@ pub fn run_selected_with_events_cancellable(
         BuildMode::Validate => validation_steps().to_vec(),
         BuildMode::ValidateAndBuild => validation_steps_with_build().to_vec(),
     };
+    let cargo = ApplicationCargo::discover(paths)?;
     run_plan_steps(
         projects.len(),
         targets.len(),
@@ -174,6 +175,7 @@ pub fn run_selected_with_events_cancellable(
             let step = steps[step];
             run_step(
                 paths,
+                &cargo,
                 project,
                 step,
                 targets[target],
@@ -388,33 +390,13 @@ fn cargo_invocation_args(
 
 fn run_step(
     paths: &EnvironmentPaths,
+    cargo: &ApplicationCargo,
     project: &CargoProject,
     step: CargoStep,
     target: Option<&str>,
     is_cancelled: &mut impl FnMut() -> bool,
     report_output: &mut impl FnMut(OperationOutputStream, &str),
 ) -> Result<(), String> {
-    let cargo = paths
-        .installation()
-        .bundled_cargo()
-        .ok_or_else(|| "Steam installation has no bundled Cargo executable".to_owned())?;
-    let toolchain_bin = cargo
-        .parent()
-        .ok_or_else(|| format!("managed Cargo has no parent: {}", cargo.display()))?;
-    let toolchain_name = toolchain_bin
-        .parent()
-        .and_then(std::path::Path::file_name)
-        .ok_or_else(|| "managed Rust toolchain has no stable directory name".to_owned())?
-        .to_string_lossy()
-        .into_owned();
-    let rustc = toolchain_bin.join(executable("rustc"));
-    let rustdoc = toolchain_bin.join(executable("rustdoc"));
-    if !rustc.is_file() || !rustdoc.is_file() {
-        return Err(format!(
-            "managed Rust toolchain is incomplete beside {}",
-            cargo.display()
-        ));
-    }
     let source_manifest = paths.source().root().join(project.manifest());
     let working_directory = source_manifest.parent().ok_or_else(|| {
         format!(
@@ -432,19 +414,17 @@ fn run_step(
         .join("output")
         .join(profile)
         .join(project.name());
-    let mut command = Command::new(&cargo);
+    let mut command = cargo.command();
     command
         .args(cargo_invocation_args(step, target, &source_manifest))
         .current_dir(working_directory)
-        .env("VAPOR_HOME", installation)
-        .env("CARGO_HOME", installation.join("cargo-home"))
-        .env("RUSTUP_HOME", installation.join("rustup-home"))
-        .env("RUSTUP_TOOLCHAIN", &toolchain_name)
-        .env("RUSTC", &rustc)
-        .env("RUSTDOC", &rustdoc)
-        .env("CARGO_TARGET_DIR", target_directory)
-        .env("PATH", managed_path(paths, toolchain_bin)?)
-        .env_remove("RUSTC_WRAPPER");
+        .env("CARGO_TARGET_DIR", target_directory);
+    if is_foreign_target(target) {
+        // Cross-target outputs are build/package products rather than the
+        // interactive host edit/run loop. Avoid retaining a second large
+        // incremental compiler database for each foreign target.
+        command.env("CARGO_INCREMENTAL", "0");
+    }
     if !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
         && let Some(target) = target
         && target != host_runtime_target()
@@ -474,6 +454,10 @@ fn run_step(
     }
 }
 
+fn is_foreign_target(target: Option<&str>) -> bool {
+    target.is_some_and(|target| target != host_runtime_target())
+}
+
 fn step_label(step: CargoStep, target: Option<&str>) -> &'static str {
     match step {
         CargoStep::Format => "fmt",
@@ -497,10 +481,6 @@ fn validate_targets(targets: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn executable(name: &str) -> String {
-    format!("{name}{}", env::consts::EXE_SUFFIX)
 }
 
 #[cfg(test)]
@@ -672,6 +652,14 @@ mod tests {
         let host = super::host_runtime_target();
         let args = cargo_args(CargoStep::Build, Some(&host));
         assert!(!args.iter().any(|argument| argument == "--target"));
+    }
+
+    #[test]
+    fn cross_target_builds_disable_incremental_state_only_for_foreign_targets() {
+        let host = super::host_runtime_target();
+        assert!(!super::is_foreign_target(Some(&host)));
+        assert!(super::is_foreign_target(Some("x86_64-pc-windows-gnullvm")));
+        assert!(!super::is_foreign_target(None));
     }
 
     #[test]

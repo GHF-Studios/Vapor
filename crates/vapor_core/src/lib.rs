@@ -159,7 +159,7 @@ pub use superworkspace::{
     SuperworkspaceRepository, SuperworkspaceRepositoryKind, VaporSuperworkspace,
 };
 
-pub use toolchain::{ManagedToolchain, ToolchainError};
+pub use toolchain::{ManagedToolchain, RustToolchainCommandEnvironment, ToolchainError};
 
 pub use tracy::{ManagedTracyRepair, ManagedTracyToolset, TRACY_PROFILER_VERSION, TracyError};
 

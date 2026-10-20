@@ -5,6 +5,7 @@ use std::process::Command;
 
 use crate::GlobalOptions;
 use crate::toolchain::{ToolchainInstallState, ToolchainStatus, toolchain_status};
+use vapor_core::RustToolchainCommandEnvironment;
 
 use super::error::WorkspaceCommandError;
 use super::identity::{WorkspaceIdentity, discover_workspace_identity};
@@ -40,14 +41,21 @@ impl VaporCargo {
 
     pub(super) fn run(&self, args: &[&str]) -> Result<WorkspaceCargoReport, WorkspaceCommandError> {
         let mut command = Command::new(&self.toolchain.cargo_path);
+        RustToolchainCommandEnvironment::new(
+            &self.toolchain.vapor_home,
+            &self.cargo_home,
+            &self.toolchain.rustup_home,
+            self.toolchain.toolchain.identifier(),
+            &self.toolchain.rustc_path,
+            self.toolchain
+                .cargo_path
+                .with_file_name(format!("rustdoc{}", env::consts::EXE_SUFFIX)),
+        )
+        .apply_to(&mut command);
         command
             .args(args)
             .current_dir(&self.identity.workspace_root)
-            .env("CARGO_HOME", &self.cargo_home)
-            .env("RUSTUP_HOME", &self.toolchain.rustup_home)
-            .env("RUSTUP_TOOLCHAIN", self.toolchain.toolchain.identifier())
             .env("CARGO_TARGET_DIR", &self.target_dir)
-            .env_remove("RUSTC_WRAPPER")
             .env("PATH", vapor_path_prefix(&self.toolchain)?);
 
         let status = command.status()?;

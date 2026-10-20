@@ -33,6 +33,53 @@ const INSTALLATION_METADATA_DIR: &str = "metadata";
 const TOOLCHAIN_METADATA_FILE: &str = "toolchain.toml";
 const TOOLCHAIN_METADATA_SCHEMA: u32 = 1;
 
+/// Rust toolchain identity and roots applied to a Vapor-managed child process.
+///
+/// Discovery and cache ownership stay with the caller. This type keeps the
+/// executable-selection environment consistent across Cargo operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustToolchainCommandEnvironment {
+    vapor_home: PathBuf,
+    cargo_home: PathBuf,
+    rustup_home: PathBuf,
+    toolchain: std::ffi::OsString,
+    rustc: PathBuf,
+    rustdoc: PathBuf,
+}
+
+impl RustToolchainCommandEnvironment {
+    pub fn new(
+        vapor_home: impl Into<PathBuf>,
+        cargo_home: impl Into<PathBuf>,
+        rustup_home: impl Into<PathBuf>,
+        toolchain: impl Into<std::ffi::OsString>,
+        rustc: impl Into<PathBuf>,
+        rustdoc: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            vapor_home: vapor_home.into(),
+            cargo_home: cargo_home.into(),
+            rustup_home: rustup_home.into(),
+            toolchain: toolchain.into(),
+            rustc: rustc.into(),
+            rustdoc: rustdoc.into(),
+        }
+    }
+
+    /// Apply Vapor's chosen Rust tools and remove ambient compiler wrappers.
+    pub fn apply_to(&self, command: &mut Command) {
+        command
+            .env(crate::VAPOR_HOME_ENV, &self.vapor_home)
+            .env("CARGO_HOME", &self.cargo_home)
+            .env("RUSTUP_HOME", &self.rustup_home)
+            .env("RUSTUP_TOOLCHAIN", &self.toolchain)
+            .env("RUSTC", &self.rustc)
+            .env("RUSTDOC", &self.rustdoc)
+            .env_remove("RUSTC_WRAPPER")
+            .env_remove("RUSTC_WORKSPACE_WRAPPER");
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallationToolchainMetadata {
     schema: u32,
@@ -67,6 +114,17 @@ pub struct ManagedToolchain {
 }
 
 impl ManagedToolchain {
+    /// Read the toolchain pin owned by an installed Vapor App Instance.
+    ///
+    /// This is shared by operations that execute installation-bundled tools
+    /// directly and therefore must honor the same metadata as the managed
+    /// developer toolchain without inheriting its separate user-data roots.
+    pub fn installation_pin(
+        installation: &VaporInstallation,
+    ) -> Result<Option<ToolchainPin>, ToolchainError> {
+        read_installation_toolchain_metadata(installation)
+    }
+
     /// Discover the managed toolchain for the current Vapor environment.
     ///
     /// The active Installation always owns physical Rust/Cargo state.
@@ -284,16 +342,16 @@ impl ManagedToolchain {
         let path = env::join_paths(paths).map_err(ToolchainError::JoinPaths)?;
 
         let mut command = Command::new(program);
-
-        command
-            .env(crate::VAPOR_HOME_ENV, &self.vapor_home)
-            .env("CARGO_HOME", &self.cargo_home)
-            .env("RUSTUP_HOME", &self.rustup_home)
-            .env("RUSTUP_TOOLCHAIN", self.pin.identifier())
-            .env("RUSTC", &self.rustc_path)
-            .env("PATH", path)
-            .env_remove("RUSTC_WRAPPER")
-            .env_remove("RUSTC_WORKSPACE_WRAPPER");
+        RustToolchainCommandEnvironment::new(
+            &self.vapor_home,
+            &self.cargo_home,
+            &self.rustup_home,
+            self.pin.identifier(),
+            &self.rustc_path,
+            self.rustc_path.with_file_name(executable_name("rustdoc")),
+        )
+        .apply_to(&mut command);
+        command.env("PATH", path);
 
         Ok(command)
     }
@@ -515,9 +573,70 @@ impl std::error::Error for ToolchainError {
 
 #[cfg(test)]
 mod tests {
-    use super::ManagedToolchain;
+    use super::{ManagedToolchain, RustToolchainCommandEnvironment};
     use crate::VaporInstallation;
-    use std::fs;
+    use std::{
+        collections::BTreeMap,
+        ffi::{OsStr, OsString},
+        fs,
+        process::Command,
+    };
+
+    #[test]
+    fn rust_toolchain_environment_sets_pinned_paths_and_removes_wrappers() {
+        let environment = RustToolchainCommandEnvironment::new(
+            "/vapor/app",
+            "/vapor/user/cargo-home",
+            "/vapor/user/rustup-home",
+            "1.97.0-x86_64-unknown-linux-gnu",
+            "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustc",
+            "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustdoc",
+        );
+        let mut command = Command::new("cargo");
+        command
+            .env("RUSTC_WRAPPER", "/ambient/wrapper")
+            .env("RUSTC_WORKSPACE_WRAPPER", "/ambient/workspace-wrapper");
+
+        environment.apply_to(&mut command);
+
+        let variables = command
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(OsStr::to_owned)))
+            .collect::<BTreeMap<OsString, Option<OsString>>>();
+        assert_eq!(
+            variables.get(OsStr::new("VAPOR_HOME")),
+            Some(&Some("/vapor/app".into()))
+        );
+        assert_eq!(
+            variables.get(OsStr::new("CARGO_HOME")),
+            Some(&Some("/vapor/user/cargo-home".into()))
+        );
+        assert_eq!(
+            variables.get(OsStr::new("RUSTUP_HOME")),
+            Some(&Some("/vapor/user/rustup-home".into()))
+        );
+        assert_eq!(
+            variables.get(OsStr::new("RUSTUP_TOOLCHAIN")),
+            Some(&Some("1.97.0-x86_64-unknown-linux-gnu".into()))
+        );
+        assert_eq!(
+            variables.get(OsStr::new("RUSTC")),
+            Some(&Some(
+                "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustc".into()
+            ))
+        );
+        assert_eq!(
+            variables.get(OsStr::new("RUSTDOC")),
+            Some(&Some(
+                "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustdoc".into()
+            ))
+        );
+        assert_eq!(variables.get(OsStr::new("RUSTC_WRAPPER")), Some(&None));
+        assert_eq!(
+            variables.get(OsStr::new("RUSTC_WORKSPACE_WRAPPER")),
+            Some(&None)
+        );
+    }
 
     #[test]
     fn selected_installation_supplies_the_toolchain_root() {
