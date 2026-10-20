@@ -350,6 +350,7 @@ impl Client {
         Ok(request_id)
     }
 
+    /// Polls for one frame without blocking or reconnecting.
     pub fn try_recv(&mut self) -> Result<Option<ProtocolFrame>, ClientError> {
         match self.incoming.try_recv() {
             Ok(frame) => self.accept_frame(frame).map(Some),
@@ -360,17 +361,12 @@ impl Client {
                     .as_mut()
                     .and_then(|child| child.try_wait().ok().flatten())
                     .and_then(|status| status.code());
-                if self.shared_service.is_some() {
-                    let snapshot = self.reconnect()?.clone();
-                    return Ok(Some(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(
-                        snapshot,
-                    )))));
-                }
                 Err(ClientError::ServiceExited(status))
             }
         }
     }
 
+    /// Waits for one frame up to `timeout`; reconnecting is an explicit operation.
     pub fn recv_timeout(&mut self, timeout: Duration) -> Result<ProtocolFrame, ClientError> {
         match self.incoming.recv_timeout(timeout) {
             Ok(frame) => self.accept_frame(frame),
@@ -381,12 +377,6 @@ impl Client {
                     .as_mut()
                     .and_then(|child| child.try_wait().ok().flatten())
                     .and_then(|status| status.code());
-                if self.shared_service.is_some() {
-                    let snapshot = self.reconnect()?.clone();
-                    return Ok(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(
-                        snapshot,
-                    ))));
-                }
                 Err(ClientError::ServiceExited(status))
             }
         }
@@ -760,6 +750,50 @@ mod tests {
             .unwrap()
             .expect("readiness probe completes without a session snapshot");
         assert_eq!(snapshot.revision, ClientRevision(0));
+    }
+
+    #[test]
+    fn disconnected_shared_client_polling_reports_exit_without_reconnecting() {
+        use std::{
+            sync::mpsc,
+            time::{Duration, SystemTime},
+        };
+
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos();
+        let state_directory = std::env::temp_dir().join(format!(
+            "vapor-client-disconnected-poll-{}-{unique}",
+            std::process::id()
+        ));
+        let (sender, incoming) = mpsc::channel();
+        drop(sender);
+        let mut bootstrap = bootstrap();
+        bootstrap.fixture_mode = false;
+        bootstrap.state_directory = Some(state_directory.clone());
+        let mut client = Client {
+            child: None,
+            writer: None,
+            incoming,
+            next_request: 1,
+            request_prefix: "disconnected-test".into(),
+            latest_snapshot: empty_snapshot(),
+            shared_service: Some((
+                std::env::temp_dir().join("missing-vapor-client-service"),
+                bootstrap,
+            )),
+        };
+
+        assert!(matches!(
+            client.try_recv(),
+            Err(ClientError::ServiceExited(None))
+        ));
+        assert!(matches!(
+            client.recv_timeout(Duration::from_millis(1)),
+            Err(ClientError::ServiceExited(None))
+        ));
+        let _ = std::fs::remove_dir_all(state_directory);
     }
 
     #[test]
