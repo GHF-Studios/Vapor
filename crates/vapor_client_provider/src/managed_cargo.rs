@@ -92,6 +92,20 @@ fn application_path(
         entries
             .extend(env::split_paths(inherited).filter(|entry| !is_raw_app_tool_path(root, entry)));
     }
+    #[cfg(unix)]
+    for host_tools in [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ] {
+        let host_tools = Path::new(host_tools);
+        if !entries.iter().any(|entry| entry == host_tools) {
+            entries.push(host_tools.to_path_buf());
+        }
+    }
     env::join_paths(entries).map_err(|error| format!("failed to construct managed PATH: {error}"))
 }
 
@@ -118,6 +132,22 @@ fn executable(name: &str) -> String {
 mod tests {
     use std::{env, path::Path};
 
+    #[cfg(unix)]
+    #[test]
+    fn application_path_keeps_host_linker_dirs_when_service_path_is_missing() {
+        let path = super::application_path(
+            Path::new("/app"),
+            Path::new("/app/bin/x86_64-linux"),
+            Path::new("/app/rustup-home/toolchains/1.97.0/bin"),
+            None,
+        )
+        .expect("construct app-managed path");
+        let entries = env::split_paths(&path).collect::<Vec<_>>();
+
+        assert!(entries.iter().any(|entry| entry == Path::new("/usr/bin")));
+        assert!(entries.iter().any(|entry| entry == Path::new("/bin")));
+    }
+
     #[test]
     fn application_path_keeps_managed_tools_ahead_and_filters_raw_tool_dirs() {
         let inherited = env::join_paths([
@@ -143,8 +173,7 @@ mod tests {
         );
         assert_eq!(entries[1], Path::new("/app/bin/x86_64-linux"));
         assert_eq!(entries[2], Path::new("/app/bin"));
-        assert_eq!(entries[3], Path::new("/usr/bin"));
-        assert_eq!(entries.len(), 4);
+        assert!(entries.iter().any(|entry| entry == Path::new("/usr/bin")));
         assert!(
             !entries
                 .iter()
