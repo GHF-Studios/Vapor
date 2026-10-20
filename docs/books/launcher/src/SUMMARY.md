@@ -5,20 +5,25 @@
 
 ---
 
-# Using Content
+# Find and Install
 
 - [Content Sources](workflows/content-sources.md)
 - [Install, Update, Remove](workflows/install-update-remove.md)
-- [Packagepacks](workflows/packagepacks.md)
-- [Local Mutable Packs](workflows/local-mutable-packs.md)
-- [Lock And Launch](workflows/lock-and-launch.md)
+- [Installed State And Library](workflows/installed-state.md)
 
 ---
 
-# Maintenance
+# Play and Maintain
 
+- [Packagepacks](workflows/packagepacks.md)
+- [Lock And Launch](workflows/lock-and-launch.md)
 - [Repair](workflows/repair.md)
-- [Installed State](workflows/installed-state.md)
+
+---
+
+# Create Locally
+
+- [Local Mutable Packs](workflows/local-mutable-packs.md)
 - [Local Development Content](workflows/local-development-content.md)
 
 ---
@@ -28,4 +33,3 @@
 - [Command Reference](reference-command.md)
 - [Troubleshooting](troubleshooting.md)
 - [Limits](limits.md)
-

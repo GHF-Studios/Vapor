@@ -9,7 +9,7 @@
 # Authoring
 
 - [Workspaces](workflows/workspaces.md)
-- [`Vapor.toml`](workflows/vapor-toml.md)
+- [Workspace And Content Manifests](workflows/vapor-toml.md)
 - [Templates](workflows/templates.md)
 - [Content Authoring](workflows/content-authoring.md)
 - [Packs And Packagepacks](workflows/packs-and-packagepacks.md)

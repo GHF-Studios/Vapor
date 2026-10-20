@@ -137,7 +137,8 @@ fn build_bundle(source_root: &Path) -> Result<Vec<u8>, String> {
         &site.join("vapor/roadmap"),
     )?;
     let book_links = build_books(&client_root.join("Vapor/docs/books"), &site)?;
-    write_site_index(&site, &book_links)?;
+    let guide_links = discover_guides(&site.join("shell"))?;
+    write_site_index(&site, &book_links, &guide_links)?;
     validate_site_tree(&site)?;
 
     let output = Command::new("tar")
@@ -211,6 +212,12 @@ struct BookLink {
     path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuideLink {
+    title: String,
+    path: String,
+}
+
 fn parse_book_metadata(contents: &str) -> Result<BookMetadata, String> {
     let config: MdBookConfig = toml::from_str(contents)
         .map_err(|error| format!("could not read mdBook metadata: {error}"))?;
@@ -220,7 +227,69 @@ fn parse_book_metadata(contents: &str) -> Result<BookMetadata, String> {
     Ok(config.book)
 }
 
+fn validate_book_sources(books_root: &Path) -> Result<(), String> {
+    if !books_root.is_dir() {
+        return Ok(());
+    }
+
+    const PLACEHOLDER_MARKERS: &[&str] = &[
+        "Status: target outline.",
+        "Recipe placeholder.",
+        "Status: mdBook stub.",
+    ];
+
+    let mut books = fs::read_dir(books_root)
+        .map_err(|error| format!("could not read '{}': {error}", books_root.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.join("book.toml").is_file())
+        .collect::<Vec<_>>();
+    books.sort();
+
+    fn visit_pages(books_root: &Path, directory: &Path, markers: &[&str]) -> Result<(), String> {
+        for entry in fs::read_dir(directory)
+            .map_err(|error| format!("could not read '{}': {error}", directory.display()))?
+        {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
+            if kind.is_dir() {
+                visit_pages(books_root, &path, markers)?;
+            } else if kind.is_file() && path.extension().is_some_and(|extension| extension == "md")
+            {
+                let contents = fs::read_to_string(&path).map_err(|error| {
+                    format!("could not read mdBook page '{}': {error}", path.display())
+                })?;
+                if contents.trim().is_empty()
+                    || markers.iter().any(|marker| contents.contains(marker))
+                {
+                    let relative = path.strip_prefix(books_root).unwrap_or(&path);
+                    return Err(format!(
+                        "documentation placeholder content blocks publication: {}",
+                        relative.display()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    for book in books {
+        let source = book.join("src");
+        let summary = source.join("SUMMARY.md");
+        if !summary.is_file() {
+            return Err(format!(
+                "mdBook '{}' is missing required src/SUMMARY.md",
+                book.display()
+            ));
+        }
+        visit_pages(books_root, &source, PLACEHOLDER_MARKERS)?;
+    }
+    Ok(())
+}
+
 fn build_books(books_root: &Path, site: &Path) -> Result<Vec<BookLink>, String> {
+    validate_book_sources(books_root)?;
     if !books_root.is_dir() {
         return Ok(Vec::new());
     }
@@ -288,6 +357,67 @@ fn build_books(books_root: &Path, site: &Path) -> Result<Vec<BookLink>, String> 
     Ok(links)
 }
 
+fn discover_guides(root: &Path) -> Result<Vec<GuideLink>, String> {
+    fn visit(root: &Path, directory: &Path, guides: &mut Vec<GuideLink>) -> Result<(), String> {
+        let entries = fs::read_dir(directory).map_err(|error| {
+            format!(
+                "could not read docs directory '{}': {error}",
+                directory.display()
+            )
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
+            if kind.is_dir() {
+                visit(root, &path, guides)?;
+            } else if kind.is_file() && path.extension().is_some_and(|extension| extension == "md")
+            {
+                let contents = fs::read_to_string(&path).map_err(|error| {
+                    format!("could not read docs guide '{}': {error}", path.display())
+                })?;
+                let title = contents
+                    .lines()
+                    .map(str::trim)
+                    .find_map(|line| {
+                        line.strip_prefix("# ")
+                            .map(str::trim)
+                            .filter(|title| !title.is_empty())
+                    })
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        path.file_stem()
+                            .map(|name| name.to_string_lossy().replace(['-', '_'], " "))
+                    })
+                    .ok_or_else(|| {
+                        format!("docs guide '{}' has no display name", path.display())
+                    })?;
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|error| format!("invalid guide path '{}': {error}", path.display()))?;
+                let relative = relative
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                guides.push(GuideLink {
+                    title,
+                    path: format!("shell/{relative}"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut guides = Vec::new();
+    visit(root, root, &mut guides)?;
+    guides.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(guides)
+}
+
 fn copy_tree_if_present(source: &Path, target: &Path) -> Result<(), String> {
     if !source.is_dir() {
         return Ok(());
@@ -331,7 +461,7 @@ fn validate_site_tree(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_site_index(root: &Path, books: &[BookLink]) -> Result<(), String> {
+fn write_site_index(root: &Path, books: &[BookLink], guides: &[GuideLink]) -> Result<(), String> {
     let book_links = books
         .iter()
         .map(|book| {
@@ -346,8 +476,18 @@ fn write_site_index(root: &Path, books: &[BookLink]) -> Result<(), String> {
             )
         })
         .collect::<String>();
+    let guide_links = guides
+        .iter()
+        .map(|guide| {
+            format!(
+                "<li><a href=\"{}\">{}</a></li>",
+                html_escape(&guide.path),
+                html_escape(&guide.title)
+            )
+        })
+        .collect::<String>();
     let contents = format!(
-        "<!doctype html><meta charset=\"utf-8\"><title>Vapor Documentation</title><h1>Vapor Documentation</h1><h2>Books</h2><ul>{book_links}</ul><h2>Shell guides</h2><ul><li><a href=\"shell/commands.md\">Commands</a></li><li><a href=\"shell/setup.md\">Setup</a></li><li><a href=\"shell/distribution.md\">Distribution</a></li><li><a href=\"shell/steam-development.md\">Steam development</a></li><li><a href=\"shell/discovery.md\">Discovery</a></li></ul><h2>Client</h2><ul><li><a href=\"client/README.md\">README</a></li><li><a href=\"client/App.vapor.toml\">Runtime manifest</a></li><li><a href=\"client/App-Source.vapor.toml\">Source manifest</a></li><li><a href=\"vapor/roadmap/README.md\">Roadmap</a></li></ul>"
+        "<!doctype html><meta charset=\"utf-8\"><title>Vapor Documentation</title><h1>Vapor Documentation</h1><h2>Books</h2><ul>{book_links}</ul><h2>Shell guides</h2><ul>{guide_links}</ul><h2>Client</h2><ul><li><a href=\"client/README.md\">README</a></li><li><a href=\"client/App.vapor.toml\">Runtime manifest</a></li><li><a href=\"client/App-Source.vapor.toml\">Source manifest</a></li><li><a href=\"vapor/roadmap/README.md\">Roadmap</a></li></ul>"
     );
     fs::write(root.join("index.html"), contents).map_err(|error| error.to_string())
 }
@@ -364,8 +504,8 @@ fn html_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BookLink, TemporarySite, build_bundle, parse_book_metadata, upload_bundle, upload_url,
-        write_site_index,
+        BookLink, GuideLink, TemporarySite, build_books, build_bundle, discover_guides,
+        parse_book_metadata, upload_bundle, upload_url, write_site_index,
     };
     use std::{
         fs,
@@ -403,6 +543,28 @@ mod tests {
     }
 
     #[test]
+    fn guide_discovery_uses_headings_and_includes_nested_markdown() {
+        let site = TemporarySite::create().expect("temporary docs site");
+        let guides = site.path.join("shell");
+        fs::create_dir_all(guides.join("workflows")).unwrap();
+        fs::write(guides.join("commands.md"), "# All Commands\n\nGuide.\n").unwrap();
+        fs::write(
+            guides.join("workflows/install.md"),
+            "# Install and Update\n\nGuide.\n",
+        )
+        .unwrap();
+        fs::write(guides.join("notes.txt"), "not a guide\n").unwrap();
+
+        let discovered = discover_guides(&guides).expect("discover Markdown guides");
+
+        assert_eq!(discovered.len(), 2);
+        assert_eq!(discovered[0].title, "All Commands");
+        assert_eq!(discovered[0].path, "shell/commands.md");
+        assert_eq!(discovered[1].title, "Install and Update");
+        assert_eq!(discovered[1].path, "shell/workflows/install.md");
+    }
+
+    #[test]
     fn public_bundle_contains_curated_docs_and_excludes_agent_files() {
         let source = TemporarySite::create().expect("temporary source root");
         fs::write(source.path.join("App-Source.vapor.toml"), "schema = 1\n").unwrap();
@@ -410,6 +572,24 @@ mod tests {
         let cli_docs = source.path.join("Vapor-CLI/crates/vapor_cli/docs");
         fs::create_dir_all(&cli_docs).unwrap();
         fs::write(cli_docs.join("commands.md"), "public commands\n").unwrap();
+        let book = source.path.join("Vapor/docs/books/sample");
+        let book_source = book.join("src");
+        fs::create_dir_all(&book_source).unwrap();
+        fs::write(
+            book.join("book.toml"),
+            "[book]\ntitle = \"Declared title\"\ndescription = \"Declared description\"\n",
+        )
+        .unwrap();
+        fs::write(
+            book_source.join("SUMMARY.md"),
+            "# Summary\n\n- [Sample](README.md)\n",
+        )
+        .unwrap();
+        fs::write(
+            book_source.join("README.md"),
+            "# Sample\n\nPublic content.\n",
+        )
+        .unwrap();
         fs::create_dir_all(source.path.join(".agents")).unwrap();
         fs::write(source.path.join(".agents/private.md"), "private\n").unwrap();
 
@@ -427,6 +607,52 @@ mod tests {
         assert!(listing.lines().any(|path| path == "./client/README.md"));
         assert!(listing.lines().any(|path| path == "./shell/commands.md"));
         assert!(!listing.contains(".agents"));
+
+        let index = std::process::Command::new("tar")
+            .args(["-xOzf"])
+            .arg(&archive_path)
+            .arg("./index.html")
+            .output()
+            .expect("tar can extract the generated index");
+        assert!(index.status.success());
+        let index = String::from_utf8(index.stdout).unwrap();
+        assert!(index.contains("Declared title"));
+        assert!(index.contains("Declared description"));
+    }
+
+    #[test]
+    fn public_bundle_rejects_placeholder_book_pages() {
+        let source = TemporarySite::create().expect("temporary source root");
+        fs::write(source.path.join("App-Source.vapor.toml"), "schema = 1\n").unwrap();
+        let book = source.path.join("Vapor/docs/books/sample");
+        let book_source = book.join("src");
+        fs::create_dir_all(&book_source).unwrap();
+        fs::write(
+            book.join("book.toml"),
+            r#"[book]
+title = "Sample"
+description = "Sample guide"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            book_source.join("SUMMARY.md"),
+            "# Summary\n\n- [Sample](README.md)\n",
+        )
+        .unwrap();
+        fs::write(
+            book_source.join("README.md"),
+            "# Sample\n\nStatus: target outline.\n",
+        )
+        .unwrap();
+
+        let output = source.path.join("output");
+        fs::create_dir_all(&output).unwrap();
+        let error = build_books(&source.path.join("Vapor/docs/books"), &output)
+            .expect_err("placeholder must block publication");
+
+        assert!(error.contains("placeholder"));
+        assert!(error.contains("sample/src/README.md"));
     }
 
     #[test]
@@ -439,12 +665,17 @@ mod tests {
                 description: Some("A & B guide".into()),
                 path: "books/a&b/index.html".into(),
             }],
+            &[GuideLink {
+                title: "A <guide>".into(),
+                path: "shell/a&b.md".into(),
+            }],
         )
         .expect("write index");
         let index = fs::read_to_string(site.path.join("index.html")).unwrap();
         assert!(index.contains("&lt;book&gt;"));
         assert!(index.contains("a&amp;b"));
         assert!(index.contains("A &amp; B guide"));
+        assert!(index.contains("A &lt;guide&gt;"));
     }
 
     #[test]
