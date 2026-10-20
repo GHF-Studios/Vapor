@@ -5,7 +5,7 @@ use super::*;
 impl ClientSession {
     pub(super) fn start_authoring_operation(
         &mut self,
-        action: AuthoringAction,
+        mut action: AuthoringAction,
     ) -> Result<(), ServiceError> {
         if self.bootstrap.fixture_mode {
             return Err(ServiceError {
@@ -15,20 +15,34 @@ impl ClientSession {
             });
         }
         self.reject_if_operation_in_progress()?;
+        let workspace = self.bootstrap.workspace_root.clone();
+        let executable = self.bootstrap.application_executable.clone();
         if let AuthoringAction::PackageContent {
             selector,
             target_triples,
             ..
-        } = &action
+        } = &mut action
         {
             if selector.trim().is_empty() || selector.len() > 512 {
                 return Err(invalid_client_action_request(
                     "Choose a content identity of 1 to 512 bytes before packaging.",
                 ));
             }
+            let workspace_root = workspace.as_deref().ok_or_else(|| {
+                invalid_client_action_request("Open a workspace before packaging content.")
+            })?;
+            *target_triples = vapor_client_application::resolve_workspace_runtime_targets(
+                &executable,
+                workspace_root,
+                target_triples,
+            )
+            .map_err(|message| ServiceError {
+                code: ServiceErrorCode::ProviderFailure,
+                message,
+                retryable: false,
+            })?;
             super::validate_runtime_target_matrix(target_triples)?;
         }
-        let workspace = self.bootstrap.workspace_root.clone();
         let workspace_bound = !matches!(
             &action,
             AuthoringAction::CreateWorkspace { .. }
@@ -40,7 +54,6 @@ impl ClientSession {
                 | AuthoringAction::InitializeSourceWorkspace { .. }
                 | AuthoringAction::RepairSourceMetadata { .. }
         );
-        let executable = self.bootstrap.application_executable.clone();
         let action_id = authoring_action_id(&action);
         let phase = authoring_action_phase(&action);
         let completion_workspace = workspace.clone();
@@ -53,7 +66,9 @@ impl ClientSession {
                 composition_id: None,
                 phase,
             },
-            move |_| execute_authoring_operation(&executable, workspace.as_deref(), action),
+            move |context| {
+                execute_authoring_operation(&executable, workspace.as_deref(), action, &context)
+            },
             authoring_result_outcome,
             move |id, result| {
                 BackgroundOperationMessage::CompleteAuthoring(Box::new(
@@ -149,7 +164,7 @@ fn authoring_action_id(action: &AuthoringAction) -> &'static str {
 
 fn authoring_action_phase(action: &AuthoringAction) -> OperationPhase {
     match action {
-        AuthoringAction::PackageContent { .. } => OperationPhase::Staging,
+        AuthoringAction::PackageContent { .. } => OperationPhase::Building,
         _ => OperationPhase::Resolving,
     }
 }
@@ -158,6 +173,7 @@ fn execute_authoring_operation(
     executable: &Path,
     active_workspace: Option<&Path>,
     action: AuthoringAction,
+    context: &vapor_core::OperationContext,
 ) -> Result<AuthoringResultKind, String> {
     use AuthoringAction as Action;
     match action {
@@ -351,12 +367,13 @@ fn execute_authoring_operation(
             dry_run,
         } => {
             let workspace = active_workspace.ok_or("Open a workspace before packaging content.")?;
-            vapor_client_application::package_authored_content(
+            vapor_client_application::build_and_package_authored_content_with_context(
                 executable,
                 workspace,
                 &selector,
                 &target_triples,
                 dry_run,
+                context,
             )
             .map(|report| AuthoringResultKind::ContentPackaged {
                 id: report.artifact_id().to_owned(),

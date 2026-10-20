@@ -115,6 +115,16 @@ impl ClientSession {
                 target_triples,
             } => {
                 let workspace_root = self.validate_workshop_stage(&selector)?;
+                let target_triples = if self.bootstrap.fixture_mode {
+                    target_triples
+                } else {
+                    vapor_client_application::resolve_workspace_runtime_targets(
+                        &self.bootstrap.application_executable,
+                        &workspace_root,
+                        &target_triples,
+                    )
+                    .map_err(workspace_target_resolution_error)?
+                };
                 super::validate_runtime_target_matrix(&target_triples)?;
                 self.workshop_review = None;
                 self.workshop_batch_review = None;
@@ -150,6 +160,16 @@ impl ClientSession {
                     .workspace_root
                     .clone()
                     .ok_or_else(|| invalid_client_action_request("Open a workspace first."))?;
+                let target_triples = if self.bootstrap.fixture_mode {
+                    target_triples
+                } else {
+                    vapor_client_application::resolve_workspace_runtime_targets(
+                        &self.bootstrap.application_executable,
+                        &workspace_root,
+                        &target_triples,
+                    )
+                    .map_err(workspace_target_resolution_error)?
+                };
                 super::validate_runtime_target_matrix(&target_triples)?;
                 self.workshop_review = None;
                 self.workshop_batch_review = None;
@@ -1000,6 +1020,14 @@ fn required_workshop_app_id(app_id: Option<u32>) -> Result<u32, String> {
     app_id.ok_or_else(|| {
         "This Vapor Client installation has no configured Workshop application.".to_owned()
     })
+}
+
+fn workspace_target_resolution_error(message: String) -> ServiceError {
+    ServiceError {
+        code: ServiceErrorCode::ProviderFailure,
+        message,
+        retryable: false,
+    }
 }
 
 fn download_with_auto_install(

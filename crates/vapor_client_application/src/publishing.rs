@@ -81,6 +81,67 @@ pub fn build_authored_workspace(
     vapor_client_provider::workspace_build::run(&paths, mode, runtime_targets)
 }
 
+/// Resolve an omitted runtime matrix from the opened workspace manifest.
+///
+/// Workflows that accept explicit target subsets keep those targets unchanged.
+/// An empty selection means the workspace's declared matrix, or Cargo's host
+/// default when the workspace declares no runtime targets.
+pub fn resolve_workspace_runtime_targets(
+    application_executable: &Path,
+    workspace_root: &Path,
+    requested_targets: &[String],
+) -> Result<Vec<String>, String> {
+    if !requested_targets.is_empty() {
+        return Ok(requested_targets.to_vec());
+    }
+    let paths = workspace_tool_environment(application_executable, workspace_root)?;
+    let manifest = WorkspaceManifest::load(&paths)?;
+    Ok(select_runtime_target_matrix(
+        requested_targets,
+        manifest.runtime_targets(),
+    ))
+}
+
+fn select_runtime_target_matrix(requested: &[String], declared: &[String]) -> Vec<String> {
+    if requested.is_empty() {
+        declared.to_vec()
+    } else {
+        requested.to_vec()
+    }
+}
+
+/// Build an authored workspace and package one selected content artifact.
+///
+/// The build and package steps share one operation context so callers can
+/// report managed Cargo progress and cancellation through a single workflow.
+pub fn build_and_package_authored_content_with_context(
+    application_executable: &Path,
+    workspace_root: &Path,
+    selector: &str,
+    runtime_targets: &[String],
+    dry_run: bool,
+    context: &vapor_core::OperationContext,
+) -> Result<content::PackageReport, String> {
+    let runtime_targets =
+        resolve_workspace_runtime_targets(application_executable, workspace_root, runtime_targets)?;
+    run_workspace_tool_with_context(
+        application_executable,
+        workspace_root,
+        vapor_client_domain::WorkspaceToolOperation::Build,
+        &vapor_client_domain::WorkspaceProjectSelection::All,
+        &runtime_targets,
+        context,
+    )?;
+    context.set_phase(vapor_core::OperationPhase::Staging);
+    crate::package_authored_content(
+        application_executable,
+        workspace_root,
+        selector,
+        &runtime_targets,
+        dry_run,
+    )
+}
+
 /// Run a Studio workspace tool through Vapor's managed Cargo provider.
 pub fn run_workspace_tool(
     application_executable: &Path,
@@ -671,7 +732,7 @@ fn staged_files(root: &Path) -> Result<Vec<String>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_release_inputs;
+    use super::{select_runtime_target_matrix, validate_release_inputs};
 
     fn valid_targets() -> Vec<String> {
         vec!["x86_64-unknown-linux-gnu".to_owned()]
@@ -703,5 +764,34 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn omitted_runtime_targets_inherit_the_workspace_matrix() {
+        let declared = vec![
+            "x86_64-unknown-linux-gnu".to_owned(),
+            "x86_64-pc-windows-gnullvm".to_owned(),
+        ];
+
+        assert_eq!(select_runtime_target_matrix(&[], &declared), declared);
+    }
+
+    #[test]
+    fn explicit_runtime_target_subset_overrides_the_workspace_matrix() {
+        let declared = vec![
+            "x86_64-unknown-linux-gnu".to_owned(),
+            "x86_64-pc-windows-gnullvm".to_owned(),
+        ];
+        let requested = vec!["x86_64-unknown-linux-gnu".to_owned()];
+
+        assert_eq!(
+            select_runtime_target_matrix(&requested, &declared),
+            requested
+        );
+    }
+
+    #[test]
+    fn empty_workspace_matrix_preserves_host_default_semantics() {
+        assert!(select_runtime_target_matrix(&[], &[]).is_empty());
     }
 }
