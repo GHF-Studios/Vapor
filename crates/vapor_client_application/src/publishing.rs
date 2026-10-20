@@ -246,6 +246,27 @@ pub fn run_workspace_tool_with_context(
     .map(|_| ())
 }
 
+/// Clean the managed development outputs for every Cargo project in a workspace.
+pub fn clean_workspace_build_cache_with_context(
+    application_executable: &Path,
+    workspace_root: &Path,
+    context: &vapor_core::OperationContext,
+) -> Result<(), String> {
+    let paths = workspace_tool_environment(application_executable, workspace_root)?;
+    vapor_client_provider::workspace_build::clean_development_cache(
+        &paths,
+        || context.is_cancelled(),
+        |completed, total, project| {
+            context.report_progress(vapor_core::Progress {
+                completed: completed as u64,
+                total: Some(total as u64),
+                unit: "Cargo projects".to_owned(),
+                message: Some(format!("Cleared development build output for {project}")),
+            });
+        },
+    )
+}
+
 fn workspace_tool_build_mode(operation: vapor_client_domain::WorkspaceToolOperation) -> BuildMode {
     match operation {
         vapor_client_domain::WorkspaceToolOperation::Format => BuildMode::Format,

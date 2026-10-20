@@ -46,11 +46,11 @@ pub use publishing::{
     MAX_WORKSHOP_REVIEW_BATCH, WorkshopBatchReview, WorkshopPackagePreview, WorkshopPublication,
     build_and_package_authored_content_with_context, build_application_release,
     build_application_release_with_events, build_authored_workspace,
-    publish_reviewed_application_release, publish_reviewed_workshop_batch,
-    publish_reviewed_workshop_content, resolve_workspace_runtime_targets, run_workspace_tool,
-    run_workspace_tool_with_context, run_workspace_tool_with_events,
-    run_workspace_tool_with_progress, stage_application_release, stage_workshop_batch_preview,
-    stage_workshop_preview, validate_application_release_request,
+    clean_workspace_build_cache_with_context, publish_reviewed_application_release,
+    publish_reviewed_workshop_batch, publish_reviewed_workshop_content,
+    resolve_workspace_runtime_targets, run_workspace_tool, run_workspace_tool_with_context,
+    run_workspace_tool_with_events, run_workspace_tool_with_progress, stage_application_release,
+    stage_workshop_batch_preview, stage_workshop_preview, validate_application_release_request,
 };
 pub use vapor_client_domain::can_auto_install_library_item;
 
