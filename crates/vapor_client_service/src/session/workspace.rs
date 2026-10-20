@@ -120,6 +120,7 @@ impl ClientSession {
                 WorkspaceOperationKind::CreateFile(validate_workspace_relative_path(&path)?)
             }
             WorkspaceAction::Validate => WorkspaceOperationKind::Validate,
+            WorkspaceAction::BuildDocumentation => WorkspaceOperationKind::BuildDocumentation,
             WorkspaceAction::RunTool {
                 operation,
                 project_selection,
@@ -394,6 +395,9 @@ impl ClientSession {
                     WorkspaceOperationKind::Validate => {
                         "Workspace validation completed.".to_owned()
                     }
+                    WorkspaceOperationKind::BuildDocumentation => {
+                        "Workspace documentation build completed.".to_owned()
+                    }
                     WorkspaceOperationKind::RunTool(operation, _, _) => format!(
                         "Workspace {} completed.",
                         match operation {
@@ -551,6 +555,7 @@ fn workspace_operation_action_id(kind: &WorkspaceOperationKind) -> &'static str 
         WorkspaceOperationKind::SaveFile(_) => "workspace.save-file",
         WorkspaceOperationKind::CreateFile(_) => "workspace.create-file",
         WorkspaceOperationKind::Validate => "workspace.validate",
+        WorkspaceOperationKind::BuildDocumentation => "workspace.build-documentation",
         WorkspaceOperationKind::RunTool(WorkspaceToolOperation::Format, _, _) => "workspace.fmt",
         WorkspaceOperationKind::RunTool(WorkspaceToolOperation::Check, _, _) => "workspace.check",
         WorkspaceOperationKind::RunTool(WorkspaceToolOperation::Test, _, _) => "workspace.test",
@@ -581,9 +586,9 @@ fn workspace_operation_phase(kind: &WorkspaceOperationKind) -> OperationPhase {
         WorkspaceOperationKind::SaveFile(_) | WorkspaceOperationKind::CreateFile(_) => {
             OperationPhase::Building
         }
-        WorkspaceOperationKind::RunTool(..) | WorkspaceOperationKind::Clean => {
-            OperationPhase::Building
-        }
+        WorkspaceOperationKind::RunTool(..)
+        | WorkspaceOperationKind::BuildDocumentation
+        | WorkspaceOperationKind::Clean => OperationPhase::Building,
         WorkspaceOperationKind::RunConfiguration { .. } => OperationPhase::Running,
         WorkspaceOperationKind::DeployApplication { .. } => OperationPhase::Staging,
         WorkspaceOperationKind::PackageApplication { .. } => OperationPhase::Building,
@@ -690,6 +695,10 @@ fn execute_workspace_operation(
         WorkspaceOperationKind::Validate => {
             vapor_client_application::validate_workspace_source(executable, root)
                 .map(|_| WorkspaceOperationResult::Completed)
+        }
+        WorkspaceOperationKind::BuildDocumentation => {
+            vapor_client_application::build_documentation_with_context(executable, root, &context)
+                .map(WorkspaceOperationResult::CompletedWithSummary)
         }
         WorkspaceOperationKind::RunTool(operation, project_selection, target_triples) => {
             context.set_phase(application::OperationPhase::Building);

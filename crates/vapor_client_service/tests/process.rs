@@ -310,6 +310,27 @@ fn fixture_service_rejects_workspace_run_configuration_requests() {
     );
     client
         .send(
+            ClientAction::Workspace(WorkspaceAction::BuildDocumentation),
+            Some(client.latest_snapshot().revision),
+        )
+        .expect("send fixture documentation build");
+    let ProtocolFrame::Response(response) = client
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive fixture documentation policy response")
+    else {
+        panic!("expected a service response");
+    };
+    assert_eq!(response.kind, ClientResponseKind::Rejected);
+    assert!(
+        response
+            .error
+            .as_ref()
+            .is_some_and(|error| error.message.contains("unavailable in fixture mode")),
+        "unexpected fixture documentation response: {:?}",
+        response.error
+    );
+    client
+        .send(
             ClientAction::Workspace(WorkspaceAction::DeployApplication {
                 target_triples: vec![],
                 skip_documentation: true,

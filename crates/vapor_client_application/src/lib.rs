@@ -7,6 +7,7 @@ mod catalog;
 mod composition;
 mod content;
 mod deployment;
+mod documentation;
 mod operation;
 mod publishing;
 mod workspace;
@@ -32,6 +33,7 @@ pub use content::{
     verify_installation,
 };
 pub use deployment::{deploy_application_with_context, package_application_with_context};
+pub use documentation::build_documentation_with_context;
 pub use operation::{
     CoreOperationEvent, CoreOperationRequest, OperationCancellation, OperationContext,
     OperationEvent, OperationEventSink, OperationId, OperationKind, OperationOutput,
