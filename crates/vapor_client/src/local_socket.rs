@@ -65,9 +65,19 @@ fn bind_with_local_permissions(name: interprocess::local_socket::Name<'_>) -> io
     ListenerOptions::new().name(name).create_sync()
 }
 
-pub fn startup_lock(state_directory: &Path) -> io::Result<File> {
+/// Serializes frontends that are starting the service, through readiness.
+pub fn bootstrap_lock(state_directory: &Path) -> io::Result<File> {
+    lock_file(state_directory, "service-bootstrap.lock")
+}
+
+/// Serializes service processes while they inspect and claim the IPC endpoint.
+pub fn service_lock(state_directory: &Path) -> io::Result<File> {
+    lock_file(state_directory, "service-instance.lock")
+}
+
+fn lock_file(state_directory: &Path, filename: &str) -> io::Result<File> {
     fs::create_dir_all(state_directory)?;
-    let lock_path = state_directory.join("service-bootstrap.lock");
+    let lock_path = state_directory.join(filename);
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -112,4 +122,45 @@ pub fn app_root(executable: &Path) -> Option<PathBuf> {
         .parent()
         .and_then(Path::parent)
         .map(Path::to_path_buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bootstrap_lock, service_lock};
+    use std::{
+        sync::mpsc,
+        thread,
+        time::{Duration, SystemTime},
+    };
+
+    #[test]
+    fn service_can_claim_its_endpoint_while_frontend_holds_bootstrap_lock() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "vapor-client-startup-locks-{}-{unique}",
+            std::process::id()
+        ));
+        let bootstrap = bootstrap_lock(&root).expect("lock service startup");
+        let service_root = root.clone();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = service_lock(&service_root).map(|_| ());
+            let _ = sender.send(result);
+        });
+
+        let acquired_without_waiting = receiver
+            .recv_timeout(Duration::from_millis(250))
+            .is_ok_and(|result| result.is_ok());
+        drop(bootstrap);
+        worker.join().expect("service lock worker exits");
+        let _ = std::fs::remove_dir_all(root);
+
+        assert!(
+            acquired_without_waiting,
+            "service endpoint lock must not contend with frontend startup lock"
+        );
+    }
 }

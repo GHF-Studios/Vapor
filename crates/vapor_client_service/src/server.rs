@@ -50,7 +50,7 @@ pub fn run_local_service(
         host_context.app_root.as_deref(),
         &host_context.state_directory,
     );
-    let lock = vapor_client::local_socket::startup_lock(&host_context.state_directory)
+    let lock = vapor_client::local_socket::service_lock(&host_context.state_directory)
         .map_err(|error| format!("could not lock Vapor Client startup: {error}"))?;
     if vapor_client::local_socket::connect(&endpoint).is_ok() {
         return Ok(());

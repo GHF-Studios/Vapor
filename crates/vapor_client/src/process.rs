@@ -482,7 +482,7 @@ fn ensure_service(
     context: &crate::ClientHostContext,
     endpoint: &str,
 ) -> Result<(), ClientError> {
-    let lock = local_socket::startup_lock(&context.state_directory)
+    let lock = local_socket::bootstrap_lock(&context.state_directory)
         .map_err(|error| ClientError::Io(error.to_string()))?;
     match Client::connect_existing(endpoint, None) {
         Ok(client) => {
@@ -505,7 +505,6 @@ fn ensure_service(
     local_socket::remove_stale_endpoint(endpoint)
         .map_err(|error| ClientError::Io(error.to_string()))?;
     let mut spawned_service = Some(spawn_shared_service(service_path, bootstrap)?);
-    drop(lock);
 
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
