@@ -248,8 +248,11 @@ pub fn download_workshop_item(
 
 /// Download multiple Workshop items through the signed-in Steam client.
 ///
-/// The items are downloaded for this operation without changing the user's
-/// subscription list, then copied into Vapor's app-owned cache.
+/// The items are refreshed from Steam for this explicit acquisition without
+/// changing the user's subscription list, then copied into Vapor's app-owned
+/// cache. This makes Acquire/Subscribe the user's explicit request for the
+/// latest published payload, even when Steam considers an installed copy
+/// current.
 pub fn download_workshop_items(
     application_executable: &Path,
     published_file_ids: &[String],
@@ -316,7 +319,7 @@ pub fn download_workshop_items_with_constraints(
                         .map_err(|_| format!("Workshop item ID '{id}' is not a valid number"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let imported = vapor_steam::with_downloaded_workshop_items(
+            let imported = vapor_steam::with_refreshed_workshop_items(
                 app_id,
                 &numeric_ids,
                 |published_file_id, root| {
@@ -628,7 +631,7 @@ pub fn update_composition(
                 .push(published_file_id);
         }
         for (app_id, published_file_ids) in seeded_items {
-            vapor_steam::with_downloaded_workshop_items(
+            vapor_steam::with_refreshed_workshop_items(
                 app_id,
                 &published_file_ids,
                 |published_file_id, provider_root| {
