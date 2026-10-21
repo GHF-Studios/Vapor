@@ -295,8 +295,14 @@ impl DevtoolsApp {
                                 ConsoleStyleRole::Normal => ui.visuals().text_color(),
                             };
                             ui.horizontal_wrapped(|ui| {
-                                ui.colored_label(tint, format!("{:?}", record.level).to_uppercase());
-                                ui.weak(format!("{} · {}", record.timestamp_unix_ms, record.source.0));
+                                ui.colored_label(
+                                    tint,
+                                    format!("{:?}", record.level).to_uppercase(),
+                                );
+                                ui.weak(format!(
+                                    "{} · {}",
+                                    record.timestamp_unix_ms, record.source.0
+                                ));
                                 if let Some(target) = &record.target {
                                     ui.weak(target);
                                 }

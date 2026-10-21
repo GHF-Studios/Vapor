@@ -1,5 +1,5 @@
-use crate::{ContentKind, ProfileAnalysisOptions};
 pub use crate::{CompositionAction, LibraryAction};
+use crate::{ContentKind, ProfileAnalysisOptions};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

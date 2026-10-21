@@ -986,7 +986,7 @@ fn execute_workshop_operation(
                 content_kind.map(|kind| kind.as_str()),
                 &required_tags,
             )
-                .map(WorkshopOperationResult::Search)
+            .map(WorkshopOperationResult::Search)
         }
         WorkshopOperationKind::LoadSubscriptions => {
             let app_id = required_workshop_app_id(workshop_app_id)?;
@@ -1235,9 +1235,9 @@ fn fixture_workshop_operation(
                 .filter(|item| item.title.to_lowercase().contains(&query))
                 .filter(|item| {
                     content_kind.is_none_or(|kind| {
-                        item.tags.iter().any(|tag| {
-                            tag.trim().eq_ignore_ascii_case(kind.as_str())
-                        })
+                        item.tags
+                            .iter()
+                            .any(|tag| tag.trim().eq_ignore_ascii_case(kind.as_str()))
                     })
                 })
                 .filter(|item| {

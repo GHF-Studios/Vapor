@@ -297,14 +297,19 @@ impl RhaiLanguage {
         let mut cursor = 0;
         while cursor < source.len() {
             let tail = &source[cursor..];
-            let character = tail.chars().next().expect("cursor remains on a char boundary");
+            let character = tail
+                .chars()
+                .next()
+                .expect("cursor remains on a char boundary");
             if character.is_whitespace() {
                 cursor += character.len_utf8();
                 continue;
             }
             let start = cursor;
             let (category, end) = if tail.starts_with("//") {
-                let end = tail.find('\n').map_or(source.len(), |newline| cursor + newline);
+                let end = tail
+                    .find('\n')
+                    .map_or(source.len(), |newline| cursor + newline);
                 (SyntaxCategory::Comment, end)
             } else if tail.starts_with("/*") {
                 let end = tail
@@ -312,7 +317,10 @@ impl RhaiLanguage {
                     .map_or(source.len(), |close| cursor + close + 2);
                 (SyntaxCategory::Comment, end)
             } else if character == '"' || character == '\'' {
-                (SyntaxCategory::String, scan_quoted(source, cursor, character))
+                (
+                    SyntaxCategory::String,
+                    scan_quoted(source, cursor, character),
+                )
             } else if character.is_ascii_digit() {
                 let mut end = cursor + character.len_utf8();
                 for next in source[end..].chars() {
@@ -357,12 +365,11 @@ impl RhaiLanguage {
 }
 
 const RHAI_KEYWORDS: &[&str] = &[
-    "as", "break", "catch", "const", "continue", "else", "export", "fn", "for", "if",
-    "import", "in", "let", "loop", "private", "return", "throw", "try", "while",
+    "as", "break", "catch", "const", "continue", "else", "export", "fn", "for", "if", "import",
+    "in", "let", "loop", "private", "return", "throw", "try", "while",
 ];
 const RHAI_TYPES: &[&str] = &[
-    "Array", "Blob", "bool", "char", "Dynamic", "FnPtr", "float", "int", "Map", "string",
-    "Unit",
+    "Array", "Blob", "bool", "char", "Dynamic", "FnPtr", "float", "int", "Map", "string", "Unit",
 ];
 const RHAI_LITERALS: &[&str] = &["false", "this", "true"];
 
@@ -404,7 +411,13 @@ mod tests {
         history.push(ConsoleRecord::new(1, ConsoleLevel::Info, "game", "one"));
         history.push(ConsoleRecord::new(2, ConsoleLevel::Warn, "game", "two"));
         history.push(ConsoleRecord::new(3, ConsoleLevel::Error, "vapor", "three"));
-        assert_eq!(history.records().map(|record| record.message.as_str()).collect::<Vec<_>>(), ["two", "three"]);
+        assert_eq!(
+            history
+                .records()
+                .map(|record| record.message.as_str())
+                .collect::<Vec<_>>(),
+            ["two", "three"]
+        );
         assert_eq!(history.dropped_count(), 1);
         history.clear();
         assert_eq!(history.records().count(), 0);
@@ -416,17 +429,21 @@ mod tests {
         let record = ConsoleRecord::new(1, ConsoleLevel::Warn, "game", "contact lost")
             .target("ship")
             .field("sector", "luna");
-        assert!(ConsoleFilter {
-            levels: vec![ConsoleLevel::Warn],
-            source: Some("GAME".to_owned()),
-            search: "luna".to_owned(),
-        }
-        .matches(&record));
-        assert!(!ConsoleFilter {
-            levels: vec![ConsoleLevel::Error],
-            ..Default::default()
-        }
-        .matches(&record));
+        assert!(
+            ConsoleFilter {
+                levels: vec![ConsoleLevel::Warn],
+                source: Some("GAME".to_owned()),
+                search: "luna".to_owned(),
+            }
+            .matches(&record)
+        );
+        assert!(
+            !ConsoleFilter {
+                levels: vec![ConsoleLevel::Error],
+                ..Default::default()
+            }
+            .matches(&record)
+        );
     }
 
     #[test]

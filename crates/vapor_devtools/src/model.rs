@@ -1,7 +1,9 @@
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
-use vapor_console_core::{ConsoleField, ConsoleFilter, ConsoleHistory, ConsoleLevel, ConsoleRecord};
 use vapor_client_protocol::{ProfileReportSnapshot, TelemetryEvent, TelemetryPayload};
+use vapor_console_core::{
+    ConsoleField, ConsoleFilter, ConsoleHistory, ConsoleLevel, ConsoleRecord,
+};
 
 pub const HISTORY_POINTS: usize = 900;
 const LOG_LINES: usize = 1200;
@@ -123,10 +125,12 @@ impl DevtoolsState {
                 if let Some(target) = target {
                     record.target = Some(target);
                 }
-                record.fields.extend(fields.into_iter().map(|field| ConsoleField {
-                    key: field.key,
-                    value: field.value,
-                }));
+                record
+                    .fields
+                    .extend(fields.into_iter().map(|field| ConsoleField {
+                        key: field.key,
+                        value: field.value,
+                    }));
                 self.logs.push(record);
             }
             TelemetryPayload::Metrics { values } => {
