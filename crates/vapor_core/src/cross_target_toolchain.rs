@@ -6,7 +6,6 @@ use std::{
     env, fs,
     io::{self, Read},
     path::{Path, PathBuf},
-    process::Command,
 };
 
 pub const WINDOWS_GNU_LINKER_VERSION: &str = "20260616";
@@ -232,7 +231,7 @@ fn promote_staged_bundle(
 
 fn extract_archive(archive: &Path, destination: &Path) -> Result<(), CrossTargetToolchainError> {
     #[cfg(target_os = "linux")]
-    let output = Command::new("tar")
+    let output = crate::managed_process::background_command("tar")
         .args(["-xJf"])
         .arg(archive)
         .arg("-C")
@@ -247,7 +246,7 @@ fn extract_archive(archive: &Path, destination: &Path) -> Result<(), CrossTarget
             powershell_quote(&archive.to_string_lossy()),
             powershell_quote(&destination.to_string_lossy()),
         );
-        Command::new("powershell")
+        crate::managed_process::background_command("powershell")
             .args(["-NoProfile", "-Command"])
             .arg(command)
             .output()

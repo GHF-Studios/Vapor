@@ -18,7 +18,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::ExitStatus;
 
 pub const ROOT_DISTRIBUTION_MANIFEST_FILE_NAME: &str = "Vapor-Client.vapor.toml";
 
@@ -142,7 +142,7 @@ pub fn deploy_ecosystem_to_steam(
 
     let stage = stage_distribution(&distribution, &build, options.preview)?;
 
-    let exit_status = Command::new(&steamcmd)
+    let exit_status = crate::managed_process::background_command(&steamcmd)
         .arg("+login")
         .arg(&account)
         .arg("+run_app_build")

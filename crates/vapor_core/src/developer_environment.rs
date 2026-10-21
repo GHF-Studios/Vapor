@@ -12,6 +12,7 @@ use std::fmt;
 #[derive(Debug, Clone)]
 pub struct DeveloperEnvironmentStatus {
     pub rust_installed: bool,
+    pub rust_analyzer_installed: bool,
     pub windows_gnu_target_installed: bool,
     pub windows_gnu_linker_installed: bool,
     pub tracy_profiler_installed: bool,
@@ -21,6 +22,7 @@ pub struct DeveloperEnvironmentStatus {
 impl DeveloperEnvironmentStatus {
     pub const fn is_ready(&self) -> bool {
         self.rust_installed
+            && self.rust_analyzer_installed
             && self.windows_gnu_target_installed
             && self.windows_gnu_linker_installed
             && self.tracy_profiler_installed
@@ -31,6 +33,7 @@ impl DeveloperEnvironmentStatus {
 #[derive(Debug, Clone)]
 pub struct DeveloperEnvironmentRepair {
     pub rust_installed: bool,
+    pub rust_analyzer_installed: bool,
     pub windows_gnu_target_installed: bool,
     pub windows_gnu_linker_installed: bool,
     pub tracy_profiler_installed: bool,
@@ -41,6 +44,7 @@ pub struct DeveloperEnvironmentRepair {
 impl DeveloperEnvironmentRepair {
     pub const fn changed(&self) -> bool {
         self.rust_installed
+            || self.rust_analyzer_installed
             || self.windows_gnu_target_installed
             || self.windows_gnu_linker_installed
             || self.tracy_profiler_installed
@@ -80,6 +84,7 @@ impl DeveloperEnvironment {
     pub fn status(&self) -> DeveloperEnvironmentStatus {
         DeveloperEnvironmentStatus {
             rust_installed: self.rust.is_installed(),
+            rust_analyzer_installed: self.rust.rust_analyzer_path.is_file(),
             windows_gnu_target_installed: self
                 .rust
                 .target_is_installed(crate::toolchain::WINDOWS_GNU_TARGET),
@@ -95,11 +100,12 @@ impl DeveloperEnvironment {
     /// converge on this operation. Runtime/Devtools commands never install pieces.
     pub fn reconcile(&mut self) -> Result<DeveloperEnvironmentRepair, DeveloperEnvironmentError> {
         let rust_installed = !self.rust.is_installed();
+        let rust_analyzer_installed = !self.rust.rust_analyzer_path.is_file();
         let windows_gnu_target_installed = !self
             .rust
             .target_is_installed(crate::toolchain::WINDOWS_GNU_TARGET);
         let windows_gnu_linker_installed = !crate::windows_gnu_linker_installed(&self.installation);
-        if rust_installed || windows_gnu_target_installed {
+        if rust_installed || rust_analyzer_installed || windows_gnu_target_installed {
             self.rust
                 .install()
                 .map_err(DeveloperEnvironmentError::Toolchain)?;
@@ -117,6 +123,7 @@ impl DeveloperEnvironment {
 
         Ok(DeveloperEnvironmentRepair {
             rust_installed,
+            rust_analyzer_installed,
             windows_gnu_target_installed,
             windows_gnu_linker_installed,
             tracy_profiler_installed: tracy.profiler_installed,
@@ -159,5 +166,31 @@ impl std::error::Error for DeveloperEnvironmentError {
             Self::Toolchain(error) => Some(error),
             Self::Tracy(error) => Some(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeveloperEnvironmentStatus;
+
+    fn status(rust_analyzer_installed: bool) -> DeveloperEnvironmentStatus {
+        DeveloperEnvironmentStatus {
+            rust_installed: true,
+            rust_analyzer_installed,
+            windows_gnu_target_installed: true,
+            windows_gnu_linker_installed: true,
+            tracy_profiler_installed: true,
+            tracy_analysis_installed: true,
+        }
+    }
+
+    #[test]
+    fn developer_environment_is_not_ready_without_rust_analyzer() {
+        assert!(!status(false).is_ready());
+    }
+
+    #[test]
+    fn developer_environment_is_ready_with_rust_analyzer() {
+        assert!(status(true).is_ready());
     }
 }

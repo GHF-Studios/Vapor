@@ -11,12 +11,13 @@ use crate::{
     workspace::WorkspaceManifest,
 };
 use serde::Deserialize;
+#[cfg(not(target_os = "windows"))]
+use std::process::Command;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
-    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 pub use vapor_client_domain::{

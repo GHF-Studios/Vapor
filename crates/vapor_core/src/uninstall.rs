@@ -14,7 +14,6 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const LEGACY_APP_ROOT_ENV: &str = "LOO_CAST_APP_ROOT";
 const PROFILE_BLOCK_START: &str = "# >>> Vapor managed PATH >>>";
@@ -446,7 +445,7 @@ if ($filtered.Count -ne $entries.Count) {
 }
 "#;
 
-    let output = Command::new("powershell")
+    let output = crate::managed_process::background_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .arg(&bin)
         .arg(&legacy)
@@ -481,7 +480,7 @@ if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase))
     Write-Output 'removed'
 }
 "#;
-    let output = Command::new("powershell")
+    let output = crate::managed_process::background_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .arg(variable)
         .arg(installation_root)
@@ -739,7 +738,7 @@ fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallErro
 
 fn git_output(root: &Path, args: &[&str]) -> Result<String, UninstallError> {
     let command = format!("git -C {} {}", root.display(), args.join(" "));
-    let output = Command::new("git")
+    let output = crate::managed_process::background_command("git")
         .arg("-C")
         .arg(root)
         .args(args)

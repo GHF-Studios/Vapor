@@ -11,7 +11,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::ExitStatus;
 
 #[derive(Debug, Clone)]
 pub struct EcosystemBootstrap {
@@ -360,7 +360,7 @@ fn validate_existing_checkout(
     repository: &RegisteredRepository,
     target: &Path,
 ) -> Result<(), EcosystemError> {
-    let output = Command::new("git")
+    let output = crate::managed_process::background_command("git")
         .arg("-C")
         .arg(target)
         .args(["remote", "get-url", "origin"])
@@ -410,7 +410,7 @@ fn clone_repository(
     repository: &RegisteredRepository,
     target: &Path,
 ) -> Result<(), EcosystemError> {
-    let status = Command::new("git")
+    let status = crate::managed_process::background_command("git")
         .arg("clone")
         .arg("--")
         .arg(&repository.clone_url)
@@ -429,7 +429,7 @@ fn initialize_submodules(
     repository: &RegisteredRepository,
     target: &Path,
 ) -> Result<(), EcosystemError> {
-    let status = Command::new("git")
+    let status = crate::managed_process::background_command("git")
         .arg("-C")
         .arg(target)
         .args(["submodule", "update", "--init"])

@@ -10,7 +10,7 @@ use std::{
     hash::Hasher,
     io::Read,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
 };
 
 const STEAMPIPE_TEMPLATE_ROOT: &str = "resources/steam/steampipe-templates";
@@ -141,7 +141,7 @@ pub fn publish(
         });
     }
     let steamcmd = executable(paths)?;
-    let output = Command::new(&steamcmd)
+    let output = vapor_core::managed_process::background_command(&steamcmd)
         .args(["+login", options.account, "+run_app_build"])
         .arg(&script)
         .arg("+quit")

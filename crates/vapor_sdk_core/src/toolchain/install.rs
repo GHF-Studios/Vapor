@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::ExitStatus;
 
 use super::plan::{ToolchainInstallPlan, ToolchainPlanError, toolchain_install_plan};
 
@@ -28,7 +28,7 @@ pub fn toolchain_install() -> Result<ToolchainInstallReport, ToolchainInstallErr
     fs::create_dir_all(&plan.status.rustup_home)?;
     fs::create_dir_all(&plan.status.cargo_home)?;
 
-    let exit_status = Command::new(&plan.rustup_path)
+    let exit_status = vapor_core::managed_process::background_command(&plan.rustup_path)
         .args(&plan.rustup_args)
         .env("RUSTUP_HOME", &plan.status.rustup_home)
         .env("CARGO_HOME", &plan.status.cargo_home)

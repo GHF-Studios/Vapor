@@ -257,7 +257,9 @@ pub fn run_packagepack_launch(
     arguments: &[String],
 ) -> Result<(), String> {
     let mut command = match plan.presentation {
-        RuntimePresentation::Window => Command::new(&plan.binary),
+        RuntimePresentation::Window => {
+            vapor_core::managed_process::background_command(&plan.binary)
+        }
         RuntimePresentation::Terminal => {
             #[cfg(target_os = "linux")]
             {
@@ -280,7 +282,7 @@ pub fn run_packagepack_launch(
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
-                let mut command = Command::new(&plan.binary);
+                let mut command = vapor_core::managed_process::background_command(&plan.binary);
                 command.creation_flags(0x0000_0010);
                 command.args(arguments);
                 command

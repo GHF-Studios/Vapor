@@ -165,6 +165,7 @@ pub fn installation_role_snapshot() -> vapor_client_protocol::InstallationRoleSn
         Ok(vapor_client_protocol::InstallationRoleSnapshot {
             role: role.as_str().to_owned(),
             rust_ready: tools.rust_installed,
+            rust_analyzer_ready: tools.rust_analyzer_installed,
             windows_gnu_target_ready: tools.windows_gnu_target_installed,
             windows_gnu_linker_ready: tools.windows_gnu_linker_installed,
             tracy_profiler_ready: tools.tracy_profiler_installed,

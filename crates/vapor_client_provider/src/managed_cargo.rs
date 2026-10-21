@@ -70,7 +70,7 @@ impl ApplicationCargo {
 
     /// Create a child command with Vapor's selected app-packaged toolchain.
     pub fn command(&self) -> Command {
-        let mut command = Command::new(&self.cargo);
+        let mut command = vapor_core::managed_process::background_command(&self.cargo);
         self.environment.apply_to(&mut command);
         command.env("PATH", &self.path);
         command

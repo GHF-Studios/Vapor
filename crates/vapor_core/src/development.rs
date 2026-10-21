@@ -15,7 +15,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::ExitStatus;
 
 const DEVELOPMENT_DIR: &str = "development";
 const TARGET_DIR: &str = "target";
@@ -637,7 +637,7 @@ pub fn run_workspace_deployment_authority(
             source,
         })?;
 
-    let status = Command::new(&canonical_authority)
+    let status = crate::managed_process::background_command(&canonical_authority)
         .args(["client", "deploy", "local"])
         .current_dir(&workspace.root)
         .env(crate::VAPOR_HOME_ENV, &authority.installation_root)

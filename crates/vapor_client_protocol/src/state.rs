@@ -72,6 +72,8 @@ pub struct ClientSnapshot {
 pub struct InstallationRoleSnapshot {
     pub role: String,
     pub rust_ready: bool,
+    #[serde(default)]
+    pub rust_analyzer_ready: bool,
     pub windows_gnu_target_ready: bool,
     pub windows_gnu_linker_ready: bool,
     pub tracy_profiler_ready: bool,
@@ -670,6 +672,11 @@ pub enum ClientEvent {
     OperationChanged(OperationEvent),
     OperationOutput(OperationOutputEvent),
     WorkspaceFileResult(Box<WorkspaceFileResult>),
+    LanguageServerMessage(serde_json::Value),
+    LanguageServerStatus {
+        status: LanguageServerStatus,
+        message: Option<String>,
+    },
     AuthoringResult(Box<AuthoringResult>),
     DevelopmentSessionChanged {
         session: Option<DevelopmentSessionSnapshot>,
@@ -679,4 +686,12 @@ pub enum ClientEvent {
     ProfileAnalysis(Result<ProfileReportSnapshot, String>),
     ServiceStopping,
     ProtocolError(crate::ServiceError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LanguageServerStatus {
+    Ready,
+    Stopped,
+    Failed,
 }

@@ -13,8 +13,8 @@ mod state;
 
 pub use actions::{
     AuthoringAction, CatalogAction, ClientAction, CompositionDependency, DeveloperAction,
-    PublishingAction, SessionAction, WorkshopAction, WorkshopMetadataDraft, WorkspaceAction,
-    WorkspaceProjectSelection, WorkspaceToolOperation,
+    LanguageServerAction, PublishingAction, SessionAction, WorkshopAction, WorkshopMetadataDraft,
+    WorkspaceAction, WorkspaceProjectSelection, WorkspaceToolOperation,
 };
 pub use catalog::{
     CatalogConflict, CatalogContent, CatalogLocation, CatalogLocationKind, merge_catalog_entries,

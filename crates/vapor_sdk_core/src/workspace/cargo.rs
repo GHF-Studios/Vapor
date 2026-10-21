@@ -1,10 +1,8 @@
+use crate::GlobalOptions;
+use crate::toolchain::{ToolchainInstallState, ToolchainStatus, toolchain_status};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::Command;
-
-use crate::GlobalOptions;
-use crate::toolchain::{ToolchainInstallState, ToolchainStatus, toolchain_status};
 use vapor_core::RustToolchainCommandEnvironment;
 
 use super::error::WorkspaceCommandError;
@@ -40,7 +38,8 @@ impl VaporCargo {
     }
 
     pub(super) fn run(&self, args: &[&str]) -> Result<WorkspaceCargoReport, WorkspaceCommandError> {
-        let mut command = Command::new(&self.toolchain.cargo_path);
+        let mut command =
+            vapor_core::managed_process::background_command(&self.toolchain.cargo_path);
         RustToolchainCommandEnvironment::new(
             &self.toolchain.vapor_home,
             &self.cargo_home,

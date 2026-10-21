@@ -14,8 +14,9 @@ pub use catalog::{CatalogQuery, CatalogSearchSnapshot, CatalogStatus};
 
 pub use action::{
     AuthoringAction, CatalogAction, ClientAction, CompositionAction, CompositionDependency,
-    DeveloperAction, LibraryAction, PublishingAction, SessionAction, WorkshopAction,
-    WorkshopMetadataDraft, WorkspaceAction, WorkspaceProjectSelection, WorkspaceToolOperation,
+    DeveloperAction, LanguageServerAction, LibraryAction, PublishingAction, SessionAction,
+    WorkshopAction, WorkshopMetadataDraft, WorkspaceAction, WorkspaceProjectSelection,
+    WorkspaceToolOperation,
 };
 pub use composition::{
     COMPOSITION_SCHEMA_VERSION, Composition, CompositionDocument, ContentReference,
@@ -39,9 +40,9 @@ pub use state::{
     CatalogItemAction, CatalogItemRole, CatalogLocation, CatalogLocationKind, ClientEvent,
     ClientRevision, ClientSnapshot, CompositionPreviewDependency, CompositionPreviewNode,
     CompositionPreviewSnapshot, CompositionPreviewSource, DevelopmentSessionSnapshot,
-    DurableStateSnapshot, HostSummary, InstallationRoleSnapshot, OperationEvent,
-    OperationOutputEvent, OperationOutputStream, OperationPhase, OperationStatus, OperationSummary,
-    ProfileReportSnapshot, ProfileTraceSnapshot, ProfileZoneSnapshot,
+    DurableStateSnapshot, HostSummary, InstallationRoleSnapshot, LanguageServerStatus,
+    OperationEvent, OperationOutputEvent, OperationOutputStream, OperationPhase, OperationStatus,
+    OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot, ProfileZoneSnapshot,
     RootDistributionIdentitySnapshot, RootPublishingSnapshot, SourceMetadataRepairAction,
     SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot, WorkshopAcquisitionBatchSnapshot,
     WorkshopAcquisitionSnapshot, WorkshopBatchReviewSnapshot, WorkshopItemSnapshot,
@@ -188,6 +189,10 @@ mod tests {
             ClientAction::Workspace(WorkspaceAction::Discover { root: ".".into() }),
             ClientAction::Workspace(WorkspaceAction::DiscoverWorkspace { root: ".".into() }),
             ClientAction::Workspace(WorkspaceAction::Open { root: ".".into() }),
+            ClientAction::LanguageServer(LanguageServerAction::Start {
+                workspace_root: "/work".into(),
+            }),
+            ClientAction::LanguageServer(LanguageServerAction::Stop),
             ClientAction::Workspace(WorkspaceAction::Validate),
             ClientAction::Workspace(WorkspaceAction::BuildDocumentation),
             ClientAction::Workspace(WorkspaceAction::PublishDocumentation),
@@ -396,12 +401,26 @@ mod tests {
         ];
         assert_eq!(
             actions.len(),
-            93,
+            95,
             "update this catalog when adding/removing action variants"
         );
         for action in actions {
             assert_round_trip(action);
         }
+    }
+
+    #[test]
+    fn language_server_events_round_trip_json_rpc_messages_and_status() {
+        assert_round_trip(ProtocolFrame::LanguageServerMessage(
+            r#"{"jsonrpc":"2.0","method":"initialized"}"#.to_owned(),
+        ));
+        assert_round_trip(ProtocolFrame::Event(ClientEvent::LanguageServerMessage(
+            serde_json::json!({"jsonrpc": "2.0", "id": 3, "result": {"contents": "ok"}}),
+        )));
+        assert_round_trip(ProtocolFrame::Event(ClientEvent::LanguageServerStatus {
+            status: LanguageServerStatus::Failed,
+            message: Some("managed Rust Analyzer is missing".into()),
+        }));
     }
 
     #[test]
@@ -772,6 +791,16 @@ mod tests {
         .expect("prior Workshop result remains readable");
         assert!(snapshot.required_tags.is_empty());
         assert!(snapshot.items[0].tags.is_empty());
+    }
+
+    #[test]
+    fn installation_role_snapshot_defaults_missing_rust_analyzer_readiness() {
+        let snapshot: InstallationRoleSnapshot = serde_json::from_str(
+            r#"{"role":"composer","rust_ready":true,"windows_gnu_target_ready":true,"windows_gnu_linker_ready":true,"tracy_profiler_ready":true,"tracy_analysis_ready":true,"error":null}"#,
+        )
+        .expect("prior role snapshot remains readable");
+
+        assert!(!snapshot.rust_analyzer_ready);
     }
 
     #[test]

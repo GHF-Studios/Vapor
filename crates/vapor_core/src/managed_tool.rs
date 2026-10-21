@@ -13,7 +13,6 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const GITHUB_API_ACCEPT: &str = "application/vnd.github+json";
 const GITHUB_API_VERSION: &str = "2022-11-28";
@@ -250,7 +249,7 @@ pub fn download_verified_github_release_asset(
 fn sha256_file(path: &Path) -> Result<String, ManagedToolError> {
     #[cfg(target_os = "windows")]
     {
-        let output = Command::new("certutil")
+        let output = crate::managed_process::background_command("certutil")
             .args(["-hashfile"])
             .arg(path)
             .arg("SHA256")
@@ -280,7 +279,7 @@ fn sha256_file(path: &Path) -> Result<String, ManagedToolError> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let output = Command::new("sha256sum")
+        let output = crate::managed_process::background_command("sha256sum")
             .arg(path)
             .output()
             .map_err(|source| ManagedToolError::DigestTool {

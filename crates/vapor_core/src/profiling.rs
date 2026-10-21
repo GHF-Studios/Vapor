@@ -11,7 +11,6 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const PROFILE_DIR: &str = "profiling";
 const LIBRARY_FILE: &str = "trace-library.json";
@@ -257,7 +256,7 @@ pub fn analyze_profile_trace(
     let installation = VaporInstallation::discover()?;
     let tracy = ManagedTracyToolset::discover(&installation.user_data_root())?;
     let csvexport = tracy.csvexport_executable()?;
-    let mut command = Command::new(csvexport);
+    let mut command = crate::managed_process::background_command(csvexport);
     command.arg("-u").arg("-s").arg("\t");
     if options.self_time {
         command.arg("-e");

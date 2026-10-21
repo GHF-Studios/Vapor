@@ -3,6 +3,7 @@ use crate::{
     session::MAX_BUFFERED_OPERATION_OUTPUT_EVENTS,
 };
 use std::{
+    collections::HashMap,
     io::{self, BufRead, BufReader, BufWriter, Read, Write},
     sync::{
         Arc,
@@ -13,13 +14,16 @@ use std::{
     time::{Duration, Instant},
 };
 use vapor_client_protocol::{
-    ClientAction, ClientEvent, DeveloperAction, LegacyStorageSeed, MAX_PROTOCOL_FRAME_BYTES,
+    ClientAction, ClientEvent, ClientResponse, ClientResponseKind, DeveloperAction,
+    LanguageServerAction, LanguageServerStatus, LegacyStorageSeed, MAX_PROTOCOL_FRAME_BYTES,
     PROTOCOL_VERSION, ProtocolFrame, ServiceError, ServiceErrorCode,
 };
 
+mod language_server;
+
 const MAX_FRAME_BYTES: usize = MAX_PROTOCOL_FRAME_BYTES;
 
-const SERVICE_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
+const SERVICE_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_PENDING_LOCAL_INPUTS: usize = 8;
 const MAX_LOCAL_CLIENTS: usize = 8;
 // A service poll can release the session's full output window in one batch.
@@ -36,6 +40,13 @@ enum LocalInput {
     Frame(u64, Result<ProtocolFrame, String>),
     Disconnected(u64),
     ListenerFailed(String),
+    LanguageServerMessage(u64, u64, serde_json::Value),
+    LanguageServerExited(u64, u64, Option<String>),
+}
+
+struct ManagedLanguageServer {
+    generation: u64,
+    process: language_server::Process,
 }
 
 /// Runs the singleton local service until all clients leave and its idle grace ends.
@@ -97,6 +108,8 @@ fn serve_local(
     let mut clients = ServiceClients::new();
     let mut authenticated = std::collections::HashSet::<u64>::new();
     let mut telemetry_subscribers = std::collections::HashSet::<u64>::new();
+    let mut language_servers = HashMap::<u64, ManagedLanguageServer>::new();
+    let mut next_language_server_generation = 1_u64;
     let mut latest_development_status = None;
     let mut session: Option<ClientSession> = None;
     let telemetry_events = crate::development_telemetry::spawn();
@@ -239,6 +252,15 @@ fn serve_local(
                     ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(session.snapshot()))),
                 );
             }
+            Ok(LocalInput::Frame(client_id, Ok(ProtocolFrame::Disconnect))) => {
+                stop_language_server(&mut language_servers, client_id);
+                disconnect_client(
+                    &mut clients,
+                    &mut authenticated,
+                    &mut telemetry_subscribers,
+                    client_id,
+                );
+            }
             Ok(LocalInput::Frame(client_id, Ok(ProtocolFrame::Request(request)))) => {
                 if !authenticated.contains(&client_id) {
                     send_protocol_error(
@@ -259,6 +281,10 @@ fn serve_local(
                     }
                     _ => None,
                 };
+                let language_server_action = match &request.action {
+                    ClientAction::LanguageServer(action) => Some(action.clone()),
+                    _ => None,
+                };
                 let response = if request.protocol_version != PROTOCOL_VERSION {
                     vapor_client_protocol::ClientResponse {
                         protocol_version: PROTOCOL_VERSION,
@@ -275,6 +301,16 @@ fn serve_local(
                             retryable: false,
                         }),
                     }
+                } else if let Some(action) = language_server_action {
+                    dispatch_language_server_action(
+                        client_id,
+                        action,
+                        request,
+                        session,
+                        &mut language_servers,
+                        &mut next_language_server_generation,
+                        sender.clone(),
+                    )
                 } else {
                     session.dispatch(request)
                 };
@@ -312,6 +348,39 @@ fn serve_local(
                     ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(session.snapshot()))),
                 );
             }
+            Ok(LocalInput::Frame(client_id, Ok(ProtocolFrame::LanguageServerMessage(message)))) => {
+                if !authenticated.contains(&client_id) {
+                    send_protocol_error(
+                        &mut clients,
+                        &mut authenticated,
+                        &mut telemetry_subscribers,
+                        client_id,
+                        "client must negotiate the service protocol before sending LSP messages",
+                    );
+                    continue;
+                }
+                let message = serde_json::from_str::<serde_json::Value>(&message)
+                    .map_err(|error| format!("invalid LSP JSON message: {error}"));
+                let result = match (language_servers.get(&client_id), message) {
+                    (Some(server), Ok(message)) => server.process.send(message),
+                    (None, _) => {
+                        Err("Rust Analyzer is not running for this IDE session.".to_owned())
+                    }
+                    (_, Err(error)) => Err(error),
+                };
+                if let Err(message) = result {
+                    send_to_client(
+                        &mut clients,
+                        &mut authenticated,
+                        &mut telemetry_subscribers,
+                        client_id,
+                        ProtocolFrame::Event(ClientEvent::LanguageServerStatus {
+                            status: LanguageServerStatus::Failed,
+                            message: Some(message),
+                        }),
+                    );
+                }
+            }
             Ok(LocalInput::Frame(client_id, Ok(_))) => {
                 send_protocol_error(
                     &mut clients,
@@ -337,6 +406,7 @@ fn serve_local(
                 );
             }
             Ok(LocalInput::Disconnected(client_id)) => {
+                stop_language_server(&mut language_servers, client_id);
                 disconnect_client(
                     &mut clients,
                     &mut authenticated,
@@ -349,6 +419,51 @@ fn serve_local(
             }
             Ok(LocalInput::ListenerFailed(error)) => {
                 return Err(format!("local service listener failed: {error}"));
+            }
+            Ok(LocalInput::LanguageServerMessage(client_id, generation, message)) => {
+                if authenticated.contains(&client_id)
+                    && clients.contains_key(&client_id)
+                    && language_servers
+                        .get(&client_id)
+                        .is_some_and(|server| server.generation == generation)
+                {
+                    send_to_client(
+                        &mut clients,
+                        &mut authenticated,
+                        &mut telemetry_subscribers,
+                        client_id,
+                        ProtocolFrame::Event(ClientEvent::LanguageServerMessage(message)),
+                    );
+                }
+            }
+            Ok(LocalInput::LanguageServerExited(client_id, generation, error)) => {
+                let is_current = language_servers
+                    .get(&client_id)
+                    .is_some_and(|server| server.generation == generation);
+                if is_current {
+                    language_servers.remove(&client_id);
+                }
+                if is_current
+                    && authenticated.contains(&client_id)
+                    && clients.contains_key(&client_id)
+                {
+                    send_to_client(
+                        &mut clients,
+                        &mut authenticated,
+                        &mut telemetry_subscribers,
+                        client_id,
+                        ProtocolFrame::Event(ClientEvent::LanguageServerStatus {
+                            status: if error.is_some() {
+                                LanguageServerStatus::Failed
+                            } else {
+                                LanguageServerStatus::Stopped
+                            },
+                            message: Some(
+                                error.unwrap_or_else(|| "Rust Analyzer stopped.".to_owned()),
+                            ),
+                        }),
+                    );
+                }
             }
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
             Err(RecvTimeoutError::Timeout) => {}
@@ -392,18 +507,111 @@ fn serve_local(
                 &mut development_status,
             );
         }
-        if clients.is_empty()
-            && session
-                .as_ref()
-                .is_none_or(|session| !session.has_active_operation())
-        {
+        let has_active_operation = session
+            .as_ref()
+            .is_some_and(ClientSession::has_active_operation);
+        if clients.is_empty() && !has_active_operation {
             let idle = idle_since.get_or_insert_with(Instant::now);
-            if idle.elapsed() >= SERVICE_IDLE_TIMEOUT {
+            if should_stop_when_idle(clients.is_empty(), has_active_operation, idle.elapsed()) {
                 return Ok(());
             }
         } else {
             idle_since = None;
         }
+    }
+}
+
+fn should_stop_when_idle(
+    clients_disconnected: bool,
+    has_active_operation: bool,
+    idle_duration: Duration,
+) -> bool {
+    clients_disconnected && !has_active_operation && idle_duration >= SERVICE_IDLE_TIMEOUT
+}
+
+fn dispatch_language_server_action(
+    client_id: u64,
+    action: LanguageServerAction,
+    request: vapor_client_protocol::ClientRequest,
+    session: &ClientSession,
+    language_servers: &mut HashMap<u64, ManagedLanguageServer>,
+    next_generation: &mut u64,
+    sender: SyncSender<LocalInput>,
+) -> ClientResponse {
+    let result = match action {
+        LanguageServerAction::Start { workspace_root } => {
+            let active_workspace = session.snapshot().host.workspace;
+            match active_workspace {
+                Some(active_workspace) => {
+                    let active_workspace = std::path::Path::new(&active_workspace)
+                        .canonicalize()
+                        .map_err(|error| format!("cannot open the active workspace: {error}"));
+                    let requested_workspace = std::path::Path::new(&workspace_root)
+                        .canonicalize()
+                        .map_err(|error| format!("cannot open the requested workspace: {error}"));
+                    match (active_workspace, requested_workspace) {
+                        (Ok(active), Ok(requested)) if active == requested => {
+                            stop_language_server(language_servers, client_id);
+                            let generation = *next_generation;
+                            *next_generation = next_generation.saturating_add(1);
+                            language_server::start(&active, client_id, generation, sender).map(
+                                |process| {
+                                    language_servers.insert(
+                                        client_id,
+                                        ManagedLanguageServer {
+                                            generation,
+                                            process,
+                                        },
+                                    );
+                                },
+                            )
+                        }
+                        (Ok(_), Ok(_)) => Err(
+                            "Rust Analyzer may only open the workspace selected by Vapor Client."
+                                .to_owned(),
+                        ),
+                        (Err(error), _) | (_, Err(error)) => Err(error),
+                    }
+                }
+                None => {
+                    Err("Open a Rust workspace in Vapor before starting Rust Analyzer.".to_owned())
+                }
+            }
+        }
+        LanguageServerAction::Stop => {
+            stop_language_server(language_servers, client_id);
+            Ok(())
+        }
+    };
+
+    let snapshot = session.snapshot();
+    let (kind, error) = match result {
+        Ok(()) => (ClientResponseKind::Applied, None),
+        Err(message) => (
+            ClientResponseKind::Rejected,
+            Some(ServiceError {
+                code: ServiceErrorCode::ProviderFailure,
+                message,
+                retryable: true,
+            }),
+        ),
+    };
+    ClientResponse {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: request.request_id,
+        revision: snapshot.revision,
+        kind,
+        snapshot,
+        error,
+    }
+}
+
+fn stop_language_server(
+    language_servers: &mut HashMap<u64, ManagedLanguageServer>,
+    client_id: u64,
+) {
+    if let Some(mut server) = language_servers.remove(&client_id) {
+        server.process.stop();
     }
 }
 
@@ -779,6 +987,7 @@ fn process_frame(
     session: &mut ClientSession,
 ) -> Result<(), String> {
     match serde_json::from_slice::<ProtocolFrame>(buffer) {
+        Ok(ProtocolFrame::Disconnect) => return Ok(()),
         Ok(ProtocolFrame::Initialize { .. } | ProtocolFrame::Connect { .. }) => {
             let error = ServiceError {
                 code: ServiceErrorCode::InvalidRequest,
@@ -902,6 +1111,18 @@ mod tests {
     fn queued_frame(frame: &QueuedProtocolFrame) -> ProtocolFrame {
         serde_json::from_slice(&frame.bytes[..frame.bytes.len() - 1])
             .expect("outbound queue contains a complete encoded frame")
+    }
+
+    #[test]
+    fn idle_service_exits_quickly_but_stays_for_clients_and_active_operations() {
+        assert!(!should_stop_when_idle(true, false, Duration::from_secs(14)));
+        assert!(should_stop_when_idle(true, false, Duration::from_secs(15)));
+        assert!(!should_stop_when_idle(
+            false,
+            false,
+            Duration::from_secs(15)
+        ));
+        assert!(!should_stop_when_idle(true, true, Duration::from_secs(15)));
     }
 
     #[test]

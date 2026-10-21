@@ -9,11 +9,22 @@ pub enum ClientAction {
     Composition(CompositionAction),
     Library(LibraryAction),
     Workspace(WorkspaceAction),
+    LanguageServer(LanguageServerAction),
     Authoring(AuthoringAction),
     Workshop(WorkshopAction),
     Publishing(PublishingAction),
     Developer(DeveloperAction),
     Session(SessionAction),
+}
+
+/// An operation on the Vapor-managed language server attached to this client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "kebab-case")]
+pub enum LanguageServerAction {
+    /// Start the installation's pinned Rust Analyzer for the opened workspace.
+    Start { workspace_root: String },
+    /// Stop the language server owned by this connected client.
+    Stop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -443,6 +454,10 @@ impl ClientAction {
                 WorkspaceAction::OpenFile { .. } => "workspace.open-file",
                 WorkspaceAction::SaveFile { .. } => "workspace.save-file",
                 WorkspaceAction::CreateFile { .. } => "workspace.create-file",
+            },
+            Self::LanguageServer(action) => match action {
+                LanguageServerAction::Start { .. } => "language-server.start",
+                LanguageServerAction::Stop => "language-server.stop",
             },
             Self::Authoring(action) => match action {
                 AuthoringAction::ListRegisteredSources => "authoring.list-registered-sources",

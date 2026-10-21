@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ExitStatus, Stdio};
 
 use super::error::SteamCommandError;
 use super::status::steam_status_for;
@@ -84,7 +84,7 @@ fn run_app_build_args(account: &str, app_build_script: &Path) -> Vec<String> {
 }
 
 fn run_steamcmd(steamcmd: &Path, steam_args: &[String]) -> Result<ExitStatus, SteamCommandError> {
-    Command::new(steamcmd)
+    vapor_core::managed_process::background_command(steamcmd)
         .args(steam_args)
         .status()
         .map_err(SteamCommandError::SteamCmdIo)
@@ -96,7 +96,7 @@ fn run_steamcmd_captured(
 ) -> Result<ExitStatus, SteamCommandError> {
     use std::io::Write;
 
-    let output = Command::new(steamcmd)
+    let output = vapor_core::managed_process::background_command(steamcmd)
         .args(steam_args)
         .stdin(Stdio::inherit())
         .output()

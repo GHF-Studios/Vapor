@@ -13,7 +13,6 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const PROFILE_BLOCK_START: &str = "# >>> Vapor managed PATH >>>";
 const PROFILE_BLOCK_END: &str = "# <<< Vapor managed PATH <<<";
@@ -221,7 +220,7 @@ if (-not $present) { $entries += $bin }
 [Environment]::SetEnvironmentVariable('Path', ($entries -join ';'), 'User')
 "#;
 
-    let status = Command::new("powershell")
+    let status = crate::managed_process::background_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .arg(root)
         .arg(bin)

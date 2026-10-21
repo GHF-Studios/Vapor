@@ -738,7 +738,7 @@ fn run_steamcmd_workshop_builds(
         return Err("at least one Workshop build script is required".to_owned());
     }
     let steamcmd = steam::executable(paths)?;
-    let mut command = Command::new(&steamcmd);
+    let mut command = vapor_core::managed_process::background_command(&steamcmd);
     command.args(["+login", account]);
     for script in scripts {
         command.arg("+workshop_build_item").arg(script);
@@ -789,7 +789,7 @@ pub(super) fn run_steamcmd_workshop_downloads(
         return Err("at least one Workshop download is required".to_owned());
     }
     let steamcmd = steam::executable_for_installation(installation)?;
-    let mut command = Command::new(&steamcmd);
+    let mut command = vapor_core::managed_process::background_command(&steamcmd);
     command.args(["+login", account]);
     for download in downloads {
         command

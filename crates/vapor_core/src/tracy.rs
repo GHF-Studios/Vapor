@@ -129,7 +129,7 @@ impl ManagedTracyToolset {
             ));
         }
 
-        Command::new(&self.profiler)
+        crate::managed_process::background_command(&self.profiler)
             .spawn()
             .map_err(|source| TracyError::io(self.profiler.clone(), source))?;
         Ok(())
@@ -202,7 +202,7 @@ fn install_managed_tracy_csvexport(
             .map_err(|source| TracyError::io(archive_path.clone(), source))?;
 
         run_command(
-            Command::new("tar")
+            crate::managed_process::background_command("tar")
                 .arg("-xzf")
                 .arg(&archive_path)
                 .arg("-C")
@@ -222,7 +222,7 @@ fn install_managed_tracy_csvexport(
             })?;
 
         run_command(
-            Command::new("cmake")
+            crate::managed_process::background_command("cmake")
                 .arg("-B")
                 .arg(&build_root)
                 .arg("-S")
@@ -232,7 +232,7 @@ fn install_managed_tracy_csvexport(
             "configure Tracy csvexport",
         )?;
         run_command(
-            Command::new("cmake")
+            crate::managed_process::background_command("cmake")
                 .arg("--build")
                 .arg(&build_root)
                 .arg("--parallel"),
@@ -503,7 +503,7 @@ fn build_tracy_from_source(
             .map_err(|source| TracyError::io(archive_path.clone(), source))?;
 
         run_command(
-            Command::new("tar")
+            crate::managed_process::background_command("tar")
                 .arg("-xzf")
                 .arg(&archive_path)
                 .arg("-C")
@@ -522,7 +522,7 @@ fn build_tracy_from_source(
                 )
             })?;
 
-        let mut configure = Command::new("cmake");
+        let mut configure = crate::managed_process::background_command("cmake");
         configure
             .arg("-B")
             .arg(&build_root)
@@ -543,7 +543,7 @@ fn build_tracy_from_source(
         run_command(&mut configure, "configure Tracy profiler")?;
 
         run_command(
-            Command::new("cmake")
+            crate::managed_process::background_command("cmake")
                 .arg("--build")
                 .arg(&build_root)
                 .arg("--parallel"),
@@ -598,7 +598,7 @@ fn build_tracy_from_source(
 }
 
 fn ensure_command_available(command: &'static str) -> Result<(), TracyError> {
-    Command::new(command)
+    crate::managed_process::background_command(command)
         .arg("--version")
         .output()
         .map(|_| ())

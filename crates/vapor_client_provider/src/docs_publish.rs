@@ -6,7 +6,6 @@ use serde::Deserialize;
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
 
@@ -141,7 +140,7 @@ fn build_bundle(source_root: &Path) -> Result<Vec<u8>, String> {
     write_site_index(&site, &book_links, &guide_links)?;
     validate_site_tree(&site)?;
 
-    let output = Command::new("tar")
+    let output = vapor_core::managed_process::background_command("tar")
         .args(["-czf", "-", "-C"])
         .arg(&site)
         .arg(".")
@@ -300,7 +299,7 @@ fn build_books(books_root: &Path, site: &Path) -> Result<Vec<BookLink>, String> 
         .filter(|path| path.is_file())
         .collect::<Vec<_>>();
     books.sort();
-    let mdbook_available = Command::new("mdbook")
+    let mdbook_available = vapor_core::managed_process::background_command("mdbook")
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success());
@@ -317,7 +316,7 @@ fn build_books(books_root: &Path, site: &Path) -> Result<Vec<BookLink>, String> 
         )?;
         let output = site.join("books").join(directory);
         if mdbook_available {
-            let result = Command::new("mdbook")
+            let result = vapor_core::managed_process::background_command("mdbook")
                 .arg("build")
                 .arg(book.parent().expect("book has parent"))
                 .arg("--dest-dir")

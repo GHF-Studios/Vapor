@@ -213,7 +213,6 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        process::Command,
     };
 
     struct TestRoot(PathBuf);
@@ -255,7 +254,7 @@ mod tests {
         let root = TestRoot::new();
         let compiler = root.executable("tools/llvm-mingw/bin/x86_64-w64-mingw32-clang");
         let archiver = root.executable("tools/llvm-mingw/bin/x86_64-w64-mingw32-ar");
-        let mut command = Command::new("cargo");
+        let mut command = vapor_core::managed_process::background_command("cargo");
 
         configure_linker_env(&mut command, &root.0, WINDOWS_GNU_TARGET).unwrap();
 

@@ -15,6 +15,7 @@ mod workspace;
 use composition::fixture_composition_result;
 use composition::{protocol_phase, protocol_status};
 use std::{
+    any::Any,
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, SyncSender},
@@ -146,6 +147,7 @@ pub struct ClientSession {
 
 enum BackgroundOperationMessage {
     Lifecycle(application::CoreOperationEvent),
+    Panicked { id: String, message: String },
     Complete(Box<CompositionOperationCompletion>),
     CompleteWorkshop(Box<WorkshopOperationCompletion>),
     CompleteRootPublish(Box<RootPublishOperationCompletion>),
@@ -161,6 +163,7 @@ impl BackgroundOperationMessage {
     fn completion_id(&self) -> Option<&str> {
         match self {
             Self::Lifecycle(_) => None,
+            Self::Panicked { id, .. } => Some(id),
             Self::Complete(completion) => Some(&completion.id),
             Self::CompleteWorkshop(completion) => Some(&completion.id),
             Self::CompleteRootPublish(completion) => Some(&completion.id),
@@ -172,6 +175,16 @@ impl BackgroundOperationMessage {
             Self::CompleteRoleTransition(completion) => Some(&completion.id),
         }
     }
+}
+
+fn background_operation_panic_message(payload: Box<dyn Any + Send>) -> String {
+    let detail = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("unexpected panic");
+    let detail = detail.chars().take(320).collect::<String>();
+    format!("Operation stopped after an internal error: {detail}")
 }
 
 struct BackgroundOperationSpec {
@@ -1445,14 +1458,26 @@ impl ClientSession {
                         let _ = lifecycle_sender.send(BackgroundOperationMessage::Lifecycle(event));
                     }
                 });
-                let result = application::OperationService::run_observed_cancellable(
-                    request,
-                    sink,
-                    cancellation,
-                    execute,
-                    outcome,
-                );
-                let _ = completion_sender.send(completion(id, result));
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    application::OperationService::run_observed_cancellable(
+                        request,
+                        sink,
+                        cancellation,
+                        execute,
+                        outcome,
+                    )
+                }));
+                match result {
+                    Ok(result) => {
+                        let _ = completion_sender.send(completion(id, result));
+                    }
+                    Err(payload) => {
+                        let _ = completion_sender.send(BackgroundOperationMessage::Panicked {
+                            id,
+                            message: background_operation_panic_message(payload),
+                        });
+                    }
+                }
             })
             .map_err(|error| {
                 self.clear_active_operation();
@@ -1476,6 +1501,34 @@ impl ClientSession {
                 continue;
             }
             match message {
+                BackgroundOperationMessage::Panicked { id, message } => {
+                    if !self
+                        .active_operation
+                        .as_ref()
+                        .is_some_and(|operation| operation.id == id)
+                    {
+                        continue;
+                    }
+                    let active = self
+                        .active_operation
+                        .take()
+                        .expect("matching active operation exists");
+                    self.clear_active_operation();
+                    self.revision.0 = self.revision.0.saturating_add(1);
+                    self.operation_events
+                        .push_back(ClientEvent::OperationChanged(OperationEvent {
+                            revision: self.revision,
+                            id,
+                            composition_id: active.composition_id,
+                            action: active.action,
+                            phase: active.phase,
+                            status: OperationStatus::Failed {
+                                message: message.clone(),
+                            },
+                            progress: active.progress,
+                            message: Some(message),
+                        }));
+                }
                 BackgroundOperationMessage::Lifecycle(event) => {
                     let id = event.id.0.to_string();
                     let Some(active) = self.active_operation.as_mut().filter(|op| op.id == id)
@@ -1756,6 +1809,43 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
     use vapor_client_protocol::{ClientAction, ClientRequest, RequestId};
+
+    #[test]
+    fn panicking_background_operation_reports_failure_and_releases_service_idle_state() {
+        let mut session = session();
+        session
+            .spawn_background_operation(
+                BackgroundOperationSpec {
+                    domain: "workspace",
+                    action: "workspace.test",
+                    thread_prefix: "test-operation",
+                    failure_label: "workspace test",
+                    composition_id: None,
+                    phase: OperationPhase::Building,
+                },
+                |_| -> Result<(), String> { panic!("synthetic worker panic") },
+                |_| Ok("completed".to_owned()),
+                |id, _| BackgroundOperationMessage::Panicked {
+                    id,
+                    message: "synthetic worker panic".to_owned(),
+                },
+            )
+            .expect("start background operation");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut events = Vec::new();
+        while session.has_active_operation() && Instant::now() < deadline {
+            events.extend(session.poll_background_operations());
+            thread::sleep(Duration::from_millis(5));
+        }
+        events.extend(session.poll_background_operations());
+
+        assert!(!session.has_active_operation());
+        assert!(events.iter().any(|event| {
+            matches!(event, ClientEvent::OperationChanged(event)
+                if matches!(event.status, OperationStatus::Failed { .. }))
+        }));
+    }
 
     #[test]
     fn buffered_operation_output_is_capped_without_dropping_lifecycle_events() {

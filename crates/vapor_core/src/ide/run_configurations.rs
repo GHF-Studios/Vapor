@@ -7,9 +7,6 @@ use super::xml_escape;
 use crate::VaporWorkspace;
 #[cfg(not(windows))]
 use serde::Deserialize;
-#[cfg(not(windows))]
-use std::process::Command;
-
 pub(super) fn build(project_root: &Path, installation_root: &Path) -> Vec<(PathBuf, String)> {
     #[cfg(windows)]
     {
@@ -366,7 +363,7 @@ fn client_run_configurations(
 #[cfg(not(windows))]
 fn cargo_binaries(vapor: &Path, root: &Path) -> Vec<(PathBuf, String)> {
     let manifest = root.join("Cargo.toml");
-    let Ok(output) = Command::new(vapor)
+    let Ok(output) = crate::managed_process::background_command(vapor)
         .args([
             "toolchain",
             "cargo",

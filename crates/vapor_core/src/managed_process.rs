@@ -2,6 +2,7 @@
 
 use crate::OperationOutputStream;
 use std::{
+    ffi::OsStr,
     io::{self, BufRead, BufReader, Read, Write},
     process::{Command, ExitStatus, Stdio},
     sync::mpsc,
@@ -10,6 +11,16 @@ use std::{
 };
 
 const MAX_OPERATION_OUTPUT_LINE_BYTES: usize = 8 * 1024;
+
+/// Construct a child-process command that never opens a separate Windows console.
+///
+/// Use this for tools Vapor manages in the background. Commands that deliberately
+/// open a user terminal should keep using `Command::new` and request that window.
+pub fn background_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    configure_background_process(&mut command);
+    command
+}
 
 /// Run a managed child while forwarding bounded stdout and stderr lines.
 pub fn run(
@@ -37,6 +48,7 @@ pub fn run_cancellable_with_started(
     mut report_output: impl FnMut(OperationOutputStream, &str),
 ) -> Result<ExitStatus, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    configure_background_process(command);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -136,12 +148,13 @@ fn terminate_child_tree(child: &mut std::process::Child) -> Result<(), std::io::
     }
     #[cfg(windows)]
     {
-        let status = Command::new("taskkill")
+        let mut command = background_command("taskkill");
+        command
             .args(["/PID", &child.id().to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .stderr(Stdio::null());
+        let status = command.status();
         if matches!(status, Ok(status) if status.success()) {
             return Ok(());
         }
@@ -156,6 +169,15 @@ fn terminate_child_tree(child: &mut std::process::Child) -> Result<(), std::io::
     }
 }
 
+#[cfg(windows)]
+fn configure_background_process(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+}
+
+#[cfg(not(windows))]
+fn configure_background_process(_command: &mut Command) {}
+
 fn forward_output(
     reader: impl Read,
     stream: OperationOutputStream,
@@ -163,14 +185,14 @@ fn forward_output(
 ) -> Result<(), String> {
     let mut reader = BufReader::new(reader);
     let mut bytes = Vec::new();
+    let mut carry = Vec::new();
     loop {
-        let Some(truncated) = read_bounded_line(&mut reader, &mut bytes)? else {
+        let Some(_continued) = read_bounded_line(&mut reader, &mut bytes, &mut carry)? else {
             return Ok(());
         };
         let text = String::from_utf8_lossy(&bytes);
-        let text = format_output_line(&text, truncated);
         sender
-            .send((stream, text))
+            .send((stream, text.into_owned()))
             .map_err(|_| "Vapor Client stopped receiving managed child output".to_owned())?;
     }
 }
@@ -178,45 +200,64 @@ fn forward_output(
 fn read_bounded_line(
     reader: &mut impl BufRead,
     line: &mut Vec<u8>,
+    carry: &mut Vec<u8>,
 ) -> Result<Option<bool>, String> {
     line.clear();
-    let mut truncated = false;
+    line.append(carry);
     loop {
         let available = reader
             .fill_buf()
             .map_err(|error| format!("failed to read managed child output: {error}"))?;
         if available.is_empty() {
-            return Ok((!line.is_empty()).then_some(truncated));
+            return Ok((!line.is_empty()).then_some(false));
         }
 
         let newline = available.iter().position(|byte| *byte == b'\n');
         let content_length = newline.unwrap_or(available.len());
-        let retained_length = content_length.min(MAX_OPERATION_OUTPUT_LINE_BYTES - line.len());
-        line.extend_from_slice(&available[..retained_length]);
-        truncated |= retained_length < content_length;
-
-        let consumed = newline.map_or(available.len(), |index| index + 1);
-        let completed = newline.is_some();
-        reader.consume(consumed);
-        if completed {
+        let remaining = MAX_OPERATION_OUTPUT_LINE_BYTES.saturating_sub(line.len());
+        if newline.is_some() && content_length <= remaining {
+            line.extend_from_slice(&available[..content_length]);
+            reader.consume(content_length + 1);
             if matches!(line.last(), Some(b'\r')) {
                 line.pop();
             }
-            return Ok(Some(truncated));
+            return Ok(Some(false));
+        }
+
+        let candidate_length = content_length.min(remaining);
+        if candidate_length == 0 {
+            preserve_utf8_tail(line, carry);
+            return Ok(Some(true));
+        }
+        let mut retained_length = candidate_length;
+        if let Err(error) = std::str::from_utf8(&available[..candidate_length])
+            && error.error_len().is_none()
+        {
+            retained_length = error.valid_up_to();
+        }
+        if retained_length == 0 {
+            if line.is_empty() {
+                retained_length = candidate_length;
+            } else {
+                preserve_utf8_tail(line, carry);
+                return Ok(Some(true));
+            }
+        }
+        line.extend_from_slice(&available[..retained_length]);
+        reader.consume(retained_length);
+        if retained_length < content_length || line.len() >= MAX_OPERATION_OUTPUT_LINE_BYTES {
+            preserve_utf8_tail(line, carry);
+            return Ok(Some(true));
         }
     }
 }
 
-fn format_output_line(line: &str, truncated: bool) -> String {
-    if !truncated && line.len() <= MAX_OPERATION_OUTPUT_LINE_BYTES {
-        return line.to_owned();
+fn preserve_utf8_tail(line: &mut Vec<u8>, carry: &mut Vec<u8>) {
+    if let Err(error) = std::str::from_utf8(line)
+        && error.error_len().is_none()
+    {
+        *carry = line.split_off(error.valid_up_to());
     }
-    let suffix = " … [truncated]";
-    let mut end = MAX_OPERATION_OUTPUT_LINE_BYTES.saturating_sub(suffix.len());
-    while !line.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}{suffix}", &line[..end])
 }
 
 /// Preserve child output when a managed provider is called synchronously.
@@ -233,9 +274,7 @@ pub fn write_to_terminal(stream: OperationOutputStream, text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MAX_OPERATION_OUTPUT_LINE_BYTES, format_output_line, forward_output, read_bounded_line,
-    };
+    use super::{MAX_OPERATION_OUTPUT_LINE_BYTES, forward_output, read_bounded_line};
     use crate::OperationOutputStream;
     use std::{
         io::{BufReader, Cursor},
@@ -243,12 +282,29 @@ mod tests {
     };
 
     #[test]
-    fn output_lines_are_bounded_without_splitting_utf8() {
-        let line = format!("{}🌌", "x".repeat(MAX_OPERATION_OUTPUT_LINE_BYTES));
-        let bounded = format_output_line(&line, true);
-        assert!(bounded.len() <= MAX_OPERATION_OUTPUT_LINE_BYTES);
-        assert!(bounded.is_char_boundary(bounded.len()));
-        assert!(bounded.ends_with("[truncated]"));
+    fn long_utf8_output_is_chunked_without_data_loss() {
+        let source = format!(
+            "{}🌌tail\n",
+            "x".repeat(MAX_OPERATION_OUTPUT_LINE_BYTES * 2)
+        );
+        let (sender, receiver) = std::sync::mpsc::sync_channel(4);
+        forward_output(
+            Cursor::new(source.as_bytes().to_vec()),
+            OperationOutputStream::Stdout,
+            sender,
+        )
+        .unwrap();
+        let chunks = receiver
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>();
+        assert!(chunks.len() >= 3);
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.len() <= MAX_OPERATION_OUTPUT_LINE_BYTES)
+        );
+        assert_eq!(chunks.concat(), source.trim_end_matches('\n'));
     }
 
     #[test]
@@ -259,16 +315,32 @@ mod tests {
         );
         let mut reader = BufReader::new(Cursor::new(source));
         let mut line = Vec::new();
+        let mut carry = Vec::new();
 
-        assert!(read_bounded_line(&mut reader, &mut line).unwrap().unwrap());
-        assert!(line.len() <= MAX_OPERATION_OUTPUT_LINE_BYTES);
+        let mut continued = true;
+        let mut chunks = Vec::new();
+        while continued {
+            continued = read_bounded_line(&mut reader, &mut line, &mut carry)
+                .unwrap()
+                .unwrap();
+            assert!(line.len() <= MAX_OPERATION_OUTPUT_LINE_BYTES);
+            chunks.push(line.clone());
+        }
         assert_eq!(
-            String::from_utf8_lossy(&line),
-            "x".repeat(MAX_OPERATION_OUTPUT_LINE_BYTES)
+            String::from_utf8_lossy(&chunks.concat()),
+            format!("{}tail", "x".repeat(MAX_OPERATION_OUTPUT_LINE_BYTES * 2))
         );
-        assert!(!read_bounded_line(&mut reader, &mut line).unwrap().unwrap());
+        assert!(
+            !read_bounded_line(&mut reader, &mut line, &mut carry)
+                .unwrap()
+                .unwrap()
+        );
         assert_eq!(line, b"next line");
-        assert!(read_bounded_line(&mut reader, &mut line).unwrap().is_none());
+        assert!(
+            read_bounded_line(&mut reader, &mut line, &mut carry)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

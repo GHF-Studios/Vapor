@@ -246,7 +246,7 @@ impl ManagedToolchain {
                 expected: self.local_rustup_path(),
             })?;
 
-        let status = Command::new(&rustup)
+        let status = crate::managed_process::background_command(&rustup)
             .args([
                 "toolchain",
                 "install",
@@ -278,7 +278,7 @@ impl ManagedToolchain {
             });
         }
 
-        let status = Command::new(&rustup)
+        let status = crate::managed_process::background_command(&rustup)
             .args([
                 "target",
                 "add",
@@ -384,7 +384,7 @@ impl ManagedToolchain {
 
         let path = env::join_paths(paths).map_err(ToolchainError::JoinPaths)?;
 
-        let mut command = Command::new(program);
+        let mut command = crate::managed_process::background_command(program);
         RustToolchainCommandEnvironment::new(
             &self.vapor_home,
             &self.cargo_home,
@@ -425,7 +425,7 @@ impl ManagedToolchain {
     }
 
     fn rustup_honors_managed_home(&self, rustup: &Path) -> bool {
-        let Ok(output) = Command::new(rustup)
+        let Ok(output) = crate::managed_process::background_command(rustup)
             .args(["show", "home"])
             .env("RUSTUP_HOME", &self.rustup_home)
             .env("CARGO_HOME", &self.cargo_home)

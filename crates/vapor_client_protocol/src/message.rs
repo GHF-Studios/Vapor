@@ -1,7 +1,7 @@
 use crate::{ClientAction, ClientEvent, ClientRevision, ClientSnapshot, LegacyStorageSeed};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 27;
+pub const PROTOCOL_VERSION: u16 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -68,6 +68,10 @@ pub enum ProtocolFrame {
         legacy_storage: LegacyStorageSeed,
     },
     Request(ClientRequest),
+    /// High-frequency LSP JSON-RPC traffic; it does not broadcast app snapshots.
+    LanguageServerMessage(String),
+    /// The frontend is closing its session and no longer needs service events.
+    Disconnect,
     Response(Box<ClientResponse>),
     Event(ClientEvent),
 }
