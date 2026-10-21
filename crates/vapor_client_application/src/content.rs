@@ -24,6 +24,9 @@ pub struct InstallationCheck {
     pub detail: Vec<String>,
     pub artifacts: Vec<InstalledArtifact>,
     pub graph: Option<crate::ResolvedCompositionGraph>,
+    /// Present when the verified content graph cannot launch on this host and
+    /// should be refreshed from its current source before play.
+    pub update_required: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledArtifact {
@@ -481,11 +484,19 @@ pub fn verify_installation(
             None
         }
     };
+    let update_required = if graph.is_some() {
+        content::prepare_packagepack_launch(&installation, root_selector)
+            .err()
+            .map(|error| format!("This setup is not ready to play on this device: {error}"))
+    } else {
+        None
+    };
     Ok(InstallationCheck {
         ok,
         detail,
         artifacts,
         graph,
+        update_required,
     })
 }
 
@@ -596,7 +607,44 @@ pub fn update_composition(
     let paths = workspace_root
         .map(|root| EnvironmentPaths::from_installation_and_source_path(installation.clone(), root))
         .transpose()?;
-    content::update(&installation, paths.as_ref(), Some(selector))?;
+    let graph = content::installed_packagepack_graph(&installation, selector)?;
+    let identities = graph
+        .nodes()
+        .iter()
+        .map(|node| node.artifact_id().to_owned())
+        .collect::<Vec<_>>();
+    if paths.is_none() {
+        // A player update must refresh seeded Workshop artifacts before
+        // reinstalling from the app-owned cache. Otherwise a valid but stale
+        // cached Packagepack can remain permanently missing this host's build.
+        let mut seeded_items = std::collections::BTreeMap::<u32, Vec<u64>>::new();
+        for (app_id, published_file_id) in
+            content::root_content_seed_workshop_items(&installation, &identities)?
+        {
+            seeded_items
+                .entry(app_id)
+                .or_default()
+                .push(published_file_id);
+        }
+        for (app_id, published_file_ids) in seeded_items {
+            vapor_steam::with_downloaded_workshop_items(
+                app_id,
+                &published_file_ids,
+                |published_file_id, provider_root| {
+                    content::import_workshop_item_from_provider(
+                        &installation,
+                        app_id,
+                        &published_file_id.to_string(),
+                        provider_root,
+                    )
+                    .map(|_| ())
+                },
+            )?;
+        }
+    }
+    for identity in identities {
+        content::update(&installation, paths.as_ref(), Some(&identity))?;
+    }
     installed_composition(&installation, selector)
 }
 

@@ -432,7 +432,14 @@ fn composition_result_outcome(result: &CompositionOperationResult) -> Result<Str
             composition.graph.nodes.len()
         )),
         CompositionOperationResult::Verify(Ok(check)) if check.ok => {
-            Ok(format!("Verified {} content items", check.detail.len()))
+            if let Some(update) = &check.update_required {
+                Ok(format!(
+                    "Verified {} content items; update required: {update}",
+                    check.detail.len()
+                ))
+            } else {
+                Ok(format!("Verified {} content items", check.detail.len()))
+            }
         }
         CompositionOperationResult::Verify(Ok(check)) => Err(check.detail.join("; ")),
         CompositionOperationResult::Launch(Ok(result))
@@ -644,6 +651,7 @@ pub(super) fn fixture_composition_result(
                 detail: vec!["Fixture installation verified".into()],
                 artifacts: composition.artifacts.clone(),
                 graph: Some(graph),
+                update_required: None,
             }))
         }
         CompositionOperationKind::Repair => CompositionOperationResult::Repair(Ok(composition)),
@@ -705,6 +713,7 @@ pub(super) fn apply_operation_result_to_composition(
             }
         }
         CompositionOperationResult::Verify(Ok(check)) => {
+            let update_required = check.update_required;
             let artifacts = protocol_artifacts(check.artifacts);
             if !check.ok {
                 composition.installation = InstallationState::NeedsRepair {
@@ -712,7 +721,14 @@ pub(super) fn apply_operation_result_to_composition(
                     artifacts,
                 };
             } else if let Some(graph) = check.graph {
-                if composition.resolved_graph.as_ref().is_some_and(|saved| {
+                if let Some(detail) = update_required {
+                    composition.installation = InstallationState::OutOfDate {
+                        detail,
+                        actual_graph: graph,
+                        artifacts,
+                        verified: true,
+                    };
+                } else if composition.resolved_graph.as_ref().is_some_and(|saved| {
                     !vapor_client_application::resolved_graph_matches(saved, &graph)
                 }) {
                     composition.installation = InstallationState::OutOfDate {

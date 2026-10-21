@@ -696,6 +696,40 @@ pub fn import_workshop_item_from_provider(
     import_workshop_item(installation, app_id, published_file_id, provider_root)
 }
 
+/// Resolve Workshop download locations for app-seeded content selectors.
+///
+/// Selectors without an app-root seed are omitted. The returned pairs contain
+/// the Workshop app ID and PublishedFileId required by the Steam provider.
+///
+/// # Errors
+///
+/// Returns an error when the app manifest is invalid or a seeded Workshop ID
+/// is not a nonzero numeric PublishedFileId.
+pub fn root_content_seed_workshop_items(
+    installation: &InstallationPaths,
+    selectors: &[String],
+) -> Result<Vec<(u32, u64)>, String> {
+    let mut downloads = BTreeSet::<(u32, u64)>::new();
+    for selector in selectors {
+        let Some(seed) = root_content_seed(installation, selector)? else {
+            continue;
+        };
+        let published_file_id = seed
+            .workshop_id
+            .parse::<u64>()
+            .ok()
+            .filter(|id| *id != 0)
+            .ok_or_else(|| {
+                format!(
+                    "root seed for '{}' has invalid Workshop item ID '{}'",
+                    seed.id, seed.workshop_id
+                )
+            })?;
+        downloads.insert((seed.app_id, published_file_id));
+    }
+    Ok(downloads.into_iter().collect())
+}
+
 /// Import a Workshop item only when its version satisfies all supplied
 /// Auto-Install composition constraints. A rejected update leaves the previous
 /// Library copy intact.

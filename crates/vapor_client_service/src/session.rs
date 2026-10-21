@@ -2914,6 +2914,7 @@ mod tests {
                     detail: vec!["packagepack payload is missing".to_owned()],
                     artifacts: Vec::new(),
                     graph: None,
+                    update_required: None,
                 },
             )),
         });
@@ -2938,6 +2939,69 @@ mod tests {
             })
             .count();
         assert_eq!(terminal_events, 1);
+    }
+
+    #[test]
+    fn verification_marks_a_host_incompatible_packagepack_for_update() {
+        let mut session = session();
+        session.durable_state.compositions.compositions[0].root_package = Some(
+            ContentReference::parse(
+                "ghf-studios/loo-cast/loo-cast-packagepack".to_owned(),
+                Some("0.5.0".to_owned()),
+            )
+            .expect("valid Packagepack identity"),
+        );
+        let root = session.durable_state.compositions.compositions[0]
+            .root_package
+            .clone()
+            .expect("root package");
+        let graph = vapor_client_protocol::ResolvedCompositionGraph {
+            root: root.clone(),
+            effective_engine: ContentReference::parse(
+                "ghf-studios/loo-cast/spacetime-engine".to_owned(),
+                Some("0.5.0".to_owned()),
+            )
+            .expect("valid Engine identity"),
+            effective_game: Some(
+                ContentReference::parse(
+                    "ghf-studios/loo-cast/loo-cast-game".to_owned(),
+                    Some("0.5.0".to_owned()),
+                )
+                .expect("valid Game identity"),
+            ),
+            nodes: Vec::new(),
+        };
+        let composition = &session.durable_state.compositions.compositions[0];
+        session.apply_composition_completion(CompositionOperationCompletion {
+            id: "operation-verify-target".to_owned(),
+            composition_id: "default".to_owned(),
+            action: CompositionOperationKind::Verify,
+            inputs: CompositionOperationInputs::capture(
+                composition,
+                CompositionOperationKind::Verify,
+            ),
+            result: CompositionOperationResult::Verify(Ok(
+                vapor_client_application::InstallationCheck {
+                    ok: true,
+                    detail: vec!["3 content items verified".to_owned()],
+                    artifacts: Vec::new(),
+                    graph: Some(graph.clone()),
+                    update_required: Some(
+                        "This setup is not ready to play on this device: no Windows build".into(),
+                    ),
+                },
+            )),
+        });
+
+        assert!(matches!(
+            &session.durable_state.compositions.compositions[0].installation,
+            InstallationState::OutOfDate {
+                detail,
+                actual_graph,
+                verified: true,
+                ..
+            } if detail.contains("not ready to play") && actual_graph == &graph
+        ));
     }
 
     #[test]
