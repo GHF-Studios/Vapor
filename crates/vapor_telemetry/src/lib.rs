@@ -17,6 +17,11 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub use vapor_console_core::{
+    ConsoleField, ConsoleFilter, ConsoleHistory, ConsoleLevel, ConsoleRecord, ConsoleSource,
+    ConsoleStyleRole, PromptHistory, RhaiLanguage, SyntaxCategory, SyntaxToken,
+};
+
 pub const TELEMETRY_ADDR_ENV: &str = "VAPOR_TELEMETRY_ADDR";
 pub const TELEMETRY_SESSION_ENV: &str = "VAPOR_TELEMETRY_SESSION";
 
@@ -47,6 +52,12 @@ pub enum TelemetryPayload {
     Log {
         stream: String,
         message: String,
+        #[serde(default)]
+        level: Option<ConsoleLevel>,
+        #[serde(default)]
+        target: Option<String>,
+        #[serde(default)]
+        fields: Vec<ConsoleField>,
     },
     Metrics {
         values: BTreeMap<String, f64>,

@@ -329,6 +329,9 @@ fn run_workspace_configuration_with_callbacks(
                         }
                         .to_owned(),
                         message: text.to_owned(),
+                        level: None,
+                        target: None,
+                        fields: Vec::new(),
                     },
                 );
             }

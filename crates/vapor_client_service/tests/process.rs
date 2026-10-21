@@ -65,6 +65,7 @@ fn fixture_workshop_search_round_trips_through_the_service_process() {
             ClientAction::Workshop(WorkshopAction::Search {
                 query: "moon".into(),
                 page: 1,
+                content_kind: None,
                 required_tags: vec!["game".into()],
             }),
             Some(client.latest_snapshot().revision),

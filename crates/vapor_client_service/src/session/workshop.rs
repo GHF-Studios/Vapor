@@ -105,6 +105,7 @@ impl ClientSession {
             WorkshopAction::Search {
                 query,
                 page,
+                content_kind,
                 required_tags,
             } => {
                 if query.len() > 256 {
@@ -129,6 +130,7 @@ impl ClientSession {
                 WorkshopOperationKind::Search {
                     query: query.trim().to_owned(),
                     page,
+                    content_kind,
                     required_tags,
                 }
             }
@@ -556,6 +558,10 @@ impl ClientSession {
                         _ => String::new(),
                     },
                     match &completion.action {
+                        WorkshopOperationKind::Search { content_kind, .. } => *content_kind,
+                        _ => None,
+                    },
+                    match &completion.action {
                         WorkshopOperationKind::Search { required_tags, .. } => {
                             required_tags.clone()
                         }
@@ -969,10 +975,17 @@ fn execute_workshop_operation(
         WorkshopOperationKind::Search {
             query,
             page,
+            content_kind,
             required_tags,
         } => {
             let app_id = required_workshop_app_id(workshop_app_id)?;
-            vapor_client_application::search_workshop(app_id, &query, page, &required_tags)
+            vapor_client_application::search_workshop(
+                app_id,
+                &query,
+                page,
+                content_kind.map(|kind| kind.as_str()),
+                &required_tags,
+            )
                 .map(WorkshopOperationResult::Search)
         }
         WorkshopOperationKind::LoadSubscriptions => {
@@ -1213,12 +1226,20 @@ fn fixture_workshop_operation(
         WorkshopOperationKind::Search {
             query,
             page,
+            content_kind,
             required_tags,
         } => {
             let query = query.to_lowercase();
             let items = items
                 .into_iter()
                 .filter(|item| item.title.to_lowercase().contains(&query))
+                .filter(|item| {
+                    content_kind.is_none_or(|kind| {
+                        item.tags.iter().any(|tag| {
+                            tag.trim().eq_ignore_ascii_case(kind.as_str())
+                        })
+                    })
+                })
                 .filter(|item| {
                     required_tags
                         .iter()
@@ -1425,6 +1446,7 @@ fn fixture_workshop_subscription(id: &str) -> vapor_client_application::Workshop
 
 fn workshop_search_snapshot(
     query: String,
+    content_kind: Option<vapor_client_protocol::ContentKind>,
     required_tags: Vec<String>,
     page: vapor_client_application::WorkshopPage,
     revision: u64,
@@ -1434,6 +1456,7 @@ fn workshop_search_snapshot(
         query,
         page: page.page,
         total_results: page.total_results,
+        content_kind,
         required_tags,
         items: page.items.into_iter().map(workshop_item_snapshot).collect(),
     }

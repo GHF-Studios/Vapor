@@ -26,7 +26,7 @@ pub use composition::{
 };
 pub use vapor_client_domain::{
     ClientStateDocument, ContentKind, LibraryItemPolicy, ProfileAnalysisOptions, ProfileTraceSort,
-    dependent_composition_id,
+    can_auto_install_library_item, dependent_composition_id,
 };
 pub use vapor_telemetry::{TelemetryEvent, TelemetryPayload};
 
@@ -327,6 +327,7 @@ mod tests {
             ClientAction::Workshop(WorkshopAction::Search {
                 query: "moon".into(),
                 page: 1,
+                content_kind: None,
                 required_tags: vec!["game".into()],
             }),
             ClientAction::Workshop(WorkshopAction::LoadSubscriptions),
@@ -673,6 +674,7 @@ mod tests {
                     query: "moon".into(),
                     page: 2,
                     total_results: 3,
+                    content_kind: Some(ContentKind::Game),
                     required_tags: vec!["game".into()],
                     items: vec![WorkshopItemSnapshot {
                         published_file_id: "1002".into(),
@@ -786,6 +788,7 @@ mod tests {
             WorkshopAction::Search {
                 query: "moon".into(),
                 page: 1,
+                content_kind: None,
                 required_tags: vec![],
             }
         );
@@ -795,6 +798,7 @@ mod tests {
         )
         .expect("prior Workshop result remains readable");
         assert!(snapshot.required_tags.is_empty());
+        assert_eq!(snapshot.content_kind, None);
         assert!(snapshot.items[0].tags.is_empty());
     }
 

@@ -190,6 +190,7 @@ pub fn search_workshop(
     app_id: u32,
     search_text: &str,
     page: u32,
+    content_kind: Option<&str>,
     required_tags: &[String],
 ) -> Result<WorkshopPage, String> {
     if app_id == 0 {
@@ -200,6 +201,7 @@ pub fn search_workshop(
             "Steam Workshop page must be between 1 and {MAX_PAGE}"
         ));
     }
+    let content_kind = content_kind.map(str::to_owned);
 
     let client = initialize_client(app_id)?;
     let ugc = client.ugc();
@@ -221,7 +223,8 @@ pub fn search_workshop(
     if !search_text.trim().is_empty() {
         query = query.set_search_text(search_text.trim());
     }
-    for tag in required_tags {
+    let tags = canonical_search_tags(content_kind.as_deref(), required_tags);
+    for tag in &tags {
         let tag = tag.trim();
         if !tag.is_empty() {
             query = query.require_tag(tag);
@@ -245,6 +248,7 @@ pub fn search_workshop(
                             updated_at_unix: item.time_updated,
                             tags: normalize_tags(item.tags),
                         })
+                        .filter(|item| item_matches_search_tags(&item.tags, &tags))
                     })
                     .collect();
                 WorkshopPage {
@@ -258,6 +262,31 @@ pub fn search_workshop(
     });
 
     pump_callbacks(&client, receiver)
+}
+
+fn canonical_search_tags(content_kind: Option<&str>, required_tags: &[String]) -> Vec<String> {
+    let mut tags = Vec::with_capacity(required_tags.len() + usize::from(content_kind.is_some()));
+    if let Some(content_kind) = content_kind.map(str::trim).filter(|tag| !tag.is_empty()) {
+        tags.push(content_kind.to_owned());
+    }
+    tags.extend(
+        required_tags
+            .iter()
+            .map(|tag| tag.trim())
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_owned),
+    );
+    tags.sort_by_key(|tag| tag.to_ascii_lowercase());
+    tags.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    tags
+}
+
+fn item_matches_search_tags(item_tags: &[String], required_tags: &[String]) -> bool {
+    required_tags.iter().all(|required| {
+        item_tags
+            .iter()
+            .any(|tag| tag.trim().eq_ignore_ascii_case(required.trim()))
+    })
 }
 
 /// Read the current account's subscriptions for the app.
@@ -507,7 +536,7 @@ fn pump_callbacks<T>(
 
 #[cfg(test)]
 mod tests {
-    use super::should_reuse_local_item;
+    use super::{canonical_search_tags, item_matches_search_tags, should_reuse_local_item};
     use steamworks::ItemState;
 
     #[test]
@@ -519,5 +548,22 @@ mod tests {
         assert!(!should_reuse_local_item(current, true));
         assert!(!should_reuse_local_item(outdated, false));
         assert!(!should_reuse_local_item(ItemState::NONE, false));
+    }
+
+    #[test]
+    fn content_kind_is_a_required_canonical_tag_separate_from_user_tags() {
+        let tags = canonical_search_tags(
+            Some("game-mod"),
+            &["  survival ".to_owned(), "GAME-MOD".to_owned()],
+        );
+        assert_eq!(tags, ["game-mod", "survival"]);
+        assert!(item_matches_search_tags(
+            &["Game-Mod".to_owned(), "Survival".to_owned()],
+            &tags
+        ));
+        assert!(!item_matches_search_tags(
+            &["game".to_owned(), "survival".to_owned()],
+            &tags
+        ));
     }
 }

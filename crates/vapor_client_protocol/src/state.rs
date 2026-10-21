@@ -293,6 +293,8 @@ pub struct WorkshopSearchSnapshot {
     pub page: u32,
     pub total_results: u32,
     #[serde(default)]
+    pub content_kind: Option<crate::ContentKind>,
+    #[serde(default)]
     pub required_tags: Vec<String>,
     pub items: Vec<WorkshopItemSnapshot>,
 }

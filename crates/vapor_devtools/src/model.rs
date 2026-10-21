@@ -1,5 +1,6 @@
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
+use vapor_console_core::{ConsoleField, ConsoleFilter, ConsoleHistory, ConsoleLevel, ConsoleRecord};
 use vapor_client_protocol::{ProfileReportSnapshot, TelemetryEvent, TelemetryPayload};
 
 pub const HISTORY_POINTS: usize = 900;
@@ -67,7 +68,8 @@ pub struct DevtoolsState {
     pub session: Option<SessionInfo>,
     pub metrics: BTreeMap<String, MetricSeries>,
     pub snapshots: BTreeMap<String, SnapshotRecord>,
-    pub logs: VecDeque<String>,
+    pub logs: ConsoleHistory,
+    pub log_filter: ConsoleFilter,
     pub lifecycle: BTreeMap<String, String>,
 }
 
@@ -78,7 +80,8 @@ impl Default for DevtoolsState {
             session: None,
             metrics: BTreeMap::new(),
             snapshots: BTreeMap::new(),
-            logs: VecDeque::new(),
+            logs: ConsoleHistory::new(LOG_LINES),
+            log_filter: ConsoleFilter::default(),
             lifecycle: BTreeMap::new(),
         }
     }
@@ -103,12 +106,28 @@ impl DevtoolsState {
     fn ingest_event(&mut self, event: TelemetryEvent) {
         let timestamp = event.timestamp_unix_ms as f64 / 1000.0;
         match event.payload {
-            TelemetryPayload::Log { stream, message } => {
-                self.logs
-                    .push_back(format!("[{}:{stream}] {message}", event.source));
-                while self.logs.len() > LOG_LINES {
-                    self.logs.pop_front();
+            TelemetryPayload::Log {
+                stream,
+                message,
+                level,
+                target,
+                fields,
+            } => {
+                let mut record = ConsoleRecord::new(
+                    event.timestamp_unix_ms,
+                    level.unwrap_or(ConsoleLevel::System),
+                    event.source,
+                    message,
+                )
+                .field("stream", stream);
+                if let Some(target) = target {
+                    record.target = Some(target);
                 }
+                record.fields.extend(fields.into_iter().map(|field| ConsoleField {
+                    key: field.key,
+                    value: field.value,
+                }));
+                self.logs.push(record);
             }
             TelemetryPayload::Metrics { values } => {
                 for (name, value) in values {
@@ -198,5 +217,36 @@ pub fn format_metric(metric: &MetricSeries) -> String {
         format!("{value:.precision$}{unit}")
     } else {
         format!("{value:.precision$} {unit}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn telemetry_log_keeps_severity_target_and_fields_structured() {
+        let mut state = DevtoolsState::default();
+        state.ingest_event(TelemetryEvent {
+            timestamp_unix_ms: 42,
+            source: "game.physics".to_owned(),
+            payload: TelemetryPayload::Log {
+                stream: "stderr".to_owned(),
+                message: "contact resolved".to_owned(),
+                level: Some(ConsoleLevel::Warn),
+                target: Some("ship.3".to_owned()),
+                fields: vec![ConsoleField {
+                    key: "speed".to_owned(),
+                    value: "147 km/s".to_owned(),
+                }],
+            },
+        });
+        let record = state.logs.records().next().expect("structured record");
+        assert_eq!(record.timestamp_unix_ms, 42);
+        assert_eq!(record.level, ConsoleLevel::Warn);
+        assert_eq!(record.source.0, "game.physics");
+        assert_eq!(record.target.as_deref(), Some("ship.3"));
+        assert_eq!(record.fields[0].key, "stream");
+        assert_eq!(record.fields[1].value, "147 km/s");
     }
 }

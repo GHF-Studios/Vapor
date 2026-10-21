@@ -5,6 +5,7 @@ use vapor_client_protocol::{
     DeveloperAction, ProfileAnalysisOptions, ProfileReportSnapshot, ProfileTraceSnapshot,
     ProfileTraceSort,
 };
+use vapor_console_core::ConsoleStyleRole;
 
 use crate::model::{DevtoolsMessage, DevtoolsState, MetricSeries, format_metric, metric_label};
 
@@ -259,15 +260,51 @@ impl DevtoolsApp {
                     });
                 }
             });
-        egui::CollapsingHeader::new(format!("Logs · {} retained", self.state.logs.len())).show(
+        egui::CollapsingHeader::new(format!("Console · {} retained", self.state.logs.len())).show(
             ui,
             |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Filter");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.state.log_filter.search)
+                            .hint_text("Message, source, target, or field")
+                            .desired_width(260.0),
+                    );
+                    if ui.button("Clear view").clicked() {
+                        self.state.logs.clear();
+                    }
+                });
+                let filter = self.state.log_filter.clone();
                 egui::ScrollArea::vertical()
                     .max_height(180.0)
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
-                        for line in &self.state.logs {
-                            ui.monospace(line);
+                        for record in self.state.logs.filtered(&filter) {
+                            let role = record.level.style_role();
+                            let tint = match role {
+                                ConsoleStyleRole::Trace | ConsoleStyleRole::Muted => {
+                                    ui.visuals().weak_text_color()
+                                }
+                                ConsoleStyleRole::Debug | ConsoleStyleRole::Metadata => {
+                                    egui::Color32::LIGHT_BLUE
+                                }
+                                ConsoleStyleRole::Success => egui::Color32::LIGHT_GREEN,
+                                ConsoleStyleRole::Warning => egui::Color32::YELLOW,
+                                ConsoleStyleRole::Error => egui::Color32::LIGHT_RED,
+                                ConsoleStyleRole::Input => egui::Color32::from_rgb(220, 180, 255),
+                                ConsoleStyleRole::Normal => ui.visuals().text_color(),
+                            };
+                            ui.horizontal_wrapped(|ui| {
+                                ui.colored_label(tint, format!("{:?}", record.level).to_uppercase());
+                                ui.weak(format!("{} · {}", record.timestamp_unix_ms, record.source.0));
+                                if let Some(target) = &record.target {
+                                    ui.weak(target);
+                                }
+                                ui.monospace(&record.message);
+                                for field in &record.fields {
+                                    ui.weak(format!("{}={}", field.key, field.value));
+                                }
+                            });
                         }
                     });
             },

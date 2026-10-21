@@ -425,6 +425,7 @@ enum WorkshopOperationKind {
     Search {
         query: String,
         page: u32,
+        content_kind: Option<vapor_client_protocol::ContentKind>,
         required_tags: Vec<String>,
     },
     LoadSubscriptions,
@@ -498,6 +499,20 @@ impl ClientSession {
     ) -> Result<Self, String> {
         ensure_workshop_app_id(&mut bootstrap);
         let mut loaded = store.load_or_import(legacy_storage)?;
+        if !bootstrap.fixture_mode
+            && loaded.recovery_message.is_none()
+            && seed_legacy_empty_selection(
+                &mut loaded.state,
+                application::default_packagepack_selector(
+                    &bootstrap.application_executable,
+                    "default",
+                )
+                .ok()
+                .as_deref(),
+            )
+        {
+            store.save(&loaded.state)?;
+        }
         if let Some(workspace_root) = bootstrap.workspace_root.as_ref() {
             let workspace = Some(workspace_root.display().to_string());
             if loaded.state.authoring_workspace_root != workspace {
@@ -1736,6 +1751,58 @@ impl ClientSession {
     }
 }
 
+fn seed_legacy_empty_selection(state: &mut ClientPersistentState, seed: Option<&str>) -> bool {
+    let Some(composition) = state
+        .compositions
+        .compositions
+        .iter_mut()
+        .find(|composition| composition.id == "default" && composition.name == "Default")
+    else {
+        return false;
+    };
+    let mut changed = false;
+    if composition.root_package.is_none() {
+        let Some(seed) = seed.filter(|seed| !seed.trim().is_empty()) else {
+            return false;
+        };
+        composition.root_package = Some(ContentReference {
+            id: seed.to_owned(),
+            version: None,
+        });
+        composition.resolved_graph = None;
+        composition.installation = InstallationState::Unknown;
+        changed = true;
+    }
+    if composition.name == "Default"
+        && let Some(root) = composition.root_package.as_ref()
+    {
+        let label = root
+            .id
+            .rsplit('/')
+            .next()
+            .unwrap_or(&root.id)
+            .strip_suffix("-packagepack")
+            .unwrap_or_else(|| root.id.rsplit('/').next().unwrap_or(&root.id));
+        let name = label
+            .split(['-', '_'])
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !name.is_empty() {
+            composition.name = name;
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn is_registered_source_list_query(action: &ClientAction) -> bool {
     matches!(
         action,
@@ -1810,6 +1877,40 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
     use vapor_client_protocol::{ClientAction, ClientRequest, RequestId};
+
+    #[test]
+    fn manifest_seed_initializes_only_the_legacy_empty_selection() {
+        let mut state = ClientPersistentState::default();
+        assert!(seed_legacy_empty_selection(
+            &mut state,
+            Some("publisher/loo-cast/loo-cast-packagepack")
+        ));
+        let selected = &state.compositions.compositions[0];
+        assert_eq!(selected.id, "default");
+        assert_eq!(selected.name, "Loo Cast");
+        assert_eq!(
+            selected.root_package.as_ref().map(|root| root.id.as_str()),
+            Some("publisher/loo-cast/loo-cast-packagepack")
+        );
+        assert!(!seed_legacy_empty_selection(
+            &mut state,
+            Some("publisher/other/other-packagepack")
+        ));
+        assert_eq!(state.compositions.compositions.len(), 1);
+        assert_eq!(state.compositions.compositions[0].name, "Loo Cast");
+    }
+
+    #[test]
+    fn manifest_seed_preserves_custom_compositions_and_roots() {
+        let mut state = ClientPersistentState::default();
+        state.compositions.compositions[0].name = "My Setup".to_owned();
+        assert!(!seed_legacy_empty_selection(
+            &mut state,
+            Some("publisher/loo-cast/loo-cast-packagepack")
+        ));
+        assert_eq!(state.compositions.compositions[0].name, "My Setup");
+        assert!(state.compositions.compositions[0].root_package.is_none());
+    }
 
     #[test]
     fn panicking_background_operation_reports_failure_and_releases_service_idle_state() {
@@ -2438,6 +2539,7 @@ mod tests {
             ClientAction::Workshop(vapor_client_protocol::WorkshopAction::Search {
                 query: "moon".into(),
                 page: 1,
+                content_kind: Some(vapor_client_protocol::ContentKind::Game),
                 required_tags: vec!["game".into()],
             }),
         ));
@@ -2454,6 +2556,7 @@ mod tests {
         assert_eq!(snapshot["workshop"]["search"]["query"], "moon");
         assert_eq!(snapshot["workshop"]["search"]["page"], 1);
         assert_eq!(snapshot["workshop"]["search"]["required_tags"][0], "game");
+        assert_eq!(snapshot["workshop"]["search"]["content_kind"], "game");
         assert_eq!(
             snapshot["workshop"]["search"]["items"][0]["published_file_id"],
             "1002"

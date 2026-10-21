@@ -1,4 +1,4 @@
-use crate::ProfileAnalysisOptions;
+use crate::{ContentKind, ProfileAnalysisOptions};
 pub use crate::{CompositionAction, LibraryAction};
 use serde::{Deserialize, Serialize};
 
@@ -282,6 +282,8 @@ pub enum WorkshopAction {
     Search {
         query: String,
         page: u32,
+        #[serde(default)]
+        content_kind: Option<ContentKind>,
         #[serde(default)]
         required_tags: Vec<String>,
     },
