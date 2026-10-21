@@ -43,6 +43,19 @@ pub struct WorkshopAcquisition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkshopAcquisitionBatch {
+    pub items: Vec<WorkshopAcquisition>,
+    pub dependencies_acquired: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct WorkshopDependencyRequest {
+    content_id: String,
+    workshop_id: String,
+    version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledComposition {
     pub graph: crate::ResolvedCompositionGraph,
     pub artifacts: Vec<InstalledArtifact>,
@@ -243,6 +256,7 @@ pub fn download_workshop_items(
         published_file_ids,
         &Default::default(),
     )
+    .map(|batch| batch.items)
 }
 
 /// Download Workshop items while preserving Auto-Install composition
@@ -251,7 +265,7 @@ pub fn download_workshop_items_with_constraints(
     application_executable: &Path,
     published_file_ids: &[String],
     constraints: &std::collections::BTreeMap<String, Vec<String>>,
-) -> Result<Vec<WorkshopAcquisition>, String> {
+) -> Result<WorkshopAcquisitionBatch, String> {
     if published_file_ids.is_empty() {
         return Err("Select at least one Workshop item to import".to_owned());
     }
@@ -271,68 +285,142 @@ pub fn download_workshop_items_with_constraints(
         }
     }
     let installation = InstallationPaths::from_application_executable(application_executable)?;
-    let mut grouped = std::collections::BTreeMap::<u32, Vec<(usize, String)>>::new();
-    for (index, id) in normalized_ids.iter().enumerate() {
-        let app_id = content::workshop_app_id(&installation, None, id, id)?;
-        grouped.entry(app_id).or_default().push((index, id.clone()));
-    }
-    let mut acquisitions = Vec::with_capacity(normalized_ids.len());
-    for (app_id, items) in grouped {
-        let ids = items
-            .iter()
-            .map(|(_, id)| {
-                id.parse::<u64>()
-                    .map_err(|_| format!("Workshop item ID '{id}' is not a valid number"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let positions = items
-            .iter()
-            .map(|(index, id)| {
-                id.parse::<u64>()
-                    .map(|published_file_id| (published_file_id, *index))
-                    .map_err(|_| format!("Workshop item ID '{id}' is not a valid number"))
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let imported = vapor_steam::with_downloaded_workshop_items(
-            app_id,
-            &ids,
-            |published_file_id, root| {
-                let id = published_file_id.to_string();
-                let report = content::import_workshop_item_from_provider_with_constraints(
-                    &installation,
-                    app_id,
-                    &id,
-                    root,
-                    constraints,
-                )?;
-                let cached = content::cached_artifact(&installation, report.artifact_id())?;
-                Ok((
-                    *positions.get(&published_file_id).ok_or_else(|| {
-                        format!("Steam returned an unexpected Workshop item {id}")
-                    })?,
-                    WorkshopAcquisition {
-                        id: report.artifact_id().to_owned(),
-                        version: cached.version().map(ToOwned::to_owned),
-                        kind: cached.kind().to_owned(),
-                        cache_root: report.cache_root().to_path_buf(),
-                        fingerprint: format!(
-                            "{}:{}",
-                            report.fingerprint().algorithm(),
-                            report.fingerprint().hash()
-                        ),
+    let requested = normalized_ids
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut pending = normalized_ids.clone();
+    let mut visited = std::collections::BTreeSet::new();
+    let mut acquisitions = std::collections::BTreeMap::<String, WorkshopAcquisition>::new();
+    let mut all_constraints = constraints.clone();
+    let mut dependencies_acquired = 0;
+
+    while !pending.is_empty() {
+        let mut grouped = std::collections::BTreeMap::<u32, Vec<String>>::new();
+        for id in std::mem::take(&mut pending) {
+            if !visited.insert(id.clone()) {
+                continue;
+            }
+            let app_id = content::workshop_app_id(&installation, None, &id, &id)?;
+            grouped.entry(app_id).or_default().push(id);
+        }
+
+        for (app_id, ids) in grouped {
+            let numeric_ids = ids
+                .iter()
+                .map(|id| {
+                    id.parse::<u64>()
+                        .map_err(|_| format!("Workshop item ID '{id}' is not a valid number"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let imported = vapor_steam::with_downloaded_workshop_items(
+                app_id,
+                &numeric_ids,
+                |published_file_id, root| {
+                    let id = published_file_id.to_string();
+                    let report = content::import_workshop_item_from_provider_with_constraints(
+                        &installation,
+                        app_id,
+                        &id,
+                        root,
+                        &all_constraints,
+                    )?;
+                    let cached = content::cached_artifact(&installation, report.artifact_id())?;
+                    Ok((
+                        id,
+                        WorkshopAcquisition {
+                            id: report.artifact_id().to_owned(),
+                            version: cached.version().map(ToOwned::to_owned),
+                            kind: cached.kind().to_owned(),
+                            cache_root: report.cache_root().to_path_buf(),
+                            fingerprint: format!(
+                                "{}:{}",
+                                report.fingerprint().algorithm(),
+                                report.fingerprint().hash()
+                            ),
+                        },
+                        cached.dependencies().to_vec(),
+                    ))
+                },
+            )?;
+
+            for (published_file_id, acquisition, dependencies) in imported {
+                let acquired_id = acquisition.id.clone();
+                if requested.contains(&published_file_id) {
+                    acquisitions.insert(published_file_id, acquisition);
+                } else {
+                    dependencies_acquired += 1;
+                }
+                let requests = required_workshop_dependency_requests(
+                    &acquired_id,
+                    &dependencies,
+                    |dependency| {
+                        if !content::has_cached_artifact(&installation, dependency.id())? {
+                            return Ok(false);
+                        }
+                        content::cached_artifact_satisfies_version(
+                            &installation,
+                            dependency.id(),
+                            dependency.version(),
+                        )
                     },
-                ))
-            },
-        )?;
-        acquisitions.extend(imported);
+                )?;
+                for request in requests {
+                    if let Some(requirement) = request.version {
+                        all_constraints
+                            .entry(request.content_id)
+                            .or_default()
+                            .push(requirement);
+                    }
+                    pending.push(request.workshop_id);
+                }
+            }
+        }
     }
-    acquisitions.sort_by_key(|(index, _)| *index);
-    Ok(acquisitions
+
+    let items = normalized_ids
         .into_iter()
-        .map(|(_, acquisition)| acquisition)
-        .collect())
+        .map(|id| {
+            acquisitions
+                .remove(&id)
+                .ok_or_else(|| format!("Steam did not return requested Workshop item {id}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(WorkshopAcquisitionBatch {
+        items,
+        dependencies_acquired,
+    })
+}
+
+fn required_workshop_dependency_requests(
+    parent_id: &str,
+    dependencies: &[vapor_client_provider::content::ContentReference],
+    mut cache_satisfies: impl FnMut(
+        &vapor_client_provider::content::ContentReference,
+    ) -> Result<bool, String>,
+) -> Result<Vec<WorkshopDependencyRequest>, String> {
+    let mut requests = Vec::new();
+    for dependency in dependencies {
+        if dependency.optional() || dependency.relationship() == "conflict" {
+            continue;
+        }
+        if cache_satisfies(dependency)? {
+            continue;
+        }
+        let Some(workshop_id) = dependency.workshop_id() else {
+            return Err(format!(
+                "{parent_id} requires {} at version {}, but it is not in the Library and has no Workshop item ID",
+                dependency.id(),
+                dependency.version().unwrap_or("any")
+            ));
+        };
+        requests.push(WorkshopDependencyRequest {
+            content_id: dependency.id().to_owned(),
+            workshop_id: workshop_id.to_owned(),
+            version: dependency.version().map(ToOwned::to_owned),
+        });
+    }
+    Ok(requests)
 }
 
 pub fn verify_installation(
@@ -707,4 +795,53 @@ fn installed_snapshot(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod workshop_acquisition_tests {
+    use super::{WorkshopDependencyRequest, required_workshop_dependency_requests};
+    use vapor_client_provider::content::ContentReference;
+
+    fn dependencies(source: &str) -> Vec<ContentReference> {
+        serde_json::from_str(source).expect("valid dependency fixture")
+    }
+
+    #[test]
+    fn acquisition_queues_only_missing_required_workshop_dependencies() {
+        let dependencies = dependencies(
+            r#"[
+                {"id":"studio.engine","relationship":"engine","optional":false,"version":">=1.2.0","workshop_id":"101"},
+                {"id":"studio.tool","relationship":"dependency","optional":true,"workshop_id":"102"},
+                {"id":"studio.conflict","relationship":"conflict","optional":false,"workshop_id":"103"},
+                {"id":"studio.cached","relationship":"dependency","optional":false,"workshop_id":"104"}
+            ]"#,
+        );
+
+        let queued = required_workshop_dependency_requests("studio.game", &dependencies, |edge| {
+            Ok(edge.id() == "studio.cached")
+        })
+        .expect("dependency closure is resolvable");
+
+        assert_eq!(
+            queued,
+            vec![WorkshopDependencyRequest {
+                content_id: "studio.engine".to_owned(),
+                workshop_id: "101".to_owned(),
+                version: Some(">=1.2.0".to_owned()),
+            }]
+        );
+    }
+
+    #[test]
+    fn acquisition_explains_required_dependencies_without_a_download_route() {
+        let dependencies =
+            dependencies(r#"[{"id":"studio.engine","relationship":"engine","optional":false}]"#);
+
+        let error =
+            required_workshop_dependency_requests("studio.game", &dependencies, |_| Ok(false))
+                .expect_err("missing required content has no acquisition route");
+
+        assert!(error.contains("studio.game requires studio.engine"));
+        assert!(error.contains("no Workshop item ID"));
+    }
 }

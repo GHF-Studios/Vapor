@@ -35,6 +35,32 @@ impl ClientSession {
                 role: CatalogItemRole::Other,
                 actions: Vec::new(),
             }];
+            if self.bootstrap.workspace_root.is_some() {
+                entries.push(CatalogEntry {
+                    id: "fixture.game".to_owned(),
+                    name: Some("Fixture Game".to_owned()),
+                    version: Some("1.0.0".to_owned()),
+                    kind: "game".to_owned(),
+                    published_file_id: Some("1003".to_owned()),
+                    dependencies: Vec::new(),
+                    conflicts: vec![CatalogConflict {
+                        field: "fingerprint".to_owned(),
+                        first_value: "source".to_owned(),
+                        first_location: "fixture/workspace/fixture.game".to_owned(),
+                        conflicting_value: "cache".to_owned(),
+                        conflicting_location: "fixture/cache/fixture.game".to_owned(),
+                    }],
+                    locations: vec![CatalogLocation {
+                        kind: CatalogLocationKind::Cache,
+                        root: "fixture/cache/fixture.game".to_owned(),
+                        enabled: true,
+                        fingerprint: Some("fixture:old".to_owned()),
+                        install_source: None,
+                    }],
+                    role: CatalogItemRole::Other,
+                    actions: Vec::new(),
+                });
+            }
             entries.extend(self.fixture_acquisitions.values().map(|item| CatalogEntry {
                 id: item.id.clone(),
                 name: Some(item.id.clone()),

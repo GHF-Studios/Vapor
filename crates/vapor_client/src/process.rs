@@ -2,14 +2,20 @@ use crate::{
     local_socket,
     transport::{encode_frame, read_frame},
 };
-use interprocess::local_socket::traits::{RecvHalf as _, Stream as _};
+#[cfg(not(windows))]
+use interprocess::local_socket::traits::RecvHalf as _;
+use interprocess::local_socket::traits::Stream as _;
 use std::{
+    collections::VecDeque,
     env,
     ffi::OsString,
     io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError},
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -25,6 +31,8 @@ use vapor_client_protocol::{
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECT_RETRY: Duration = Duration::from_millis(40);
+const SERVICE_STARTUP_LOG_LINES: usize = 24;
+const SERVICE_STARTUP_LOG_LINE_BYTES: usize = 512;
 
 #[derive(Debug, Clone)]
 pub struct ClientHostConfig {
@@ -43,6 +51,7 @@ pub enum ClientError {
     Protocol(String),
     ServiceExited(Option<i32>),
     Timeout(&'static str),
+    ServiceStartupTimeout(Vec<String>),
     Io(String),
 }
 
@@ -61,6 +70,16 @@ impl std::fmt::Display for ClientError {
             ),
             Self::Timeout(phase) => {
                 write!(formatter, "Vapor Client service timed out during {phase}")
+            }
+            Self::ServiceStartupTimeout(lines) => {
+                write!(
+                    formatter,
+                    "Vapor Client service timed out during shared service startup"
+                )?;
+                if !lines.is_empty() {
+                    write!(formatter, "; recent service output: {}", lines.join(" | "))?;
+                }
+                Ok(())
             }
             Self::Io(message) => write!(formatter, "Vapor Client service I/O failed: {message}"),
         }
@@ -273,6 +292,13 @@ impl Client {
         require_snapshot: bool,
         legacy_storage: Option<LegacyStorageSeed>,
     ) -> Result<Self, ClientError> {
+        // Windows named pipes do not support socket-style read timeouts. In
+        // particular, interprocess returns Unsupported here before the client
+        // can send its protocol handshake, which made startup retry until the
+        // outer 30-second deadline. The service sends its readiness frame as
+        // soon as it receives Connect; use the blocking named-pipe handshake on
+        // Windows and keep the bounded socket timeout on Unix.
+        #[cfg(not(windows))]
         stream
             .set_recv_timeout(Some(START_TIMEOUT))
             .map_err(|error| ClientError::Io(error.to_string()))?;
@@ -292,6 +318,7 @@ impl Client {
                 .map_err(ClientError::Protocol)?
                 .ok_or(ClientError::ServiceExited(None))?;
             if let Some(snapshot) = handshake.accept(frame)? {
+                #[cfg(not(windows))]
                 reader
                     .get_ref()
                     .set_timeout(None)
@@ -482,6 +509,16 @@ fn ensure_service(
     context: &crate::ClientHostContext,
     endpoint: &str,
 ) -> Result<(), ClientError> {
+    ensure_service_with_timeout(service_path, bootstrap, context, endpoint, START_TIMEOUT)
+}
+
+fn ensure_service_with_timeout(
+    service_path: &Path,
+    bootstrap: &ClientHostConfig,
+    context: &crate::ClientHostContext,
+    endpoint: &str,
+    startup_timeout: Duration,
+) -> Result<(), ClientError> {
     let lock = local_socket::bootstrap_lock(&context.state_directory)
         .map_err(|error| ClientError::Io(error.to_string()))?;
     match Client::connect_existing(endpoint, None) {
@@ -506,19 +543,26 @@ fn ensure_service(
         .map_err(|error| ClientError::Io(error.to_string()))?;
     let mut spawned_service = Some(spawn_shared_service(service_path, bootstrap)?);
 
-    let deadline = Instant::now() + START_TIMEOUT;
+    let deadline = Instant::now() + startup_timeout;
     loop {
         match Client::connect_existing(endpoint, None) {
             Ok(client) => {
                 drop(client);
-                drop(spawned_service.take());
+                if let Some(service) = spawned_service.take() {
+                    service.detach();
+                }
                 return Ok(());
             }
             Err(error @ ClientError::Protocol(_)) => return Err(error),
             Err(error) if Instant::now() >= deadline => {
                 return Err(match error {
                     ClientError::Io(_) | ClientError::ServiceExited(_) => {
-                        ClientError::Timeout("shared service startup")
+                        let lines = spawned_service
+                            .as_ref()
+                            .map(|service| startup_diagnostics(&service.stderr))
+                            .unwrap_or_default();
+                        drop(spawned_service.take());
+                        ClientError::ServiceStartupTimeout(lines)
                     }
                     other => other,
                 });
@@ -526,6 +570,7 @@ fn ensure_service(
             Err(_) => {
                 if let Some(child) = spawned_service.as_mut()
                     && let Some(status) = child
+                        .child
                         .try_wait()
                         .map_err(|error| ClientError::Io(error.to_string()))?
                 {
@@ -556,7 +601,7 @@ fn endpoint_unavailable(endpoint: &str) -> bool {
 fn spawn_shared_service(
     service_path: &Path,
     bootstrap: &ClientHostConfig,
-) -> Result<Child, ClientError> {
+) -> Result<SpawnedService, ClientError> {
     let mut command = Command::new(service_path);
     command
         .arg("--serve")
@@ -564,7 +609,7 @@ fn spawn_shared_service(
         .arg(&bootstrap.application_executable)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
     if let Some(app_id) = bootstrap.workshop_app_id {
         command.arg("--workshop-app-id").arg(app_id.to_string());
     }
@@ -577,9 +622,79 @@ fn spawn_shared_service(
     if let Some(state_directory) = bootstrap.state_directory.as_ref() {
         command.arg("--state-dir").arg(state_directory);
     }
-    command
+    let mut child = command
         .spawn()
-        .map_err(|error| ClientError::Spawn(error.to_string()))
+        .map_err(|error| ClientError::Spawn(error.to_string()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ClientError::Spawn("service stderr was not piped".into()))?;
+    let diagnostics = Arc::new(Mutex::new(VecDeque::new()));
+    let reader_diagnostics = Arc::clone(&diagnostics);
+    if let Err(error) = thread::Builder::new()
+        .name("client-service-startup-log".into())
+        .spawn(move || drain_service_startup_stderr(stderr, reader_diagnostics))
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(ClientError::Spawn(error.to_string()));
+    }
+    Ok(SpawnedService {
+        child,
+        stderr: diagnostics,
+        detached: false,
+    })
+}
+
+struct SpawnedService {
+    child: Child,
+    stderr: Arc<Mutex<VecDeque<String>>>,
+    detached: bool,
+}
+
+impl SpawnedService {
+    fn detach(mut self) {
+        self.detached = true;
+    }
+}
+
+impl Drop for SpawnedService {
+    fn drop(&mut self) {
+        if !self.detached && self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+fn drain_service_startup_stderr(stderr: impl Read, diagnostics: Arc<Mutex<VecDeque<String>>>) {
+    let mut reader = BufReader::new(stderr);
+    let mut line = String::new();
+    while reader.read_line(&mut line).is_ok_and(|size| size > 0) {
+        let trimmed = line.trim_end();
+        let mut bounded = String::new();
+        for character in trimmed.chars() {
+            if bounded.len() + character.len_utf8() > SERVICE_STARTUP_LOG_LINE_BYTES {
+                bounded.push('…');
+                break;
+            }
+            bounded.push(character);
+        }
+        if let Ok(mut diagnostics) = diagnostics.lock() {
+            if diagnostics.len() == SERVICE_STARTUP_LOG_LINES {
+                diagnostics.pop_front();
+            }
+            diagnostics.push_back(bounded);
+        }
+        line.clear();
+    }
+}
+
+fn startup_diagnostics(diagnostics: &Mutex<VecDeque<String>>) -> Vec<String> {
+    diagnostics
+        .lock()
+        .map(|lines| lines.iter().cloned().collect())
+        .unwrap_or_default()
 }
 
 fn write_frame(writer: &mut impl Write, frame: &ProtocolFrame) -> Result<(), ClientError> {
@@ -658,6 +773,7 @@ fn empty_snapshot() -> ClientSnapshot {
         application_release: None,
         profile_traces: Vec::new(),
         profile_trace_error: None,
+        installation_role: vapor_client_protocol::InstallationRoleSnapshot::default(),
         selected_content_id: None,
         available_actions: Vec::new(),
     }
@@ -666,10 +782,16 @@ fn empty_snapshot() -> ClientSnapshot {
 #[cfg(test)]
 mod tests {
     use super::{
-        Client, ClientError, ClientHostConfig, ServiceHandshake, empty_snapshot,
-        service_sibling_path_for,
+        Client, ClientError, ClientHostConfig, ServiceHandshake, drain_service_startup_stderr,
+        empty_snapshot, ensure_service_with_timeout, resolve_host_context,
+        service_sibling_path_for, startup_diagnostics,
     };
-    use std::path::Path;
+    use std::{
+        collections::VecDeque,
+        io::Cursor,
+        path::Path,
+        sync::{Arc, Mutex},
+    };
     use vapor_client_protocol::{ClientEvent, ClientRevision, PROTOCOL_VERSION, ProtocolFrame};
 
     fn bootstrap() -> ClientHostConfig {
@@ -692,6 +814,80 @@ mod tests {
         let windows = service_sibling_path_for(Path::new("C:/app/bin/vapor-gui.exe"), true);
         assert_eq!(windows.file_name().unwrap(), "vapor-client-service.exe");
         assert_eq!(windows.parent().unwrap(), Path::new("C:/app/bin"));
+    }
+
+    #[test]
+    fn startup_stderr_is_bounded_and_keeps_the_newest_diagnostics() {
+        let input = (0..25)
+            .map(|line| format!("startup line {line}\n"))
+            .collect::<String>()
+            + &format!("{}\n", "界".repeat(300));
+        let diagnostics = Arc::new(Mutex::new(VecDeque::new()));
+
+        drain_service_startup_stderr(Cursor::new(input), Arc::clone(&diagnostics));
+
+        let lines = startup_diagnostics(&diagnostics);
+        assert_eq!(lines.len(), 24);
+        assert_eq!(lines[0], "startup line 2");
+        assert!(lines[23].ends_with('…'));
+        assert!(lines[23].len() <= 515);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_startup_timeout_reports_child_output_and_stops_the_child() {
+        use std::{
+            fs,
+            os::unix::fs::PermissionsExt,
+            time::{Duration, SystemTime},
+        };
+
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "vapor-client-startup-timeout-{}-{unique}",
+            std::process::id()
+        ));
+        let state = root.join("state");
+        let app_executable = root.join("app/bin/vapor-gui");
+        let service = root.join("fake-service");
+        fs::create_dir_all(&state).expect("create test state directory");
+        fs::write(
+            &service,
+            "#!/bin/sh\necho startup diagnostic >&2\nexec sleep 30\n",
+        )
+        .expect("write fake service");
+        fs::set_permissions(&service, fs::Permissions::from_mode(0o700))
+            .expect("make fake service executable");
+
+        let mut bootstrap = bootstrap();
+        bootstrap.fixture_mode = false;
+        bootstrap.application_executable = app_executable;
+        bootstrap.state_directory = Some(state);
+        let context = resolve_host_context(&bootstrap).expect("resolve host context");
+        let endpoint = super::local_socket::endpoint_name(
+            context.app_root.as_deref(),
+            &context.state_directory,
+        );
+
+        let error = ensure_service_with_timeout(
+            &service,
+            &bootstrap,
+            &context,
+            &endpoint,
+            Duration::from_millis(250),
+        )
+        .expect_err("fake service never claims the local endpoint");
+
+        match error {
+            ClientError::ServiceStartupTimeout(lines) => {
+                assert!(lines.iter().any(|line| line.contains("startup diagnostic")));
+            }
+            other => panic!("unexpected service startup error: {other:?}"),
+        }
+        fs::remove_dir_all(root).expect("remove test files");
     }
 
     #[test]

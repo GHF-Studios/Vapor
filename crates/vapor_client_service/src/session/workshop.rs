@@ -3,6 +3,52 @@
 use super::composition::apply_operation_result_to_composition;
 use super::*;
 
+fn validate_workshop_source_identity(
+    projects: &[vapor_client_protocol::WorkspaceSourceProject],
+    selector: &str,
+) -> Result<(), String> {
+    let (id, requested_version) = selector
+        .split_once('@')
+        .map(|(id, version)| (id, Some(version)))
+        .unwrap_or((selector, None));
+    if id.is_empty() || requested_version.is_some_and(str::is_empty) {
+        return Err("Choose a content ID or ID@VERSION from the active workspace.".to_owned());
+    }
+
+    let matching_projects = projects
+        .iter()
+        .filter(|project| project.id == id)
+        .collect::<Vec<_>>();
+    let selected = if let Some(version) = requested_version {
+        matching_projects
+            .iter()
+            .copied()
+            .find(|project| project.version.as_deref() == Some(version))
+    } else {
+        match matching_projects.as_slice() {
+            [project] => Some(*project),
+            [] => None,
+            _ => {
+                return Err(format!(
+                    "Content ID '{id}' has multiple workspace versions; specify the exact ID@VERSION."
+                ));
+            }
+        }
+    };
+
+    if selected.is_some() {
+        Ok(())
+    } else if let Some(version) = requested_version {
+        Err(format!(
+            "Content '{id}@{version}' is not in the active workspace; refresh the project list and choose an exact version."
+        ))
+    } else {
+        Err(format!(
+            "Content ID '{id}' is not in the active workspace; choose one of its authored content projects."
+        ))
+    }
+}
+
 impl ClientSession {
     fn validate_workshop_stage(&mut self, selector: &str) -> Result<PathBuf, ServiceError> {
         let Some(workspace_root) = self.bootstrap.workspace_root.clone() else {
@@ -45,29 +91,8 @@ impl ClientSession {
                 retryable: true,
             });
         }
-        let (id, version) = selector
-            .split_once('@')
-            .map(|(id, version)| (id, Some(version)))
-            .unwrap_or((selector, None));
-        if id.is_empty()
-            || version.is_some_and(str::is_empty)
-            || !self
-                .workspace_content
-                .source_projects
-                .iter()
-                .any(|project| project.id == id && project.version.as_deref() == version)
-        {
-            return Err(invalid_client_action_request(
-                "Select an exact content identity from the active workspace before staging it.",
-            ));
-        }
-        if self.catalog.entries().iter().any(|entry| {
-            entry.id == id && entry.version.as_deref() == version && !entry.conflicts.is_empty()
-        }) {
-            return Err(invalid_client_action_request(
-                "On-device copies of this content version disagree. Resolve the conflict before staging it.",
-            ));
-        }
+        validate_workshop_source_identity(&self.workspace_content.source_projects, selector)
+            .map_err(|message| invalid_client_action_request(&message))?;
         Ok(workspace_root)
     }
 
@@ -77,7 +102,11 @@ impl ClientSession {
     ) -> Result<(), ServiceError> {
         self.reject_if_operation_in_progress()?;
         let kind = match action {
-            WorkshopAction::Search { query, page } => {
+            WorkshopAction::Search {
+                query,
+                page,
+                required_tags,
+            } => {
                 if query.len() > 256 {
                     return Err(invalid_client_action_request(
                         "Workshop search terms must be 256 bytes or fewer.",
@@ -88,9 +117,19 @@ impl ClientSession {
                         "Workshop search page must be between 1 and 1000.",
                     ));
                 }
+                if required_tags.len() > 8
+                    || required_tags
+                        .iter()
+                        .any(|tag| tag.trim().is_empty() || tag.len() > 64 || tag.contains('\0'))
+                {
+                    return Err(invalid_client_action_request(
+                        "Workshop filters must contain up to eight valid tags.",
+                    ));
+                }
                 WorkshopOperationKind::Search {
                     query: query.trim().to_owned(),
                     page,
+                    required_tags,
                 }
             }
             WorkshopAction::LoadSubscriptions => WorkshopOperationKind::LoadSubscriptions,
@@ -288,13 +327,12 @@ impl ClientSession {
                 ));
             }
         };
-        let auto_install = self
-            .auto_install_context(&kind)
-            .map_err(|message| ServiceError {
-                code: ServiceErrorCode::ActionUnavailable,
-                message,
-                retryable: true,
-            })?;
+        // Subscription and acquisition are user-requested operations. A
+        // composition that cannot currently be auto-updated must not prevent
+        // Steam from subscribing or the Library from acquiring the item.
+        // Keep the policy failure with the operation so its result can explain
+        // that automatic composition updates were skipped.
+        let auto_install = self.auto_install_context(&kind);
         let action_id = workshop_operation_action_id(&kind);
         let fixture_mode = self.bootstrap.fixture_mode;
         let application_executable = self.bootstrap.application_executable.clone();
@@ -334,7 +372,11 @@ impl ClientSession {
         )
     }
 
-    pub(super) fn auto_install_context(
+    pub(super) fn auto_install_context(&self, kind: &WorkshopOperationKind) -> AutoInstallContext {
+        auto_install_context_or_pause(self.try_auto_install_context(kind))
+    }
+
+    fn try_auto_install_context(
         &self,
         kind: &WorkshopOperationKind,
     ) -> Result<AutoInstallContext, String> {
@@ -513,6 +555,12 @@ impl ClientSession {
                         WorkshopOperationKind::Search { query, .. } => query.clone(),
                         _ => String::new(),
                     },
+                    match &completion.action {
+                        WorkshopOperationKind::Search { required_tags, .. } => {
+                            required_tags.clone()
+                        }
+                        _ => Vec::new(),
+                    },
                     page,
                     revision,
                 ));
@@ -550,13 +598,14 @@ impl ClientSession {
                 self.workshop.subscriptions_revision =
                     self.workshop.subscriptions_revision.saturating_add(1);
                 match acquisition {
-                    Ok((items, requested, updates)) => {
+                    Ok(acquisition) => {
                         let revision = self
                             .workshop
                             .acquisition
                             .as_ref()
                             .map_or(1, |batch| batch.revision.saturating_add(1));
-                        let items = items
+                        let items = acquisition
+                            .items
                             .iter()
                             .map(workshop_acquisition_snapshot)
                             .collect::<Vec<_>>();
@@ -565,21 +614,26 @@ impl ClientSession {
                             .extend(items.iter().cloned().map(|item| (item.id.clone(), item)));
                         self.workshop.acquisition = Some(WorkshopAcquisitionBatchSnapshot {
                             revision,
-                            requested,
+                            requested: acquisition.requested,
+                            dependencies_acquired: acquisition.dependencies_acquired,
                             items,
                         });
-                        summary = Some(format!(
-                            "Subscribed and added {imported} Workshop item{} to your Library.",
-                            if imported == 1 { "" } else { "s" }
+                        summary = Some(acquisition_summary(
+                            "Subscribed and added",
+                            imported,
+                            acquisition.dependencies_acquired,
                         ));
                         self.refresh_catalog();
-                        match self.apply_auto_install_updates(updates) {
-                            Ok(Some(message)) => summary = Some(message),
+                        match self.apply_auto_install_updates(acquisition.updates) {
+                            Ok(Some(message)) => append_summary(&mut summary, &message),
                             Err(message) => {
                                 succeeded = false;
                                 failure = Some(message);
                             }
                             Ok(None) => {}
+                        }
+                        if let Some(warning) = acquisition.auto_install_warning {
+                            append_auto_install_warning(&mut summary, &warning);
                         }
                     }
                     Err(error) => {
@@ -590,17 +644,14 @@ impl ClientSession {
                     }
                 }
             }
-            Ok(WorkshopOperationResult::Acquisitions {
-                items,
-                requested,
-                updates,
-            }) => {
+            Ok(WorkshopOperationResult::Acquisitions(acquisition)) => {
                 let revision = self
                     .workshop
                     .acquisition
                     .as_ref()
                     .map_or(1, |batch| batch.revision.saturating_add(1));
-                let items = items
+                let items = acquisition
+                    .items
                     .iter()
                     .map(workshop_acquisition_snapshot)
                     .collect::<Vec<_>>();
@@ -611,21 +662,26 @@ impl ClientSession {
                 }
                 self.workshop.acquisition = Some(WorkshopAcquisitionBatchSnapshot {
                     revision,
-                    requested,
+                    requested: acquisition.requested,
+                    dependencies_acquired: acquisition.dependencies_acquired,
                     items,
                 });
-                summary = Some(format!(
-                    "Added {} Workshop items to your Library.",
-                    imported
+                summary = Some(acquisition_summary(
+                    "Added",
+                    imported,
+                    acquisition.dependencies_acquired,
                 ));
                 self.refresh_catalog();
-                match self.apply_auto_install_updates(updates) {
-                    Ok(Some(message)) => summary = Some(message),
+                match self.apply_auto_install_updates(acquisition.updates) {
+                    Ok(Some(message)) => append_summary(&mut summary, &message),
                     Err(message) => {
                         succeeded = false;
                         failure = Some(message);
                     }
                     Ok(None) => {}
+                }
+                if let Some(warning) = acquisition.auto_install_warning {
+                    append_auto_install_warning(&mut summary, &warning);
                 }
             }
             Ok(WorkshopOperationResult::Review(preview)) => {
@@ -817,18 +873,26 @@ fn workshop_result_outcome(
             items.len()
         )),
         Ok(WorkshopOperationResult::SubscriptionWithAcquisition {
-            acquisition: Ok((items, requested, _updates)),
+            acquisition: Ok(acquisition),
             ..
         }) => {
-            if items.len() == *requested {
-                Ok(format!(
-                    "Subscribed and added {} Workshop items to the Library.",
-                    items.len()
-                ))
+            if acquisition.items.len() == acquisition.requested {
+                let summary = acquisition_summary(
+                    "Subscribed and added",
+                    acquisition.items.len(),
+                    acquisition.dependencies_acquired,
+                );
+                Ok(acquisition
+                    .auto_install_warning
+                    .as_ref()
+                    .map_or(summary.clone(), |warning| {
+                        format!("{summary} Auto-Install paused: {warning}")
+                    }))
             } else {
                 Err(format!(
                     "Subscribed, but only {} of {requested} Workshop items were added to the Library.",
-                    items.len()
+                    acquisition.items.len(),
+                    requested = acquisition.requested
                 ))
             }
         }
@@ -838,18 +902,24 @@ fn workshop_result_outcome(
         }) => Err(format!(
             "Subscription is active, but Vapor Client could not add the item to the Library: {error}"
         )),
-        Ok(WorkshopOperationResult::Acquisitions {
-            items, requested, ..
-        }) => {
-            if items.len() == *requested {
-                Ok(format!(
-                    "Added {} Workshop items to the local cache.",
-                    items.len()
-                ))
+        Ok(WorkshopOperationResult::Acquisitions(acquisition)) => {
+            if acquisition.items.len() == acquisition.requested {
+                let summary = acquisition_summary(
+                    "Added",
+                    acquisition.items.len(),
+                    acquisition.dependencies_acquired,
+                );
+                Ok(acquisition
+                    .auto_install_warning
+                    .as_ref()
+                    .map_or(summary.clone(), |warning| {
+                        format!("{summary} Auto-Install paused: {warning}")
+                    }))
             } else {
                 Err(format!(
                     "Downloaded {} of {requested} requested Workshop items.",
-                    items.len()
+                    acquisition.items.len(),
+                    requested = acquisition.requested
                 ))
             }
         }
@@ -896,9 +966,13 @@ fn execute_workshop_operation(
         return Ok(fixture_workshop_operation(fixture_subscriptions, kind));
     }
     match kind {
-        WorkshopOperationKind::Search { query, page } => {
+        WorkshopOperationKind::Search {
+            query,
+            page,
+            required_tags,
+        } => {
             let app_id = required_workshop_app_id(workshop_app_id)?;
-            vapor_client_application::search_workshop(app_id, &query, page)
+            vapor_client_application::search_workshop(app_id, &query, page, &required_tags)
                 .map(WorkshopOperationResult::Search)
         }
         WorkshopOperationKind::LoadSubscriptions => {
@@ -936,13 +1010,8 @@ fn execute_workshop_operation(
         }
         WorkshopOperationKind::Acquire { ids } => {
             let requested = ids.len();
-            download_with_auto_install(application_executable, &ids, requested, &auto_install).map(
-                |(items, _, updates)| WorkshopOperationResult::Acquisitions {
-                    items,
-                    requested,
-                    updates,
-                },
-            )
+            download_with_auto_install(application_executable, &ids, requested, &auto_install)
+                .map(WorkshopOperationResult::Acquisitions)
         }
         WorkshopOperationKind::Stage {
             selector,
@@ -954,7 +1023,7 @@ fn execute_workshop_operation(
                 application_executable,
                 &workspace_root,
                 &target_triples,
-                application::BuildMode::ValidateAndBuild,
+                application::BuildMode::Build,
             )?;
             context.set_phase(application::OperationPhase::Staging);
             vapor_client_application::stage_workshop_preview(
@@ -975,7 +1044,7 @@ fn execute_workshop_operation(
                 application_executable,
                 &workspace_root,
                 &target_triples,
-                application::BuildMode::ValidateAndBuild,
+                application::BuildMode::Build,
             )?;
             context.set_phase(application::OperationPhase::Staging);
             vapor_client_application::stage_workshop_batch_preview(
@@ -1035,19 +1104,14 @@ fn download_with_auto_install(
     ids: &[String],
     requested: usize,
     context: &AutoInstallContext,
-) -> Result<
-    (
-        Vec<vapor_client_application::WorkshopAcquisition>,
-        usize,
-        Vec<AutoInstallCompositionUpdate>,
-    ),
-    String,
-> {
+) -> Result<WorkshopAcquisitionResult, String> {
     let items = vapor_client_application::download_workshop_items_with_constraints(
         application_executable,
         ids,
         &context.constraints,
     )?;
+    let dependencies_acquired = items.dependencies_acquired;
+    let items = items.items;
     let acquired = items
         .iter()
         .map(|item| item.id.as_str())
@@ -1090,7 +1154,51 @@ fn download_with_auto_install(
             });
         }
     }
-    Ok((items, requested, updates))
+    Ok(WorkshopAcquisitionResult {
+        items,
+        requested,
+        dependencies_acquired,
+        updates,
+        auto_install_warning: context.warning.clone(),
+    })
+}
+
+fn append_auto_install_warning(summary: &mut Option<String>, warning: &str) {
+    let message = format!("Auto-Install paused: {warning}");
+    append_summary(summary, &message);
+}
+
+fn append_summary(summary: &mut Option<String>, message: &str) {
+    match summary {
+        Some(summary) => {
+            summary.push(' ');
+            summary.push_str(message);
+        }
+        None => *summary = Some(message.to_owned()),
+    }
+}
+
+fn acquisition_summary(action: &str, requested: usize, dependencies: usize) -> String {
+    let items = if requested == 1 {
+        "Workshop item".to_owned()
+    } else {
+        "Workshop items".to_owned()
+    };
+    let dependency_summary = match dependencies {
+        0 => String::new(),
+        1 => " and its required dependency".to_owned(),
+        count => format!(" and {count} required dependencies"),
+    };
+    format!("{action} {requested} {items}{dependency_summary} to your Library.")
+}
+
+fn auto_install_context_or_pause(
+    context: Result<AutoInstallContext, String>,
+) -> AutoInstallContext {
+    context.unwrap_or_else(|warning| AutoInstallContext {
+        warning: Some(warning),
+        ..AutoInstallContext::default()
+    })
 }
 
 fn fixture_workshop_operation(
@@ -1102,11 +1210,20 @@ fn fixture_workshop_operation(
         fixture_workshop_item("1002", "Fixture Moon Pack"),
     ];
     match kind {
-        WorkshopOperationKind::Search { query, page } => {
+        WorkshopOperationKind::Search {
+            query,
+            page,
+            required_tags,
+        } => {
             let query = query.to_lowercase();
             let items = items
                 .into_iter()
                 .filter(|item| item.title.to_lowercase().contains(&query))
+                .filter(|item| {
+                    required_tags
+                        .iter()
+                        .all(|tag| item.tags.iter().any(|item_tag| item_tag == tag))
+                })
                 .collect::<Vec<_>>();
             WorkshopOperationResult::Search(vapor_client_application::WorkshopPage {
                 total_results: items.len() as u32,
@@ -1146,7 +1263,13 @@ fn fixture_workshop_operation(
                     .collect();
                 WorkshopOperationResult::SubscriptionWithAcquisition {
                     subscriptions: subscribed,
-                    acquisition: Ok((items, requested, Vec::new())),
+                    acquisition: Ok(WorkshopAcquisitionResult {
+                        items,
+                        requested,
+                        dependencies_acquired: 0,
+                        updates: Vec::new(),
+                        auto_install_warning: None,
+                    }),
                 }
             } else {
                 WorkshopOperationResult::Subscriptions(subscribed)
@@ -1164,11 +1287,13 @@ fn fixture_workshop_operation(
                     fingerprint: format!("fixture:{id}"),
                 })
                 .collect();
-            WorkshopOperationResult::Acquisitions {
+            WorkshopOperationResult::Acquisitions(WorkshopAcquisitionResult {
                 items,
                 requested,
+                dependencies_acquired: 0,
                 updates: Vec::new(),
-            }
+                auto_install_warning: None,
+            })
         }
         WorkshopOperationKind::Stage {
             selector,
@@ -1271,6 +1396,11 @@ fn fixture_workshop_item(id: &str, title: &str) -> vapor_client_application::Wor
         description: "Deterministic Vapor Client fixture; no Steam connection is used.".to_owned(),
         preview_url: None,
         updated_at_unix: 1_797_000_000,
+        tags: if id == "1001" {
+            vec!["packagepack".to_owned()]
+        } else {
+            vec!["game".to_owned()]
+        },
     }
 }
 
@@ -1295,6 +1425,7 @@ fn fixture_workshop_subscription(id: &str) -> vapor_client_application::Workshop
 
 fn workshop_search_snapshot(
     query: String,
+    required_tags: Vec<String>,
     page: vapor_client_application::WorkshopPage,
     revision: u64,
 ) -> WorkshopSearchSnapshot {
@@ -1303,6 +1434,7 @@ fn workshop_search_snapshot(
         query,
         page: page.page,
         total_results: page.total_results,
+        required_tags,
         items: page.items.into_iter().map(workshop_item_snapshot).collect(),
     }
 }
@@ -1314,6 +1446,7 @@ fn workshop_item_snapshot(item: vapor_client_application::WorkshopItem) -> Works
         description: item.description,
         preview_url: item.preview_url,
         updated_at_unix: item.updated_at_unix,
+        tags: item.tags,
     }
 }
 
@@ -1406,6 +1539,45 @@ pub(super) fn workshop_batch_review_snapshot(
 #[cfg(test)]
 mod target_tests {
     use super::super::validate_runtime_target_matrix;
+    use super::{
+        append_auto_install_warning, auto_install_context_or_pause,
+        validate_workshop_source_identity,
+    };
+    use vapor_client_protocol::{WorkspaceSourceProject, WorkspaceWorkshopPolicy};
+
+    fn source_project(id: &str, version: Option<&str>) -> WorkspaceSourceProject {
+        WorkspaceSourceProject {
+            id: id.to_owned(),
+            version: version.map(str::to_owned),
+            kind: "packagepack".to_owned(),
+            root: "content/example".to_owned(),
+            manifest: "content/example/Vapor.toml".to_owned(),
+            binaries: Vec::new(),
+            libraries: Vec::new(),
+            dependencies: Vec::new(),
+            workshop: WorkspaceWorkshopPolicy::default(),
+        }
+    }
+
+    #[test]
+    fn workshop_stage_accepts_a_unique_unqualified_content_id() {
+        let projects = vec![source_project("example.pack", Some("0.1.0"))];
+
+        assert!(validate_workshop_source_identity(&projects, "example.pack").is_ok());
+        assert!(validate_workshop_source_identity(&projects, "example.pack@0.1.0").is_ok());
+        assert!(validate_workshop_source_identity(&projects, "example.pack@0.2.0").is_err());
+    }
+
+    #[test]
+    fn workshop_stage_requires_version_when_an_id_is_ambiguous() {
+        let projects = vec![
+            source_project("example.pack", Some("0.1.0")),
+            source_project("example.pack", Some("0.2.0")),
+        ];
+
+        assert!(validate_workshop_source_identity(&projects, "example.pack").is_err());
+        assert!(validate_workshop_source_identity(&projects, "example.pack@0.2.0").is_ok());
+    }
 
     #[test]
     fn workshop_review_accepts_an_empty_or_unique_target_matrix() {
@@ -1429,5 +1601,30 @@ mod target_tests {
         assert!(validate_runtime_target_matrix(&[" target".to_owned()]).is_err());
         assert!(validate_runtime_target_matrix(&["".to_owned()]).is_err());
         assert!(validate_runtime_target_matrix(&["x".repeat(129)]).is_err());
+    }
+
+    #[test]
+    fn auto_install_preflight_failure_is_a_warning_not_an_action_failure() {
+        let context = auto_install_context_or_pause(Err("composition is unresolved".to_owned()));
+
+        assert!(context.constraints.is_empty());
+        assert!(context.compositions.is_empty());
+        assert_eq!(
+            context.warning.as_deref(),
+            Some("composition is unresolved")
+        );
+    }
+
+    #[test]
+    fn auto_install_warning_keeps_the_acquisition_result_visible() {
+        let mut summary = Some("Subscribed and added 1 item to your Library.".to_owned());
+        append_auto_install_warning(&mut summary, "composition is unresolved");
+
+        assert_eq!(
+            summary.as_deref(),
+            Some(
+                "Subscribed and added 1 item to your Library. Auto-Install paused: composition is unresolved"
+            )
+        );
     }
 }

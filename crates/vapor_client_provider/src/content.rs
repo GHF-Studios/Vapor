@@ -1186,6 +1186,19 @@ pub fn has_installed_artifact(
     Ok(resolve_installed_selector(&index, selector).is_ok())
 }
 
+/// Check whether an artifact is already present in Vapor's downloadable Library.
+///
+/// This does not read the package manifest, so callers can distinguish an absent
+/// cache entry from a present but damaged one before inspecting its contents.
+pub fn has_cached_artifact(
+    installation: &InstallationPaths,
+    selector: &str,
+) -> Result<bool, String> {
+    let layout = ContentLayout::new(installation);
+    let index = load_index(&layout)?;
+    Ok(index.cache_by_selector(selector).is_some())
+}
+
 /// Read one deployed artifact from Vapor's app-owned cache.
 pub fn cached_artifact(
     installation: &InstallationPaths,
@@ -1215,6 +1228,21 @@ pub fn cached_artifact(
         enabled: true,
         dependencies: artifact.dependencies().to_vec(),
     })
+}
+
+/// Check whether the cached version of an artifact satisfies an optional
+/// semantic-version requirement.
+pub fn cached_artifact_satisfies_version(
+    installation: &InstallationPaths,
+    selector: &str,
+    requirement: Option<&str>,
+) -> Result<bool, String> {
+    let cached = cached_artifact(installation, selector)?;
+    let requirement = requirement
+        .map(semver::VersionReq::parse)
+        .transpose()
+        .map_err(|error| format!("invalid version requirement for {selector}: {error}"))?;
+    Ok(version_satisfies(cached.version(), requirement.as_ref()))
 }
 
 /// Remove one acquired artifact from the local Library cache without touching
@@ -2276,12 +2304,19 @@ fn root_content_seed(
 }
 
 fn root_content_seed_matches(seed: &RootContentSeed, selector: &str) -> bool {
-    seed.id == selector
+    // Install selectors may include an exact version (`artifact@1.2.3`). The
+    // seed identifies the Workshop artifact; cache resolution below remains
+    // responsible for requiring that the downloaded manifest has that version.
+    let identity = selector
+        .rsplit_once('@')
+        .map_or(selector, |(identity, _)| identity);
+
+    seed.id == identity
         || seed
             .id
             .rsplit('/')
             .next()
-            .is_some_and(|name| name == selector)
+            .is_some_and(|name| name == identity)
         || seed.workshop_id == selector
         || seed
             .default_launch
@@ -2475,6 +2510,31 @@ title = "Movement"
         assert!(steam.get("published-file-id").is_none());
         assert_eq!(steam.get("app-id").unwrap().as_integer(), Some(2122620));
         assert_eq!(steam.get("title").unwrap().as_str(), Some("Movement"));
+    }
+
+    #[test]
+    fn root_content_seed_matches_version_qualified_artifact_selectors() {
+        let seed = RootContentSeed {
+            id: "ghf-studios/loo-cast/loo-cast-packagepack".to_owned(),
+            kind: "packagepack".to_owned(),
+            app_id: 2122620,
+            workshop_id: "3762162548".to_owned(),
+            default_launch: Some("default".to_owned()),
+        };
+
+        assert!(root_content_seed_matches(
+            &seed,
+            "ghf-studios/loo-cast/loo-cast-packagepack@0.5.0"
+        ));
+        assert!(root_content_seed_matches(
+            &seed,
+            "loo-cast-packagepack@0.5.0"
+        ));
+        assert!(root_content_seed_matches(&seed, "3762162548"));
+        assert!(!root_content_seed_matches(
+            &seed,
+            "ghf-studios/loo-cast/other-packagepack@0.5.0"
+        ));
     }
 
     #[test]

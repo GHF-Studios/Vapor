@@ -19,6 +19,7 @@ use std::{
     path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+use vapor_content::RuntimePresentation;
 use vapor_content::authored_manifest::{AuthoredContentManifest, AuthoredVersion};
 
 /// Stage a source content artifact as a Vapor package.
@@ -145,6 +146,7 @@ pub(super) fn read_authored_content(
         version: authored.version.clone(),
         binaries: authored.binaries.clone(),
         libraries: authored.libraries.clone(),
+        presentation: authored.presentation(),
         workshop: authored.workshop.clone(),
         dependencies: authored
             .dependency_edges(kind)
@@ -165,6 +167,7 @@ pub(super) struct AuthoredContent {
     pub(super) version: AuthoredVersion,
     pub(super) binaries: Vec<String>,
     pub(super) libraries: Vec<String>,
+    pub(super) presentation: RuntimePresentation,
     pub(super) workshop: WorkshopPolicy,
     pub(super) dependencies: Vec<ContentReference>,
     pub(super) conflicts: Vec<ContentReference>,
@@ -218,6 +221,8 @@ struct DeployedContent {
     dependencies: Vec<ContentReference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     conflicts: Vec<ContentReference>,
+    #[serde(default, skip_serializing_if = "RuntimePresentation::is_window")]
+    presentation: RuntimePresentation,
 }
 
 impl DeployedManifest {
@@ -232,6 +237,7 @@ impl DeployedManifest {
             workshop: artifact.workshop().clone(),
             dependencies: artifact.dependencies().to_vec(),
             conflicts: artifact.conflicts().to_vec(),
+            presentation: artifact.presentation(),
         };
         let mut manifest = Self::empty();
         match artifact.kind() {
@@ -662,6 +668,7 @@ pub(super) fn read_deployed_manifest(package_root: &Path) -> Result<ContentArtif
                 libraries: payload.libraries.clone(),
             })
             .collect(),
+        presentation: authored.presentation(),
         dependencies,
         conflicts,
         workshop: authored.workshop.clone(),

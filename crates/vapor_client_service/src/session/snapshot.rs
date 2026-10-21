@@ -7,8 +7,9 @@ use super::{
     workshop::{workshop_batch_review_snapshot, workshop_review_snapshot},
 };
 use vapor_client_protocol::{
-    AvailableAction, ClientSnapshot, DurableStateSnapshot, HostSummary, InstallationState,
-    RootDistributionIdentitySnapshot, SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot,
+    AvailableAction, ClientSnapshot, DurableStateSnapshot, HostSummary, InstallationRoleSnapshot,
+    InstallationState, RootDistributionIdentitySnapshot, SuperworkspaceRepositorySnapshot,
+    SuperworkspaceSnapshot,
 };
 
 impl ClientSession {
@@ -216,6 +217,14 @@ impl ClientSession {
             application_release: self.application_release_snapshot.clone(),
             profile_traces: self.profile_traces.clone(),
             profile_trace_error: self.profile_trace_error.clone(),
+            installation_role: if self.bootstrap.fixture_mode {
+                InstallationRoleSnapshot {
+                    role: "player".to_owned(),
+                    ..Default::default()
+                }
+            } else {
+                super::application::installation_role_snapshot()
+            },
             selected_content_id: self.selected_content_id.clone(),
             available_actions,
         }

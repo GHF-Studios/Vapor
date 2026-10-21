@@ -377,6 +377,7 @@ fn execute_authoring_operation(
             )
             .map(|report| AuthoringResultKind::ContentPackaged {
                 id: report.artifact_id().to_owned(),
+                selector,
                 root: report.root().to_string_lossy().into_owned(),
                 target: report.runtime_target().to_owned(),
                 fingerprint: format!(

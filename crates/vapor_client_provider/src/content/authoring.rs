@@ -275,6 +275,7 @@ pub fn discover(paths: &EnvironmentPaths) -> Result<ContentCatalog, String> {
                     binaries: authored.binaries,
                     libraries: authored.libraries,
                     runtime: Vec::new(),
+                    presentation: authored.presentation,
                     dependencies: authored.dependencies,
                     conflicts: authored.conflicts,
                     workshop: authored.workshop,

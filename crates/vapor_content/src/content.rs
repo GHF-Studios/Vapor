@@ -5,6 +5,28 @@ use semver::VersionReq;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// Host surface required by a content Engine when it runs a composition.
+///
+/// The composition launch contract defaults to a normal graphical window.
+/// Engines that require terminal input opt into [`Self::Terminal`], allowing
+/// Vapor's host to provide an actual terminal rather than service pipes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimePresentation {
+    /// The Engine creates and owns its graphical window.
+    #[default]
+    Window,
+    /// The Engine requires an interactive terminal for input and rendering.
+    Terminal,
+}
+
+impl RuntimePresentation {
+    /// Whether this uses the default graphical window presentation.
+    pub const fn is_window(&self) -> bool {
+        matches!(self, Self::Window)
+    }
+}
+
 /// Semantic kind of one Vapor Content artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

@@ -7,7 +7,7 @@ use crate::manifest::ContentKind;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use vapor_content::authored_manifest::{AuthoredReference, AuthoredWorkshopPolicy};
-use vapor_content::{ContentCandidates, VaporId};
+use vapor_content::{ContentCandidates, RuntimePresentation, VaporId};
 
 /// Source-discovered content artifact catalog.
 #[derive(Debug, Clone)]
@@ -82,6 +82,7 @@ pub struct ContentArtifact {
     pub(super) binaries: Vec<String>,
     pub(super) libraries: Vec<String>,
     pub(super) runtime: Vec<RuntimePayload>,
+    pub(super) presentation: RuntimePresentation,
     pub(super) dependencies: Vec<ContentReference>,
     pub(super) conflicts: Vec<ContentReference>,
     pub(super) workshop: WorkshopPolicy,
@@ -126,6 +127,11 @@ impl ContentArtifact {
     /// Runtime libraries copied from app-local Cargo output into `lib/`.
     pub fn libraries(&self) -> &[String] {
         &self.libraries
+    }
+
+    /// Host surface required by this content Engine.
+    pub fn presentation(&self) -> RuntimePresentation {
+        self.presentation
     }
 
     /// Target-specific deployed runtime payloads.

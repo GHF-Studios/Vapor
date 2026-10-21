@@ -154,6 +154,7 @@ enum BackgroundOperationMessage {
     CompleteAuthoring(Box<AuthoringOperationCompletion>),
     CompleteLibrary(Box<LibraryOperationCompletion>),
     CompleteProfileAnalysis(Box<ProfileAnalysisCompletion>),
+    CompleteRoleTransition(Box<RoleTransitionCompletion>),
 }
 
 impl BackgroundOperationMessage {
@@ -168,6 +169,7 @@ impl BackgroundOperationMessage {
             Self::CompleteAuthoring(completion) => Some(&completion.id),
             Self::CompleteLibrary(completion) => Some(&completion.id),
             Self::CompleteProfileAnalysis(completion) => Some(&completion.id),
+            Self::CompleteRoleTransition(completion) => Some(&completion.id),
         }
     }
 }
@@ -190,6 +192,11 @@ struct LibraryOperationCompletion {
 struct ProfileAnalysisCompletion {
     id: String,
     result: Result<ProfileReportSnapshot, String>,
+}
+
+struct RoleTransitionCompletion {
+    id: String,
+    result: Result<String, String>,
 }
 
 struct CompositionOperationCompletion {
@@ -251,6 +258,14 @@ struct WorkshopOperationCompletion {
     result: Result<WorkshopOperationResult, String>,
 }
 
+struct WorkshopAcquisitionResult {
+    items: Vec<vapor_client_application::WorkshopAcquisition>,
+    requested: usize,
+    dependencies_acquired: usize,
+    updates: Vec<AutoInstallCompositionUpdate>,
+    auto_install_warning: Option<String>,
+}
+
 struct AutoInstallCompositionUpdate {
     composition_id: String,
     inputs: CompositionOperationInputs,
@@ -261,6 +276,7 @@ struct AutoInstallCompositionUpdate {
 struct AutoInstallContext {
     constraints: BTreeMap<String, Vec<String>>,
     compositions: BTreeMap<String, Vec<AutoInstallCompositionTarget>>,
+    warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -396,6 +412,7 @@ enum WorkshopOperationKind {
     Search {
         query: String,
         page: u32,
+        required_tags: Vec<String>,
     },
     LoadSubscriptions,
     ChangeSubscriptions {
@@ -432,20 +449,9 @@ enum WorkshopOperationResult {
     Subscriptions(Vec<vapor_client_application::WorkshopSubscription>),
     SubscriptionWithAcquisition {
         subscriptions: Vec<vapor_client_application::WorkshopSubscription>,
-        acquisition: Result<
-            (
-                Vec<vapor_client_application::WorkshopAcquisition>,
-                usize,
-                Vec<AutoInstallCompositionUpdate>,
-            ),
-            String,
-        >,
+        acquisition: Result<WorkshopAcquisitionResult, String>,
     },
-    Acquisitions {
-        items: Vec<vapor_client_application::WorkshopAcquisition>,
-        requested: usize,
-        updates: Vec<AutoInstallCompositionUpdate>,
-    },
+    Acquisitions(WorkshopAcquisitionResult),
     Review(vapor_client_application::WorkshopPackagePreview),
     BatchReview(vapor_client_application::WorkshopBatchReview),
     Publication(vapor_client_application::WorkshopPublication),
@@ -1049,6 +1055,72 @@ impl ClientSession {
                         ));
                     }
                 }
+                ClientAction::Developer(DeveloperAction::RefreshInstallationRole) => {
+                    self.revision.0 = self.revision.0.saturating_add(1);
+                }
+                ClientAction::Developer(
+                    action @ (DeveloperAction::PromoteInstallationRole { .. }
+                    | DeveloperAction::DemoteInstallationRole { .. }),
+                ) => {
+                    let (target, promote) = match action {
+                        DeveloperAction::PromoteInstallationRole { target } => (target, true),
+                        DeveloperAction::DemoteInstallationRole { target } => (target, false),
+                        _ => unreachable!("the matched action is a role transition"),
+                    };
+                    if self.bootstrap.fixture_mode {
+                        response_kind = ClientResponseKind::Rejected;
+                        error = Some(ServiceError {
+                            code: ServiceErrorCode::ActionUnavailable,
+                            message: "Installation roles are unavailable in fixture sessions."
+                                .to_owned(),
+                            retryable: false,
+                        });
+                    } else if let Err(failure) = self.reject_if_operation_in_progress() {
+                        response_kind = ClientResponseKind::Rejected;
+                        error = Some(failure);
+                    } else {
+                        let operation = if promote {
+                            "developer.promote-installation-role"
+                        } else {
+                            "developer.demote-installation-role"
+                        };
+                        let execute_target = target.clone();
+                        let execute = if promote {
+                            application::promote_installation_role
+                                as fn(&str) -> Result<String, String>
+                        } else {
+                            application::demote_installation_role
+                                as fn(&str) -> Result<String, String>
+                        };
+                        let spawn = self.spawn_background_operation(
+                            BackgroundOperationSpec {
+                                domain: "installation-role",
+                                action: operation,
+                                thread_prefix: "vapor-role-transition",
+                                failure_label: "installation role change",
+                                composition_id: None,
+                                phase: OperationPhase::Installing,
+                            },
+                            move |_| execute(&execute_target),
+                            |result| result.clone(),
+                            |id, result| {
+                                BackgroundOperationMessage::CompleteRoleTransition(Box::new(
+                                    RoleTransitionCompletion { id, result },
+                                ))
+                            },
+                        );
+                        match spawn {
+                            Ok(()) => {
+                                response_kind = ClientResponseKind::OperationAccepted;
+                                self.revision.0 = self.revision.0.saturating_add(1);
+                            }
+                            Err(failure) => {
+                                response_kind = ClientResponseKind::Rejected;
+                                error = Some(failure);
+                            }
+                        }
+                    }
+                }
                 ClientAction::Developer(DeveloperAction::SubscribeTelemetry { .. }) => {}
                 ClientAction::Developer(DeveloperAction::RefreshProfileTraces) => {
                     if self.bootstrap.fixture_mode {
@@ -1470,6 +1542,9 @@ impl ClientSession {
                 BackgroundOperationMessage::CompleteProfileAnalysis(completion) => {
                     self.apply_profile_analysis_completion(*completion);
                 }
+                BackgroundOperationMessage::CompleteRoleTransition(completion) => {
+                    self.apply_role_transition_completion(*completion);
+                }
             }
         }
     }
@@ -1510,6 +1585,39 @@ impl ClientSession {
             }));
         self.operation_events
             .push_back(ClientEvent::ProfileAnalysis(completion.result));
+    }
+
+    fn apply_role_transition_completion(&mut self, completion: RoleTransitionCompletion) {
+        let Some(active) = self
+            .active_operation
+            .as_ref()
+            .filter(|operation| operation.id == completion.id)
+        else {
+            return;
+        };
+        let action = active.action.clone();
+        self.clear_active_operation();
+        self.revision.0 = self.revision.0.saturating_add(1);
+        let (status, message) = match completion.result {
+            Ok(message) => (OperationStatus::Succeeded, Some(message)),
+            Err(message) => (
+                OperationStatus::Failed {
+                    message: message.clone(),
+                },
+                Some(message),
+            ),
+        };
+        self.operation_events
+            .push_back(ClientEvent::OperationChanged(OperationEvent {
+                revision: self.revision,
+                id: completion.id,
+                composition_id: None,
+                action,
+                phase: OperationPhase::Complete,
+                status,
+                progress: None,
+                message,
+            }));
     }
 
     fn collect_unreferenced_auto_install(&mut self) -> Result<Vec<String>, String> {
@@ -2148,9 +2256,7 @@ mod tests {
         let kind = WorkshopOperationKind::Acquire {
             ids: vec!["3762162552".to_owned()],
         };
-        let context = session
-            .auto_install_context(&kind)
-            .expect("safe update context can be constructed");
+        let context = session.auto_install_context(&kind);
         assert_eq!(context.constraints[content_id], vec!["^1.0".to_owned()]);
         assert_eq!(context.compositions[content_id].len(), 1);
         assert_eq!(
@@ -2177,11 +2283,14 @@ mod tests {
                 launch: vapor_client_application::LaunchSettings::default(),
                 installation: InstallationState::Unknown,
             });
+        let context = session.auto_install_context(&kind);
+        assert!(context.constraints.is_empty());
+        assert!(context.compositions.is_empty());
         assert!(
-            session
-                .auto_install_context(&kind)
-                .unwrap_err()
-                .contains("has not been resolved")
+            context
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("has not been resolved"))
         );
     }
 
@@ -2193,6 +2302,7 @@ mod tests {
             ClientAction::Workshop(vapor_client_protocol::WorkshopAction::Search {
                 query: "moon".into(),
                 page: 1,
+                required_tags: vec!["game".into()],
             }),
         ));
 
@@ -2207,9 +2317,14 @@ mod tests {
         let snapshot = serde_json::to_value(session.snapshot()).expect("encode snapshot");
         assert_eq!(snapshot["workshop"]["search"]["query"], "moon");
         assert_eq!(snapshot["workshop"]["search"]["page"], 1);
+        assert_eq!(snapshot["workshop"]["search"]["required_tags"][0], "game");
         assert_eq!(
             snapshot["workshop"]["search"]["items"][0]["published_file_id"],
             "1002"
+        );
+        assert_eq!(
+            snapshot["workshop"]["search"]["items"][0]["tags"][0],
+            "game"
         );
     }
 
@@ -2251,6 +2366,14 @@ mod tests {
     #[test]
     fn fixture_workshop_review_and_publish_are_service_owned_and_confirmation_bound() {
         let mut session = fixture_workspace_session();
+        session.refresh_catalog();
+        assert!(
+            session
+                .snapshot()
+                .catalog
+                .iter()
+                .any(|entry| { entry.id == "fixture.game" && !entry.conflicts.is_empty() })
+        );
         let staged = session.dispatch(request(
             Some(0),
             ClientAction::Workshop(WorkshopAction::Stage {
@@ -2838,6 +2961,28 @@ mod tests {
 
         assert_eq!(response.kind, ClientResponseKind::Applied);
         assert_eq!(response.revision, ClientRevision(0));
+    }
+
+    #[test]
+    fn fixture_sessions_reject_installation_role_mutations() {
+        for action in [
+            DeveloperAction::PromoteInstallationRole {
+                target: "composer".to_owned(),
+            },
+            DeveloperAction::DemoteInstallationRole {
+                target: "player".to_owned(),
+            },
+        ] {
+            let mut session = session();
+            let response = session.dispatch(request(None, ClientAction::Developer(action)));
+
+            assert_eq!(response.kind, ClientResponseKind::Rejected);
+            assert_eq!(response.revision, ClientRevision(0));
+            assert_eq!(
+                response.error.expect("fixture boundary error").code,
+                ServiceErrorCode::ActionUnavailable
+            );
+        }
     }
 
     #[test]

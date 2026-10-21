@@ -39,13 +39,14 @@ pub use state::{
     CatalogItemAction, CatalogItemRole, CatalogLocation, CatalogLocationKind, ClientEvent,
     ClientRevision, ClientSnapshot, CompositionPreviewDependency, CompositionPreviewNode,
     CompositionPreviewSnapshot, CompositionPreviewSource, DevelopmentSessionSnapshot,
-    DurableStateSnapshot, HostSummary, OperationEvent, OperationOutputEvent, OperationOutputStream,
-    OperationPhase, OperationStatus, OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot,
-    ProfileZoneSnapshot, RootDistributionIdentitySnapshot, RootPublishingSnapshot,
-    SourceMetadataRepairAction, SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot,
-    WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot, WorkshopBatchReviewSnapshot,
-    WorkshopItemSnapshot, WorkshopPackagePreviewSnapshot, WorkshopReviewItemSnapshot,
-    WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
+    DurableStateSnapshot, HostSummary, InstallationRoleSnapshot, OperationEvent,
+    OperationOutputEvent, OperationOutputStream, OperationPhase, OperationStatus, OperationSummary,
+    ProfileReportSnapshot, ProfileTraceSnapshot, ProfileZoneSnapshot,
+    RootDistributionIdentitySnapshot, RootPublishingSnapshot, SourceMetadataRepairAction,
+    SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot, WorkshopAcquisitionBatchSnapshot,
+    WorkshopAcquisitionSnapshot, WorkshopBatchReviewSnapshot, WorkshopItemSnapshot,
+    WorkshopPackagePreviewSnapshot, WorkshopReviewItemSnapshot, WorkshopReviewSnapshot,
+    WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
     WorkspaceContentSnapshot, WorkspaceFileResult, WorkspaceProjectCandidate,
     WorkspaceSourceProject, WorkspaceWorkshopPolicy,
 };
@@ -316,6 +317,7 @@ mod tests {
             ClientAction::Workshop(WorkshopAction::Search {
                 query: "moon".into(),
                 page: 1,
+                required_tags: vec!["game".into()],
             }),
             ClientAction::Workshop(WorkshopAction::LoadSubscriptions),
             ClientAction::Workshop(WorkshopAction::Subscribe {
@@ -369,6 +371,13 @@ mod tests {
                 confirmation: "PUBLISH APPLICATION 2122620 TO vapor-dev".into(),
             }),
             ClientAction::Publishing(PublishingAction::DiscardRootReview),
+            ClientAction::Developer(DeveloperAction::RefreshInstallationRole),
+            ClientAction::Developer(DeveloperAction::PromoteInstallationRole {
+                target: "composer".into(),
+            }),
+            ClientAction::Developer(DeveloperAction::DemoteInstallationRole {
+                target: "player".into(),
+            }),
             ClientAction::Developer(DeveloperAction::SubscribeTelemetry { enabled: true }),
             ClientAction::Developer(DeveloperAction::OpenProfiler),
             ClientAction::Developer(DeveloperAction::RefreshProfileTraces),
@@ -387,7 +396,7 @@ mod tests {
         ];
         assert_eq!(
             actions.len(),
-            90,
+            93,
             "update this catalog when adding/removing action variants"
         );
         for action in actions {
@@ -497,6 +506,7 @@ mod tests {
             operation_id: "operation-5".into(),
             result: AuthoringResultKind::ContentPackaged {
                 id: "ghf.example.mod".into(),
+                selector: "ghf.example.mod@1.2.3".into(),
                 root: "/app/output/packages/ghf.example.mod".into(),
                 target: "x86_64-unknown-linux-gnu".into(),
                 fingerprint: "sha256:abc123".into(),
@@ -632,18 +642,21 @@ mod tests {
                 configuration: Some("dev".into()),
             }],
             profile_trace_error: None,
+            installation_role: InstallationRoleSnapshot::default(),
             workshop: WorkshopSnapshot {
                 search: Some(WorkshopSearchSnapshot {
                     revision: 4,
                     query: "moon".into(),
                     page: 2,
                     total_results: 3,
+                    required_tags: vec!["game".into()],
                     items: vec![WorkshopItemSnapshot {
                         published_file_id: "1002".into(),
                         title: "Fixture Moon Pack".into(),
                         description: "Fixture content".into(),
                         preview_url: None,
                         updated_at_unix: 1_797_000_000,
+                        tags: vec!["game".into()],
                     }],
                 }),
                 subscriptions: vec![WorkshopSubscriptionSnapshot {
@@ -662,6 +675,7 @@ mod tests {
                 acquisition: Some(WorkshopAcquisitionBatchSnapshot {
                     revision: 3,
                     requested: 1,
+                    dependencies_acquired: 2,
                     items: vec![WorkshopAcquisitionSnapshot {
                         id: "moon.pack".into(),
                         version: Some("1.0.0".into()),
@@ -736,6 +750,28 @@ mod tests {
             stream: OperationOutputStream::Stderr,
             text: "warning: example".to_owned(),
         }));
+    }
+
+    #[test]
+    fn workshop_filter_fields_default_for_existing_frontends() {
+        let action: WorkshopAction =
+            serde_json::from_str(r#"{"action":"search","query":"moon","page":1}"#)
+                .expect("prior Workshop search action remains readable");
+        assert_eq!(
+            action,
+            WorkshopAction::Search {
+                query: "moon".into(),
+                page: 1,
+                required_tags: vec![],
+            }
+        );
+
+        let snapshot: WorkshopSearchSnapshot = serde_json::from_str(
+            r#"{"query":"moon","page":1,"total_results":1,"items":[{"published_file_id":"12","title":"Moon","description":"","preview_url":null,"updated_at_unix":0}]}"#,
+        )
+        .expect("prior Workshop result remains readable");
+        assert!(snapshot.required_tags.is_empty());
+        assert!(snapshot.items[0].tags.is_empty());
     }
 
     #[test]

@@ -271,6 +271,8 @@ pub enum WorkshopAction {
     Search {
         query: String,
         page: u32,
+        #[serde(default)]
+        required_tags: Vec<String>,
     },
     LoadSubscriptions,
     Subscribe {
@@ -341,6 +343,13 @@ pub enum PublishingAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum DeveloperAction {
+    RefreshInstallationRole,
+    PromoteInstallationRole {
+        target: String,
+    },
+    DemoteInstallationRole {
+        target: String,
+    },
     SubscribeTelemetry {
         enabled: bool,
     },
@@ -477,6 +486,13 @@ impl ClientAction {
                 PublishingAction::DiscardRootReview => "publishing.discard-root-review",
             },
             Self::Developer(action) => match action {
+                DeveloperAction::RefreshInstallationRole => "developer.refresh-installation-role",
+                DeveloperAction::PromoteInstallationRole { .. } => {
+                    "developer.promote-installation-role"
+                }
+                DeveloperAction::DemoteInstallationRole { .. } => {
+                    "developer.demote-installation-role"
+                }
                 DeveloperAction::SubscribeTelemetry { .. } => "developer.subscribe-telemetry",
                 DeveloperAction::OpenProfiler => "developer.open-profiler",
                 DeveloperAction::RefreshProfileTraces => "developer.refresh-profile-traces",

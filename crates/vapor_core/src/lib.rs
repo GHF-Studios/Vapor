@@ -6,6 +6,7 @@ pub mod authored_manifest;
 pub mod cargo;
 pub mod cargo_reconciliation;
 pub mod content;
+pub mod cross_target_toolchain;
 pub mod developer_environment;
 pub mod development;
 pub mod ecosystem;
@@ -44,6 +45,11 @@ pub use cargo_reconciliation::{
     CargoDependencyReconciliation, CargoDependencyState, CargoReconciliationError,
     CargoRepairReport, CrateCargoReconciliation, repair_local_crate_cargo_dependencies,
     verify_local_crate_cargo_dependencies,
+};
+
+pub use cross_target_toolchain::{
+    CrossTargetToolchainError, WINDOWS_GNU_LINKER_VERSION, install_windows_gnu_linker,
+    windows_gnu_linker_installed,
 };
 
 pub use content::{

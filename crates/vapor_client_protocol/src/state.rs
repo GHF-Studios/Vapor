@@ -61,8 +61,22 @@ pub struct ClientSnapshot {
     pub profile_traces: Vec<ProfileTraceSnapshot>,
     #[serde(default)]
     pub profile_trace_error: Option<String>,
+    #[serde(default)]
+    pub installation_role: InstallationRoleSnapshot,
     pub selected_content_id: Option<String>,
     pub available_actions: Vec<AvailableAction>,
+}
+
+/// Installed role and readiness of its app-managed developer tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct InstallationRoleSnapshot {
+    pub role: String,
+    pub rust_ready: bool,
+    pub windows_gnu_target_ready: bool,
+    pub windows_gnu_linker_ready: bool,
+    pub tracy_profiler_ready: bool,
+    pub tracy_analysis_ready: bool,
+    pub error: Option<String>,
 }
 
 /// Canonical Steam identity for the installed Vapor root application.
@@ -255,6 +269,8 @@ pub struct WorkshopPackagePreviewSnapshot {
 pub struct WorkshopAcquisitionBatchSnapshot {
     pub revision: u64,
     pub requested: usize,
+    #[serde(default)]
+    pub dependencies_acquired: usize,
     pub items: Vec<WorkshopAcquisitionSnapshot>,
 }
 
@@ -274,6 +290,8 @@ pub struct WorkshopSearchSnapshot {
     pub query: String,
     pub page: u32,
     pub total_results: u32,
+    #[serde(default)]
+    pub required_tags: Vec<String>,
     pub items: Vec<WorkshopItemSnapshot>,
 }
 
@@ -284,6 +302,8 @@ pub struct WorkshopItemSnapshot {
     pub description: String,
     pub preview_url: Option<String>,
     pub updated_at_unix: u32,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -543,6 +563,7 @@ pub enum AuthoringResultKind {
     },
     ContentPackaged {
         id: String,
+        selector: String,
         root: String,
         target: String,
         fingerprint: String,

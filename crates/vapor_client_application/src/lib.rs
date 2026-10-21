@@ -26,11 +26,11 @@ pub use composition::{
 pub use content::{
     CompositionPreview, CompositionPreviewDependency, CompositionPreviewNode,
     CompositionPreviewSource, CompositionRunResult, InstallationCheck, InstalledArtifact,
-    InstalledComposition, WorkshopAcquisition, collect_library_item, default_packagepack_selector,
-    download_workshop_item, download_workshop_items, download_workshop_items_with_constraints,
-    install_composition, package_authored_content, preview_composition, repair_composition,
-    run_installed_composition, run_library_operation, run_source_composition, update_composition,
-    verify_installation,
+    InstalledComposition, WorkshopAcquisition, WorkshopAcquisitionBatch, collect_library_item,
+    default_packagepack_selector, download_workshop_item, download_workshop_items,
+    download_workshop_items_with_constraints, install_composition, package_authored_content,
+    preview_composition, repair_composition, run_installed_composition, run_library_operation,
+    run_source_composition, update_composition, verify_installation,
 };
 pub use deployment::{deploy_application_with_context, package_application_with_context};
 pub use documentation::build_documentation_with_context;
@@ -150,6 +150,66 @@ pub fn open_managed_profiler() -> Result<(), String> {
     vapor_core::DeveloperEnvironment::discover()
         .and_then(|environment| environment.launch_tracy())
         .map_err(|error| error.to_string())
+}
+
+/// Read the role and managed-tool readiness for Vapor's active installation.
+pub fn installation_role_snapshot() -> vapor_client_protocol::InstallationRoleSnapshot {
+    let result = (|| {
+        let installation =
+            vapor_core::VaporInstallation::discover().map_err(|error| error.to_string())?;
+        let role = vapor_core::installed_role(&installation).map_err(|error| error.to_string())?;
+        let environment =
+            vapor_core::DeveloperEnvironment::discover_for_installation(&installation)
+                .map_err(|error| error.to_string())?;
+        let tools = environment.status();
+        Ok(vapor_client_protocol::InstallationRoleSnapshot {
+            role: role.as_str().to_owned(),
+            rust_ready: tools.rust_installed,
+            windows_gnu_target_ready: tools.windows_gnu_target_installed,
+            windows_gnu_linker_ready: tools.windows_gnu_linker_installed,
+            tracy_profiler_ready: tools.tracy_profiler_installed,
+            tracy_analysis_ready: tools.tracy_analysis_installed,
+            error: None,
+        })
+    })();
+    result.unwrap_or_else(|error| vapor_client_protocol::InstallationRoleSnapshot {
+        error: Some(error),
+        ..Default::default()
+    })
+}
+
+/// Promote the active Vapor installation to an ordinary local role.
+pub fn promote_installation_role(target: &str) -> Result<String, String> {
+    use std::str::FromStr as _;
+    let installation =
+        vapor_core::VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let target = vapor_core::VaporRole::from_str(target).map_err(|error| error.to_string())?;
+    let report =
+        vapor_core::promote_role(&installation, target).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "Installation promoted from {} to {}.{}",
+        report.previous_role,
+        report.installed_role,
+        if report.developer_environment_changed {
+            " Developer tools were installed or repaired."
+        } else {
+            " Required tools were already ready."
+        }
+    ))
+}
+
+/// Demote the active Vapor installation without deleting its tools or caches.
+pub fn demote_installation_role(target: &str) -> Result<String, String> {
+    use std::str::FromStr as _;
+    let installation =
+        vapor_core::VaporInstallation::discover().map_err(|error| error.to_string())?;
+    let target = vapor_core::VaporRole::from_str(target).map_err(|error| error.to_string())?;
+    let report =
+        vapor_core::demote_role(&installation, target).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "Installation demoted from {} to {}. Tools and authored data were preserved.",
+        report.previous_role, report.installed_role
+    ))
 }
 pub use vapor_steam::{
     MAX_SUBSCRIPTION_BATCH_SIZE as MAX_WORKSHOP_SUBSCRIPTION_BATCH, search_workshop,

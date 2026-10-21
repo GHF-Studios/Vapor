@@ -65,6 +65,7 @@ fn fixture_workshop_search_round_trips_through_the_service_process() {
             ClientAction::Workshop(WorkshopAction::Search {
                 query: "moon".into(),
                 page: 1,
+                required_tags: vec!["game".into()],
             }),
             Some(client.latest_snapshot().revision),
         )
@@ -91,15 +92,17 @@ fn fixture_workshop_search_round_trips_through_the_service_process() {
                 saw_success = true;
             }
             ProtocolFrame::Event(ClientEvent::Snapshot(snapshot))
-                if snapshot
-                    .workshop
-                    .search
-                    .as_ref()
-                    .is_some_and(|search| search.query == "moon" && search.page == 1) =>
+                if snapshot.workshop.search.as_ref().is_some_and(|search| {
+                    search.query == "moon" && search.page == 1 && search.required_tags == ["game"]
+                }) =>
             {
                 assert_eq!(
                     snapshot.workshop.search.as_ref().unwrap().items[0].published_file_id,
                     "1002"
+                );
+                assert_eq!(
+                    snapshot.workshop.search.as_ref().unwrap().items[0].tags,
+                    ["game"]
                 );
                 break;
             }

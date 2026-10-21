@@ -7,9 +7,14 @@ their own installation flows.
 
 ## Role ownership
 
-`Content Developer` and higher currently require the pinned Vapor-managed
+`Composer` and higher currently require the pinned Vapor-managed
 Rust/Cargo toolchain, Rust Analyzer/components, the pinned managed Tracy
 profiler, and Tracy's managed saved-trace analysis utility.
+
+Composer also receives the pinned Windows `gnullvm` Rust target and matching
+UCRT-based LLVM-MinGW linker/runtime bundle, so Windows package builds are
+available from supported developer installations without a second ad-hoc
+setup path. Player installations remain free of these authoring tools.
 
 Promotion reconciles this complete set before persisting the higher role.
 Demotion is non-destructive and preserves installed tooling.

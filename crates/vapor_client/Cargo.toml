@@ -11,3 +11,4 @@ vapor_client_protocol = { path = "../vapor_client_protocol" }
 
 [target."cfg(windows)".dependencies]
 widestring = "1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }

@@ -32,6 +32,7 @@ const LOCAL_RUSTUP_DIR: &str = "rustup/bin";
 const INSTALLATION_METADATA_DIR: &str = "metadata";
 const TOOLCHAIN_METADATA_FILE: &str = "toolchain.toml";
 const TOOLCHAIN_METADATA_SCHEMA: u32 = 1;
+pub const WINDOWS_GNU_TARGET: &str = "x86_64-pc-windows-gnullvm";
 
 /// Rust toolchain identity and roots applied to a Vapor-managed child process.
 ///
@@ -207,6 +208,19 @@ impl ManagedToolchain {
         self.cargo_path.is_file() && self.rustc_path.is_file()
     }
 
+    /// Check whether Rustup has installed the Windows GNU ABI target into this
+    /// installation's pinned toolchain.
+    pub fn target_is_installed(&self, target: &str) -> bool {
+        let Some(toolchain_root) = self.rustc_path.parent().and_then(Path::parent) else {
+            return false;
+        };
+        toolchain_root
+            .join("lib/rustlib")
+            .join(target)
+            .join("lib")
+            .is_dir()
+    }
+
     /// Install or repair the pinned toolchain using Rustup as bootstrap.
     ///
     /// Vapor only accepts a Rustup executable that demonstrably honors the
@@ -264,10 +278,39 @@ impl ManagedToolchain {
             });
         }
 
+        let status = Command::new(&rustup)
+            .args([
+                "target",
+                "add",
+                WINDOWS_GNU_TARGET,
+                "--toolchain",
+                self.pin.identifier(),
+            ])
+            .env("RUSTUP_HOME", &self.rustup_home)
+            .env("CARGO_HOME", &self.cargo_home)
+            .status()
+            .map_err(|source| ToolchainError::Io {
+                path: rustup.clone(),
+                source,
+            })?;
+        if !status.success() {
+            return Err(ToolchainError::RustupFailed {
+                path: rustup,
+                status,
+            });
+        }
+
         if !self.is_installed() {
             return Err(ToolchainError::ToolchainIncomplete {
                 cargo: self.cargo_path.clone(),
                 rustc: self.rustc_path.clone(),
+            });
+        }
+
+        if !self.target_is_installed(WINDOWS_GNU_TARGET) {
+            return Err(ToolchainError::TargetIncomplete {
+                target: WINDOWS_GNU_TARGET,
+                toolchain: self.pin.version.clone(),
             });
         }
 
@@ -457,21 +500,45 @@ pub enum ToolchainError {
 
     Workspace(WorkspaceError),
 
-    InstallationMetadata { path: PathBuf, message: String },
+    InstallationMetadata {
+        path: PathBuf,
+        message: String,
+    },
 
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
 
     UnsupportedHost,
 
-    RustupUnavailable { expected: PathBuf },
+    RustupUnavailable {
+        expected: PathBuf,
+    },
 
-    RustupFailed { path: PathBuf, status: ExitStatus },
+    RustupFailed {
+        path: PathBuf,
+        status: ExitStatus,
+    },
 
-    ToolchainNotInstalled { version: String, expected: PathBuf },
+    ToolchainNotInstalled {
+        version: String,
+        expected: PathBuf,
+    },
 
-    ToolchainIncomplete { cargo: PathBuf, rustc: PathBuf },
+    ToolchainIncomplete {
+        cargo: PathBuf,
+        rustc: PathBuf,
+    },
 
-    BinaryHasNoParent { path: PathBuf },
+    TargetIncomplete {
+        target: &'static str,
+        toolchain: String,
+    },
+
+    BinaryHasNoParent {
+        path: PathBuf,
+    },
 
     JoinPaths(env::JoinPathsError),
 }
@@ -534,6 +601,13 @@ impl fmt::Display for ToolchainError {
                     "toolchain installation completed but Cargo/Rustc are missing (`{}`, `{}`)",
                     cargo.display(),
                     rustc.display()
+                )
+            }
+
+            Self::TargetIncomplete { target, toolchain } => {
+                write!(
+                    formatter,
+                    "Rust {toolchain} was installed but target {target} is missing"
                 )
             }
 

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::target::host_runtime_target;
+use vapor_content::RuntimePresentation;
 
 /// Installed Packagepack graph resolved by the Vapor local provider.
 #[derive(Debug, Clone)]
@@ -48,6 +49,9 @@ pub struct PackagepackLaunchPlan {
     game_root: PathBuf,
     runtime_target: String,
     binary: PathBuf,
+    #[cfg(target_os = "linux")]
+    terminal_host: PathBuf,
+    presentation: RuntimePresentation,
     verified_ids: Vec<String>,
 }
 
@@ -95,6 +99,11 @@ impl PackagepackLaunchPlan {
     /// Content IDs whose installed closure was checked.
     pub fn verified_ids(&self) -> &[String] {
         &self.verified_ids
+    }
+
+    /// Host presentation required by the selected Engine.
+    pub fn presentation(&self) -> RuntimePresentation {
+        self.presentation
     }
 }
 
@@ -212,6 +221,11 @@ pub fn prepare_packagepack_launch(
     let graph = installed_packagepack_graph(installation, selector)?;
     let runtime_target = host_runtime_target();
     let binary = packagepack_launch_binary(graph.root.installed_root(), &runtime_target)?;
+    let presentation = engine_presentation(graph.engine.installed_root())?;
+    #[cfg(target_os = "linux")]
+    let terminal_host = installation
+        .binaries()
+        .join(format!("vapor-entrypoint{}", std::env::consts::EXE_SUFFIX));
     Ok(PackagepackLaunchPlan {
         packagepack_id: graph.root.artifact_id().to_owned(),
         packagepack_root: graph.root.installed_root().to_path_buf(),
@@ -221,6 +235,9 @@ pub fn prepare_packagepack_launch(
         game_root: graph.game.installed_root().to_path_buf(),
         runtime_target,
         binary,
+        #[cfg(target_os = "linux")]
+        terminal_host,
+        presentation,
         verified_ids: graph
             .nodes
             .iter()
@@ -239,7 +256,45 @@ pub fn run_packagepack_launch(
     launch_request: &str,
     arguments: &[String],
 ) -> Result<(), String> {
-    let mut command = Command::new(&plan.binary);
+    let mut command = match plan.presentation {
+        RuntimePresentation::Window => Command::new(&plan.binary),
+        RuntimePresentation::Terminal => {
+            #[cfg(target_os = "linux")]
+            {
+                if !plan.terminal_host.is_file() {
+                    return Err(format!(
+                        "terminal Engine launch needs Vapor Entrypoint at {}",
+                        plan.terminal_host.display()
+                    ));
+                }
+                let mut command = Command::new(&plan.terminal_host);
+                command
+                    .arg("terminal")
+                    .arg("--working-directory")
+                    .arg(&plan.packagepack_root)
+                    .arg("--")
+                    .arg(&plan.binary)
+                    .args(arguments);
+                command
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                let mut command = Command::new(&plan.binary);
+                command.creation_flags(0x0000_0010);
+                command.args(arguments);
+                command
+            }
+            #[cfg(not(any(target_os = "linux", windows)))]
+            {
+                let _ = arguments;
+                return Err(format!(
+                    "terminal Engine launch is not supported on {}",
+                    std::env::consts::OS
+                ));
+            }
+        }
+    };
     command
         .current_dir(&plan.packagepack_root)
         .env("VAPOR_LAUNCH_REQUEST", launch_request)
@@ -248,8 +303,6 @@ pub fn run_packagepack_launch(
         .env("VAPOR_ENGINE_ID", &plan.engine_id)
         .env("VAPOR_ENGINE_ROOT", &plan.engine_root)
         .env("VAPOR_RUNTIME_TARGET", &plan.runtime_target)
-        .args(arguments);
-    command
         .env("VAPOR_GAME_ID", &plan.game_id)
         .env("VAPOR_GAME_ROOT", &plan.game_root);
     let status = command
@@ -263,6 +316,21 @@ pub fn run_packagepack_launch(
             plan.engine_id
         ))
     }
+}
+
+fn engine_presentation(engine_root: &Path) -> Result<RuntimePresentation, String> {
+    let manifest_path = engine_root.join(manifest::ENGINE_FILE_NAME);
+    let source = fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("failed to read '{}': {error}", manifest_path.display()))?;
+    let parsed: LaunchManifest = toml::from_str(&source)
+        .map_err(|error| format!("failed to parse '{}': {error}", manifest_path.display()))?;
+    let engine = parsed.engine.ok_or_else(|| {
+        format!(
+            "resolved Engine manifest '{}' has no [engine] section",
+            manifest_path.display()
+        )
+    })?;
+    Ok(engine.presentation)
 }
 
 fn verify_launch_closure(
@@ -509,6 +577,7 @@ fn packagepack_launch_binary(
 #[derive(Debug, Deserialize)]
 struct LaunchManifest {
     packagepack: Option<LaunchContent>,
+    engine: Option<LaunchContent>,
     enginepack: Option<LaunchContent>,
     gamepack: Option<LaunchContent>,
 }
@@ -516,6 +585,8 @@ struct LaunchManifest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct LaunchContent {
+    #[serde(default)]
+    presentation: RuntimePresentation,
     #[serde(default)]
     runtime: Vec<LaunchRuntime>,
     #[serde(default)]

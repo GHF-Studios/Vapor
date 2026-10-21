@@ -4,27 +4,35 @@
 //! those capabilities; they do not invent tool-specific setup flows.
 
 use crate::{
-    InstallationError, ManagedToolchain, ManagedTracyToolset, ToolchainError, TracyError,
-    VaporInstallation,
+    CrossTargetToolchainError, InstallationError, ManagedToolchain, ManagedTracyToolset,
+    ToolchainError, TracyError, VaporInstallation,
 };
 use std::fmt;
 
 #[derive(Debug, Clone)]
 pub struct DeveloperEnvironmentStatus {
     pub rust_installed: bool,
+    pub windows_gnu_target_installed: bool,
+    pub windows_gnu_linker_installed: bool,
     pub tracy_profiler_installed: bool,
     pub tracy_analysis_installed: bool,
 }
 
 impl DeveloperEnvironmentStatus {
     pub const fn is_ready(&self) -> bool {
-        self.rust_installed && self.tracy_profiler_installed && self.tracy_analysis_installed
+        self.rust_installed
+            && self.windows_gnu_target_installed
+            && self.windows_gnu_linker_installed
+            && self.tracy_profiler_installed
+            && self.tracy_analysis_installed
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct DeveloperEnvironmentRepair {
     pub rust_installed: bool,
+    pub windows_gnu_target_installed: bool,
+    pub windows_gnu_linker_installed: bool,
     pub tracy_profiler_installed: bool,
     pub tracy_analysis_installed: bool,
     pub status: DeveloperEnvironmentStatus,
@@ -32,12 +40,17 @@ pub struct DeveloperEnvironmentRepair {
 
 impl DeveloperEnvironmentRepair {
     pub const fn changed(&self) -> bool {
-        self.rust_installed || self.tracy_profiler_installed || self.tracy_analysis_installed
+        self.rust_installed
+            || self.windows_gnu_target_installed
+            || self.windows_gnu_linker_installed
+            || self.tracy_profiler_installed
+            || self.tracy_analysis_installed
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct DeveloperEnvironment {
+    pub installation: VaporInstallation,
     pub rust: ManagedToolchain,
     pub tracy: ManagedTracyToolset,
 }
@@ -57,12 +70,20 @@ impl DeveloperEnvironment {
             .map_err(DeveloperEnvironmentError::Toolchain)?;
         let tracy = ManagedTracyToolset::discover(&installation.user_data_root())
             .map_err(DeveloperEnvironmentError::Tracy)?;
-        Ok(Self { rust, tracy })
+        Ok(Self {
+            installation: installation.clone(),
+            rust,
+            tracy,
+        })
     }
 
     pub fn status(&self) -> DeveloperEnvironmentStatus {
         DeveloperEnvironmentStatus {
             rust_installed: self.rust.is_installed(),
+            windows_gnu_target_installed: self
+                .rust
+                .target_is_installed(crate::toolchain::WINDOWS_GNU_TARGET),
+            windows_gnu_linker_installed: crate::windows_gnu_linker_installed(&self.installation),
             tracy_profiler_installed: self.tracy.profiler_installed(),
             tracy_analysis_installed: self.tracy.analysis_installed(),
         }
@@ -73,12 +94,20 @@ impl DeveloperEnvironment {
     /// Role promotion, toolchain install/repair and broad installation repair all
     /// converge on this operation. Runtime/Devtools commands never install pieces.
     pub fn reconcile(&mut self) -> Result<DeveloperEnvironmentRepair, DeveloperEnvironmentError> {
-        let mut rust_installed = false;
-        if !self.rust.is_installed() {
+        let rust_installed = !self.rust.is_installed();
+        let windows_gnu_target_installed = !self
+            .rust
+            .target_is_installed(crate::toolchain::WINDOWS_GNU_TARGET);
+        let windows_gnu_linker_installed = !crate::windows_gnu_linker_installed(&self.installation);
+        if rust_installed || windows_gnu_target_installed {
             self.rust
                 .install()
                 .map_err(DeveloperEnvironmentError::Toolchain)?;
-            rust_installed = true;
+        }
+
+        if windows_gnu_linker_installed {
+            crate::install_windows_gnu_linker(&self.installation)
+                .map_err(DeveloperEnvironmentError::CrossTargetToolchain)?;
         }
 
         let tracy = self
@@ -88,6 +117,8 @@ impl DeveloperEnvironment {
 
         Ok(DeveloperEnvironmentRepair {
             rust_installed,
+            windows_gnu_target_installed,
+            windows_gnu_linker_installed,
             tracy_profiler_installed: tracy.profiler_installed,
             tracy_analysis_installed: tracy.analysis_installed,
             status: self.status(),
@@ -104,6 +135,7 @@ impl DeveloperEnvironment {
 #[derive(Debug)]
 pub enum DeveloperEnvironmentError {
     Installation(InstallationError),
+    CrossTargetToolchain(CrossTargetToolchainError),
     Toolchain(ToolchainError),
     Tracy(TracyError),
 }
@@ -112,6 +144,7 @@ impl fmt::Display for DeveloperEnvironmentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Installation(error) => error.fmt(formatter),
+            Self::CrossTargetToolchain(error) => error.fmt(formatter),
             Self::Toolchain(error) => error.fmt(formatter),
             Self::Tracy(error) => error.fmt(formatter),
         }
@@ -122,6 +155,7 @@ impl std::error::Error for DeveloperEnvironmentError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Installation(error) => Some(error),
+            Self::CrossTargetToolchain(error) => Some(error),
             Self::Toolchain(error) => Some(error),
             Self::Tracy(error) => Some(error),
         }

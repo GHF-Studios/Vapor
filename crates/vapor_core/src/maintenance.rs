@@ -59,7 +59,7 @@ impl MaintenanceStatus {
             return false;
         }
 
-        if self.installed_role >= VaporRole::ContentDeveloper && !self.toolchain_installed {
+        if self.installed_role.requires_developer_environment() && !self.toolchain_installed {
             return false;
         }
 
@@ -95,7 +95,7 @@ pub fn diagnose_managed_state_for(
     let toolchain = ManagedToolchain::discover_for_installation(installation)
         .map_err(MaintenanceError::Toolchain)?;
     let role = installed_role(installation).map_err(MaintenanceError::Role)?;
-    let developer_environment = if role >= VaporRole::ContentDeveloper {
+    let developer_environment = if role.requires_developer_environment() {
         Some(
             DeveloperEnvironment::discover_for_installation(installation)
                 .map_err(MaintenanceError::DeveloperEnvironment)?
@@ -196,7 +196,7 @@ pub fn repair_managed_state_for(
     let role = installed_role(installation).map_err(MaintenanceError::Role)?;
     let mut developer_environment_changed = false;
 
-    if role >= VaporRole::ContentDeveloper {
+    if role.requires_developer_environment() {
         let mut environment = DeveloperEnvironment::discover_for_installation(installation)
             .map_err(MaintenanceError::DeveloperEnvironment)?;
         let report = environment

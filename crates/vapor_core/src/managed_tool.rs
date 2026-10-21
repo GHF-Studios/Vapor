@@ -310,6 +310,24 @@ fn sha256_file(path: &Path) -> Result<String, ManagedToolError> {
     }
 }
 
+/// Verify an installed tool archive against a pinned SHA-256 checksum.
+pub fn verify_sha256_file(
+    path: &Path,
+    expected: &str,
+    asset: &str,
+) -> Result<(), ManagedToolError> {
+    let actual = sha256_file(path)?;
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(ManagedToolError::DigestMismatch {
+            asset: asset.to_owned(),
+            expected: expected.to_owned(),
+            actual,
+        })
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
     assets: Vec<GitHubReleaseAsset>,

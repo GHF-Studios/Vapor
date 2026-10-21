@@ -4,7 +4,7 @@
 //! discovery, source trust, Workshop acquisition, and installation remain host
 //! responsibilities.
 
-use crate::{ContentKind, VaporId};
+use crate::{ContentKind, RuntimePresentation, VaporId};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
@@ -83,6 +83,9 @@ pub struct AuthoredContent {
     pub libraries: Vec<String>,
     #[serde(default)]
     pub runtime: Vec<AuthoredRuntimePayload>,
+    /// Host presentation contract, relevant when this content is an Engine.
+    #[serde(default)]
+    pub presentation: RuntimePresentation,
     #[serde(default, rename = "steam")]
     pub workshop: AuthoredWorkshopPolicy,
     #[serde(default)]
@@ -110,6 +113,11 @@ pub struct AuthoredRuntimePayload {
 }
 
 impl AuthoredContent {
+    /// Host presentation contract for this content declaration.
+    pub fn presentation(&self) -> RuntimePresentation {
+        self.presentation
+    }
+
     /// Return declared dependencies together with the role of each edge.
     ///
     /// Explicit dependencies retain their declaration order, followed by
@@ -202,6 +210,7 @@ pub struct AuthoredReference {
     /// Version requirement.
     pub version: Option<VersionReq>,
     /// Workshop item ID used to acquire this content.
+    #[serde(alias = "workshop_id")]
     pub workshop_id: Option<String>,
     /// Author explanation for this reference.
     pub reason: Option<String>,
@@ -209,6 +218,72 @@ pub struct AuthoredReference {
 
 fn default_relationship() -> String {
     "dependency".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_workshop_ids_from_source_and_deployed_manifest_spellings() {
+        for field in ["workshop-id", "workshop_id"] {
+            let source = format!(
+                r#"
+                [packagepack]
+                id = "ghf-studios/example/game"
+                name = "game"
+                version = "1.0.0"
+
+                [[packagepack.dependencies]]
+                id = "ghf-studios/example/engine"
+                relationship = "engine"
+                {field} = "123456789"
+                "#
+            );
+            let manifest = AuthoredContentManifest::parse(&source).unwrap();
+            let reference = &manifest
+                .content(ContentKind::Packagepack)
+                .unwrap()
+                .dependency_edges(ContentKind::Packagepack)[0]
+                .reference;
+
+            assert_eq!(reference.workshop_id.as_deref(), Some("123456789"));
+        }
+    }
+
+    #[test]
+    fn engine_presentation_defaults_to_window_and_accepts_terminal() {
+        let graphical = AuthoredContentManifest::parse(
+            r#"[engine]
+name = "graphical"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            graphical
+                .content(ContentKind::Engine)
+                .unwrap()
+                .presentation(),
+            RuntimePresentation::Window
+        );
+
+        let terminal = AuthoredContentManifest::parse(
+            r#"[engine]
+name = "terminal"
+version = "1.0.0"
+presentation = "terminal"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            terminal
+                .content(ContentKind::Engine)
+                .unwrap()
+                .presentation(),
+            RuntimePresentation::Terminal
+        );
+    }
 }
 
 /// Authored Workshop metadata on a content declaration.

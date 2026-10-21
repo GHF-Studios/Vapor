@@ -28,6 +28,18 @@ pub enum VaporRole {
 }
 
 impl VaporRole {
+    /// Whether this role promises the complete locally managed authoring and
+    /// development toolset is installed.
+    ///
+    /// Keep this policy centralized so promotion, diagnosis, and repair cannot
+    /// disagree about which roles own developer tools.
+    pub const fn requires_developer_environment(self) -> bool {
+        matches!(
+            self,
+            Self::Composer | Self::ContentDeveloper | Self::EcosystemDeveloper
+        )
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Player => "player",
@@ -125,10 +137,9 @@ pub fn installed_role(installation: &VaporInstallation) -> Result<VaporRole, Rol
 /// External authorization is evaluated separately when a particular operation
 /// targets a protected official resource.
 ///
-/// Content Developer-or-higher promotion currently obtains its pinned Rust
-/// toolchain from the enclosing Vapor source Workspace. Once the real Steam
-/// Installation manifest becomes authoritative, the pin will instead come
-/// from that Installation.
+/// Composer-or-higher promotion reconciles tools against the selected Vapor
+/// Installation. Source workspaces may provide the toolchain pin during local
+/// development, while installed releases use their packaged pin metadata.
 pub fn promote_role(
     installation: &VaporInstallation,
     target: VaporRole,
@@ -142,15 +153,11 @@ pub fn promote_role(
         });
     }
 
-    if target >= VaporRole::Composer && !git_available() {
-        return Err(RoleError::GitUnavailable);
-    }
-
     let mut developer_environment_changed = false;
 
-    if target >= VaporRole::ContentDeveloper {
-        let mut environment =
-            DeveloperEnvironment::discover().map_err(RoleError::DeveloperEnvironment)?;
+    if target.requires_developer_environment() {
+        let mut environment = DeveloperEnvironment::discover_for_installation(installation)
+            .map_err(RoleError::DeveloperEnvironment)?;
         let report = environment
             .reconcile()
             .map_err(RoleError::DeveloperEnvironment)?;
@@ -288,8 +295,6 @@ pub enum RoleError {
         current: VaporRole,
         requested: VaporRole,
     },
-
-    GitUnavailable,
 }
 
 impl fmt::Display for RoleError {
@@ -340,13 +345,6 @@ impl fmt::Display for RoleError {
                     "cannot demote from {current} to {requested}; demotion must move to a lower role"
                 )
             }
-
-            Self::GitUnavailable => {
-                write!(
-                    formatter,
-                    "Composer-or-higher capability requires Git, but no Git executable is available on PATH"
-                )
-            }
         }
     }
 }
@@ -359,5 +357,18 @@ impl std::error::Error for RoleError {
             Self::Io { source, .. } => Some(source),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VaporRole;
+
+    #[test]
+    fn developer_environment_begins_at_composer_and_is_inherited() {
+        assert!(!VaporRole::Player.requires_developer_environment());
+        assert!(VaporRole::Composer.requires_developer_environment());
+        assert!(VaporRole::ContentDeveloper.requires_developer_environment());
+        assert!(VaporRole::EcosystemDeveloper.requires_developer_environment());
     }
 }

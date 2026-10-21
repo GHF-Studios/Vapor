@@ -32,6 +32,7 @@ const DISTRIBUTION_BINARIES: &[&str] = &[
     "vapor-installer",
     "vapor-entrypoint",
     "vapor-gui",
+    "vapor-launcher",
     "vapor-ide-host",
     "vapor-client-service",
 ];

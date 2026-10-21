@@ -29,6 +29,7 @@ pub struct WorkshopItem {
     pub description: String,
     pub preview_url: Option<String>,
     pub updated_at_unix: u32,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,7 +155,12 @@ fn installed_workshop_item_root(
 ///
 /// Steam client initialization and callback pumping are local to this call;
 /// callers should run it on their existing background-operation worker.
-pub fn search_workshop(app_id: u32, search_text: &str, page: u32) -> Result<WorkshopPage, String> {
+pub fn search_workshop(
+    app_id: u32,
+    search_text: &str,
+    page: u32,
+    required_tags: &[String],
+) -> Result<WorkshopPage, String> {
     if app_id == 0 {
         return Err("Steam Workshop search needs a nonzero application ID".to_owned());
     }
@@ -184,6 +190,12 @@ pub fn search_workshop(app_id: u32, search_text: &str, page: u32) -> Result<Work
     if !search_text.trim().is_empty() {
         query = query.set_search_text(search_text.trim());
     }
+    for tag in required_tags {
+        let tag = tag.trim();
+        if !tag.is_empty() {
+            query = query.require_tag(tag);
+        }
+    }
 
     let (sender, receiver) = mpsc::channel();
     query.fetch(move |result| {
@@ -200,6 +212,7 @@ pub fn search_workshop(app_id: u32, search_text: &str, page: u32) -> Result<Work
                             description: item.description,
                             preview_url: results.preview_url(index as u32),
                             updated_at_unix: item.time_updated,
+                            tags: normalize_tags(item.tags),
                         })
                     })
                     .collect();
@@ -259,6 +272,7 @@ pub fn subscribed_items(app_id: u32) -> Result<Vec<WorkshopSubscription>, String
                                 description: item.description,
                                 preview_url: results.preview_url(index as u32),
                                 updated_at_unix: item.time_updated,
+                                tags: normalize_tags(item.tags),
                             })
                         })
                         .collect::<Vec<_>>()
@@ -309,6 +323,13 @@ pub fn subscribed_items(app_id: u32) -> Result<Vec<WorkshopSubscription>, String
             }
         })
         .collect())
+}
+
+fn normalize_tags(tags: Vec<String>) -> Vec<String> {
+    tags.into_iter()
+        .map(|tag| tag.trim().to_owned())
+        .filter(|tag| !tag.is_empty())
+        .collect()
 }
 
 /// Subscribe the current Steam account to one Workshop item.
