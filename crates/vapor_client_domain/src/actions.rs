@@ -400,6 +400,7 @@ impl ClientAction {
             },
             Self::Composition(action) => match action {
                 CompositionAction::Create { .. } => "composition.create",
+                CompositionAction::CreateFromContent { .. } => "composition.create-from-content",
                 CompositionAction::Duplicate { .. } => "composition.duplicate",
                 CompositionAction::Rename { .. } => "composition.rename",
                 CompositionAction::Remove { .. } => "composition.remove",

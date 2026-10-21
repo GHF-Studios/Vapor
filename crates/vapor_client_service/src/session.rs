@@ -1299,6 +1299,7 @@ impl ClientSession {
                 }
                 ClientAction::Composition(action) => match action {
                     action @ (CompositionAction::Create { .. }
+                    | CompositionAction::CreateFromContent { .. }
                     | CompositionAction::Duplicate { .. }
                     | CompositionAction::Rename { .. }
                     | CompositionAction::Remove { .. }
@@ -3528,6 +3529,99 @@ mod tests {
             Some(authoring_root.to_string_lossy().as_ref())
         );
         std::fs::remove_dir_all(authoring_root).expect("remove authoring workspace");
+    }
+
+    #[test]
+    fn create_from_content_requires_available_packagepack_and_selects_it_atomically() {
+        let mut session = session();
+        session.catalog.replace(vec![CatalogEntry {
+            id: "examples/wheel".into(),
+            name: Some("Wheel Salvage Demo".into()),
+            version: Some("0.1.1".into()),
+            kind: "packagepack".into(),
+            published_file_id: Some("3823734148".into()),
+            dependencies: vec![],
+            conflicts: vec![],
+            locations: vec![CatalogLocation {
+                kind: CatalogLocationKind::Cache,
+                root: "fixture/cache/examples-wheel".into(),
+                enabled: true,
+                fingerprint: Some("fixture:wheel".into()),
+                install_source: None,
+            }],
+            role: CatalogItemRole::PlayableComposition,
+            actions: vec![],
+        }]);
+
+        let created = session.dispatch(request(
+            Some(0),
+            ClientAction::Composition(CompositionAction::CreateFromContent {
+                name: "Wheel Salvage Demo".into(),
+                content_id: "examples/wheel".into(),
+                content_version: "0.1.1".into(),
+            }),
+        ));
+
+        assert_eq!(created.kind, ClientResponseKind::Applied);
+        let active = created
+            .snapshot
+            .durable_state
+            .compositions
+            .compositions
+            .iter()
+            .find(|composition| {
+                composition.id == created.snapshot.durable_state.active_composition_id
+            })
+            .expect("new composition is active");
+        assert_eq!(active.name, "Wheel Salvage Demo");
+        assert_eq!(
+            active.root_package,
+            Some(ContentReference {
+                id: "examples/wheel".into(),
+                version: Some("0.1.1".into()),
+            })
+        );
+        assert!(active.workspace.is_none());
+        assert_eq!(active.installation, InstallationState::Unknown);
+        assert_eq!(created.revision, ClientRevision(1));
+    }
+
+    #[test]
+    fn create_from_content_rejects_unavailable_or_non_packagepack_content() {
+        let mut session = session();
+        session.catalog.replace(vec![CatalogEntry {
+            id: "examples/wheel".into(),
+            name: Some("Wheel Salvage Demo".into()),
+            version: Some("0.1.1".into()),
+            kind: "game".into(),
+            published_file_id: Some("3823734148".into()),
+            dependencies: vec![],
+            conflicts: vec![],
+            locations: vec![],
+            role: CatalogItemRole::RuntimeContent,
+            actions: vec![],
+        }]);
+
+        let rejected = session.dispatch(request(
+            Some(0),
+            ClientAction::Composition(CompositionAction::CreateFromContent {
+                name: "Wheel Salvage Demo".into(),
+                content_id: "examples/wheel".into(),
+                content_version: "0.1.1".into(),
+            }),
+        ));
+
+        assert_eq!(rejected.kind, ClientResponseKind::Rejected);
+        assert_eq!(rejected.revision, ClientRevision(0));
+        assert_eq!(
+            rejected
+                .snapshot
+                .durable_state
+                .compositions
+                .compositions
+                .len(),
+            1
+        );
     }
 
     fn fixture_temp_workspace(name: &str) -> PathBuf {

@@ -295,6 +295,52 @@ impl ClientSession {
         &mut self,
         action: CompositionAction,
     ) -> Result<(), ServiceError> {
+        if let CompositionAction::CreateFromContent {
+            content_id,
+            content_version,
+            ..
+        } = &action
+        {
+            let Some(entry) = self.catalog.entries().iter().find(|entry| {
+                entry.id == *content_id && entry.version.as_deref() == Some(content_version)
+            }) else {
+                return Err(ServiceError {
+                    code: ServiceErrorCode::ActionUnavailable,
+                    message: "This playable item is no longer available in the Library. Refresh it and try again.".to_owned(),
+                    retryable: true,
+                });
+            };
+            let projected = super::catalog::catalog_projection(
+                entry,
+                &self.durable_state,
+                self.catalog.entries(),
+            );
+            let available_here = entry.locations.iter().any(|location| {
+                matches!(
+                    location.kind,
+                    vapor_client_protocol::CatalogLocationKind::Cache
+                        | vapor_client_protocol::CatalogLocationKind::Installed
+                        | vapor_client_protocol::CatalogLocationKind::Workspace
+                )
+            });
+            if !matches!(
+                entry.kind.parse::<vapor_core::ContentKind>(),
+                Ok(vapor_core::ContentKind::Packagepack)
+            ) || !entry.conflicts.is_empty()
+                || !available_here
+                || !projected
+                    .actions
+                    .contains(&vapor_client_protocol::CatalogItemAction::CreateComposition)
+            {
+                return Err(ServiceError {
+                    code: ServiceErrorCode::ActionUnavailable,
+                    message:
+                        "Only an available, conflict-free Packagepack can start a new composition."
+                            .to_owned(),
+                    retryable: false,
+                });
+            }
+        }
         let may_release_content = matches!(&action, CompositionAction::Remove { .. });
         let previous_state = self.durable_state.clone();
         let application_executable = self.bootstrap.application_executable.clone();
@@ -696,6 +742,9 @@ pub(super) fn apply_operation_result_to_composition(
         | CompositionOperationResult::Repair(Ok(installed))
         | CompositionOperationResult::Update(Ok(installed)) => {
             let graph = installed.graph;
+            if matches!(kind, CompositionOperationKind::Update) {
+                composition.root_package = Some(graph.root.clone());
+            }
             if matches!(kind, CompositionOperationKind::Repair)
                 && composition.resolved_graph.as_ref().is_some_and(|saved| {
                     !vapor_client_application::resolved_graph_matches(saved, &graph)
@@ -854,5 +903,53 @@ fn installation_artifacts(
         | InstallationState::NeedsRepair { artifacts, .. }
         | InstallationState::OutOfDate { artifacts, .. } => artifacts.clone(),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod update_version_tests {
+    use super::{
+        CompositionOperationKind, apply_operation_result_to_composition, fixture_composition_result,
+    };
+    use vapor_client_protocol::{Composition, ContentReference};
+
+    #[test]
+    fn successful_update_advances_the_composition_root_version() {
+        let mut saved = Composition::default_composition();
+        saved.id = "composition-1".to_owned();
+        saved.root_package = Some(ContentReference {
+            id: "ghf-studios/example/packagepack".to_owned(),
+            version: Some("0.1.1".to_owned()),
+        });
+
+        let mut updated = saved.clone();
+        updated.root_package = Some(ContentReference {
+            id: "ghf-studios/example/packagepack".to_owned(),
+            version: Some("0.5.0".to_owned()),
+        });
+        let result = fixture_composition_result(
+            &updated,
+            "ghf-studios/example/packagepack@0.5.0".to_owned(),
+            CompositionOperationKind::Update,
+        );
+        let mut preview = None;
+        let mut compositions = vec![saved];
+
+        let failure = apply_operation_result_to_composition(
+            &mut preview,
+            &mut compositions,
+            "composition-1",
+            CompositionOperationKind::Update,
+            result,
+        );
+
+        assert_eq!(failure, None);
+        assert_eq!(
+            compositions[0]
+                .root_package
+                .as_ref()
+                .and_then(|root| root.version.as_deref()),
+            Some("0.5.0")
+        );
     }
 }

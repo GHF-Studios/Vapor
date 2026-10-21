@@ -60,6 +60,32 @@ pub struct WorkshopSubscription {
 pub fn with_downloaded_workshop_items<T>(
     app_id: u32,
     published_file_ids: &[u64],
+    consume: impl FnMut(u64, &Path) -> Result<T, String>,
+) -> Result<Vec<T>, String> {
+    with_workshop_items(app_id, published_file_ids, false, consume)
+}
+
+/// Refresh Workshop items from Steam before consuming their current local folders.
+///
+/// Unlike [`with_downloaded_workshop_items`], this asks Steam to update items that
+/// are already installed and currently appear up to date. Explicit composition
+/// updates use this path so Steam remains the authority on the newest payload.
+///
+/// # Errors
+///
+/// Returns Steam initialization, download, timeout, or consumer errors.
+pub fn with_refreshed_workshop_items<T>(
+    app_id: u32,
+    published_file_ids: &[u64],
+    consume: impl FnMut(u64, &Path) -> Result<T, String>,
+) -> Result<Vec<T>, String> {
+    with_workshop_items(app_id, published_file_ids, true, consume)
+}
+
+fn with_workshop_items<T>(
+    app_id: u32,
+    published_file_ids: &[u64],
+    refresh_installed: bool,
     mut consume: impl FnMut(u64, &Path) -> Result<T, String>,
 ) -> Result<Vec<T>, String> {
     if app_id == 0 {
@@ -82,8 +108,7 @@ pub fn with_downloaded_workshop_items<T>(
         }
         let item = PublishedFileId(*published_file_id);
         let state = ugc.item_state(item);
-        if state.contains(ItemState::INSTALLED)
-            && !state.contains(ItemState::NEEDS_UPDATE)
+        if should_reuse_local_item(state, refresh_installed)
             && let Some(info) = ugc.item_install_info(item)
         {
             consumed.push(consume(*published_file_id, Path::new(&info.folder))?);
@@ -135,6 +160,12 @@ pub fn with_downloaded_workshop_items<T>(
         consumed.push(consume(*published_file_id, &root)?);
     }
     Ok(consumed)
+}
+
+fn should_reuse_local_item(state: ItemState, refresh_installed: bool) -> bool {
+    !refresh_installed
+        && state.contains(ItemState::INSTALLED)
+        && !state.contains(ItemState::NEEDS_UPDATE)
 }
 
 fn installed_workshop_item_root(
@@ -471,5 +502,22 @@ fn pump_callbacks<T>(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_reuse_local_item;
+    use steamworks::ItemState;
+
+    #[test]
+    fn explicit_refresh_never_reuses_an_installed_copy() {
+        let current = ItemState::INSTALLED;
+        let outdated = ItemState::INSTALLED | ItemState::NEEDS_UPDATE;
+
+        assert!(should_reuse_local_item(current, false));
+        assert!(!should_reuse_local_item(current, true));
+        assert!(!should_reuse_local_item(outdated, false));
+        assert!(!should_reuse_local_item(ItemState::NONE, false));
     }
 }

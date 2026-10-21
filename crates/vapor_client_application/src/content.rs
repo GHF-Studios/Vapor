@@ -607,7 +607,8 @@ pub fn update_composition(
     let paths = workspace_root
         .map(|root| EnvironmentPaths::from_installation_and_source_path(installation.clone(), root))
         .transpose()?;
-    let graph = content::installed_packagepack_graph(&installation, selector)?;
+    let root_selector = stable_composition_root_selector(selector);
+    let graph = content::installed_packagepack_graph(&installation, root_selector)?;
     let identities = graph
         .nodes()
         .iter()
@@ -642,10 +643,87 @@ pub fn update_composition(
             )?;
         }
     }
-    for identity in identities {
-        content::update(&installation, paths.as_ref(), Some(&identity))?;
+
+    refresh_composition_workshop_items(&installation, paths.as_ref(), &graph)?;
+
+    // Explicit Update is the point where a player authorizes new resolution.
+    // Reinstall the root by stable ID so its refreshed manifest selects the
+    // compatible current dependency graph instead of replaying each old pin.
+    // Return by stable ID too: `selector` may still contain the previous exact
+    // version, which no longer exists after the update succeeds.
+    let root_id = graph.root().artifact_id().to_owned();
+    content::install(&installation, paths.as_ref(), &root_id)?;
+    installed_composition(&installation, &root_id)
+}
+
+fn stable_composition_root_selector(selector: &str) -> &str {
+    selector
+        .split_once('@')
+        .map_or(selector, |(artifact_id, _)| artifact_id)
+}
+
+fn refresh_composition_workshop_items(
+    installation: &InstallationPaths,
+    paths: Option<&EnvironmentPaths>,
+    graph: &content::InstalledPackagepackGraph,
+) -> Result<(), String> {
+    let authored_ids = paths
+        .map(content::discover)
+        .transpose()?
+        .map(|catalog| {
+            catalog
+                .artifacts()
+                .iter()
+                .map(|artifact| artifact.id().to_owned())
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let mut grouped = std::collections::BTreeMap::<u32, Vec<u64>>::new();
+    let mut constraints = std::collections::BTreeMap::<String, Vec<String>>::new();
+
+    for node in graph.nodes() {
+        for dependency in node.dependencies() {
+            if let Some(requirement) = dependency.version() {
+                constraints
+                    .entry(dependency.id().to_owned())
+                    .or_default()
+                    .push(requirement.to_owned());
+            }
+        }
+        if authored_ids.contains(node.artifact_id()) {
+            continue;
+        }
+        let Some(published_file_id) = node.workshop_id() else {
+            continue;
+        };
+        let app_id =
+            content::workshop_app_id(installation, paths, node.artifact_id(), published_file_id)?;
+        let numeric_id = published_file_id
+            .parse::<u64>()
+            .map_err(|_| format!("Workshop item ID '{published_file_id}' is not a valid number"))?;
+        grouped.entry(app_id).or_default().push(numeric_id);
     }
-    installed_composition(&installation, selector)
+
+    for (app_id, mut published_file_ids) in grouped {
+        published_file_ids.sort_unstable();
+        published_file_ids.dedup();
+        vapor_steam::with_refreshed_workshop_items(
+            app_id,
+            &published_file_ids,
+            |published_file_id, provider_root| {
+                content::import_workshop_item_from_provider_with_constraints(
+                    installation,
+                    app_id,
+                    &published_file_id.to_string(),
+                    provider_root,
+                    &constraints,
+                )
+                .map(|_| ())
+            },
+        )?;
+    }
+
+    Ok(())
 }
 
 /// Remove one unreferenced cached artifact from the local Library while
@@ -847,8 +925,23 @@ fn installed_snapshot(
 
 #[cfg(test)]
 mod workshop_acquisition_tests {
-    use super::{WorkshopDependencyRequest, required_workshop_dependency_requests};
+    use super::{
+        WorkshopDependencyRequest, required_workshop_dependency_requests,
+        stable_composition_root_selector,
+    };
     use vapor_client_provider::content::ContentReference;
+
+    #[test]
+    fn explicit_composition_update_discards_the_previous_exact_root_pin() {
+        assert_eq!(
+            stable_composition_root_selector("ghf-studios/example/game@0.1.1"),
+            "ghf-studios/example/game"
+        );
+        assert_eq!(
+            stable_composition_root_selector("ghf-studios/example/game"),
+            "ghf-studios/example/game"
+        );
+    }
 
     fn dependencies(source: &str) -> Vec<ContentReference> {
         serde_json::from_str(source).expect("valid dependency fixture")

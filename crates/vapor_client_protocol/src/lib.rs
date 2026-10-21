@@ -74,6 +74,11 @@ mod tests {
             ClientAction::Composition(CompositionAction::Create {
                 name: "Test".into(),
             }),
+            ClientAction::Composition(CompositionAction::CreateFromContent {
+                name: "Wheel Salvage Demo".into(),
+                content_id: "ghf-studios/vapor-examples/hello-world-packagepack".into(),
+                content_version: "0.1.1".into(),
+            }),
             ClientAction::Composition(CompositionAction::Duplicate {
                 composition_id: "p1".into(),
                 name: "Copy".into(),
@@ -401,7 +406,7 @@ mod tests {
         ];
         assert_eq!(
             actions.len(),
-            95,
+            96,
             "update this catalog when adding/removing action variants"
         );
         for action in actions {

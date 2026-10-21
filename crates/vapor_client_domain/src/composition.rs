@@ -237,6 +237,11 @@ pub enum CompositionAction {
     Create {
         name: String,
     },
+    CreateFromContent {
+        name: String,
+        content_id: String,
+        content_version: String,
+    },
     Duplicate {
         composition_id: String,
         name: String,
@@ -625,6 +630,20 @@ where
         CompositionAction::Create { name } => {
             let index = add_composition(&mut state.compositions.compositions, &name)?;
             state.active_composition_id = state.compositions.compositions[index].id.clone();
+        }
+        CompositionAction::CreateFromContent {
+            name,
+            content_id,
+            content_version,
+        } => {
+            let index = add_composition(&mut state.compositions.compositions, &name)?;
+            let composition = &mut state.compositions.compositions[index];
+            composition.root_package = Some(ContentReference {
+                id: content_id,
+                version: Some(content_version),
+            });
+            composition.installation = InstallationState::Unknown;
+            state.active_composition_id = composition.id.clone();
         }
         CompositionAction::Duplicate {
             composition_id,
