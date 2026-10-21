@@ -597,6 +597,7 @@ impl ClientSession {
             ClientAction::Session(SessionAction::CancelOperation { .. })
         );
         if !is_cancel_request
+            && !is_registered_source_list_query(&request.action)
             && request
                 .expected_revision
                 .is_some_and(|expected| expected != self.revision)
@@ -839,16 +840,30 @@ impl ClientSession {
                         error = Some(operation_error);
                     }
                 },
-                ClientAction::Authoring(action) => match self.start_authoring_operation(action) {
-                    Ok(()) => {
+                ClientAction::Authoring(action) => {
+                    let active_source_list =
+                        matches!(&action, AuthoringAction::ListRegisteredSources)
+                            && self.active_operation.as_ref().is_some_and(|operation| {
+                                operation.action == "authoring.list-registered-sources"
+                            });
+                    if active_source_list {
+                        // Several frontends can ask for the initial source list
+                        // at once. Reuse its in-flight read instead of making
+                        // the second startup fail on a stale revision.
                         response_kind = ClientResponseKind::OperationAccepted;
-                        self.revision.0 = self.revision.0.saturating_add(1);
+                    } else {
+                        match self.start_authoring_operation(action) {
+                            Ok(()) => {
+                                response_kind = ClientResponseKind::OperationAccepted;
+                                self.revision.0 = self.revision.0.saturating_add(1);
+                            }
+                            Err(operation_error) => {
+                                response_kind = ClientResponseKind::Rejected;
+                                error = Some(operation_error);
+                            }
+                        }
                     }
-                    Err(operation_error) => {
-                        response_kind = ClientResponseKind::Rejected;
-                        error = Some(operation_error);
-                    }
-                },
+                }
                 ClientAction::Library(LibraryAction::SetAutoInstall {
                     content_id,
                     enabled,
@@ -1667,6 +1682,13 @@ impl ClientSession {
     }
 }
 
+fn is_registered_source_list_query(action: &ClientAction) -> bool {
+    matches!(
+        action,
+        ClientAction::Authoring(AuthoringAction::ListRegisteredSources)
+    )
+}
+
 fn ensure_workshop_app_id(bootstrap: &mut ClientHostConfig) {
     if !bootstrap.fixture_mode && bootstrap.workshop_app_id.is_none() {
         bootstrap.workshop_app_id = Some(vapor_sdk_core::root::types::ROOT_STEAM_APP_ID);
@@ -1862,6 +1884,29 @@ mod tests {
             status: OperationStatus::Running,
             progress: None,
         }
+    }
+
+    #[test]
+    fn concurrent_registered_source_queries_join_the_active_lookup() {
+        let mut session = session();
+        session.revision = ClientRevision(5);
+        session.active_operation = Some(running_operation(
+            "source-list-1",
+            "authoring.list-registered-sources",
+        ));
+
+        let response = session.dispatch(request(
+            Some(0),
+            ClientAction::Authoring(AuthoringAction::ListRegisteredSources),
+        ));
+
+        assert_eq!(response.kind, ClientResponseKind::OperationAccepted);
+        assert_eq!(response.revision, ClientRevision(5));
+        assert_eq!(
+            response.snapshot.active_operation.unwrap().id,
+            "source-list-1"
+        );
+        assert!(response.error.is_none());
     }
 
     #[test]

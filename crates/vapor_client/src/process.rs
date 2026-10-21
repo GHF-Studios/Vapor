@@ -33,6 +33,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECT_RETRY: Duration = Duration::from_millis(40);
 const SERVICE_STARTUP_LOG_LINES: usize = 24;
 const SERVICE_STARTUP_LOG_LINE_BYTES: usize = 512;
+const MAX_HANDSHAKE_BUFFERED_EVENTS: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct ClientHostConfig {
@@ -103,6 +104,7 @@ struct ServiceHandshake {
     ready: bool,
     snapshot: Option<ClientSnapshot>,
     require_snapshot: bool,
+    pending_events: VecDeque<ProtocolFrame>,
 }
 
 impl ServiceHandshake {
@@ -111,6 +113,7 @@ impl ServiceHandshake {
             ready: false,
             snapshot: None,
             require_snapshot,
+            pending_events: VecDeque::new(),
         }
     }
 
@@ -130,9 +133,20 @@ impl ServiceHandshake {
             ProtocolFrame::Event(ClientEvent::ProtocolError(error)) => {
                 return Err(ClientError::Protocol(error.message));
             }
+            ProtocolFrame::Event(ClientEvent::ServiceStopping) => {
+                return Err(ClientError::ServiceExited(None));
+            }
+            frame @ ProtocolFrame::Event(_) => {
+                if self.pending_events.len() == MAX_HANDSHAKE_BUFFERED_EVENTS {
+                    return Err(ClientError::Protocol(
+                        "service sent too many events before completing connection".into(),
+                    ));
+                }
+                self.pending_events.push_back(frame);
+            }
             _ => {
                 return Err(ClientError::Protocol(
-                    "service sent an unexpected frame during connection".into(),
+                    "service sent a non-event frame during connection".into(),
                 ));
             }
         }
@@ -325,6 +339,11 @@ impl Client {
                     .map_err(|error| ClientError::Io(error.to_string()))?;
                 let read = reader.into_inner();
                 let (sender, incoming) = mpsc::sync_channel(64);
+                for frame in std::mem::take(&mut handshake.pending_events) {
+                    sender
+                        .send(Ok(frame))
+                        .map_err(|_| ClientError::ServiceExited(None))?;
+                }
                 thread::Builder::new()
                     .name("client-service-protocol".into())
                     .spawn(move || read_protocol(read, sender))
@@ -933,6 +952,43 @@ mod tests {
             .unwrap()
             .expect("ready completes the handshake");
         assert_eq!(connected.revision, ClientRevision(7));
+    }
+
+    #[test]
+    fn shared_service_handshake_buffers_live_events_until_the_snapshot_arrives() {
+        let mut handshake = ServiceHandshake::new(true);
+        let operation = ProtocolFrame::Event(ClientEvent::OperationChanged(
+            vapor_client_protocol::OperationEvent {
+                revision: ClientRevision(4),
+                id: "operation-4".into(),
+                composition_id: None,
+                action: "authoring.list-registered-sources".into(),
+                phase: vapor_client_protocol::OperationPhase::Resolving,
+                status: vapor_client_protocol::OperationStatus::Running,
+                progress: None,
+                message: None,
+            },
+        ));
+
+        assert!(handshake.accept(operation.clone()).unwrap().is_none());
+        assert!(
+            handshake
+                .accept(ProtocolFrame::Event(ClientEvent::ServiceReady {
+                    protocol_version: PROTOCOL_VERSION,
+                }))
+                .unwrap()
+                .is_none()
+        );
+        let snapshot = handshake
+            .accept(ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(
+                empty_snapshot(),
+            ))))
+            .unwrap()
+            .expect("initial snapshot completes the handshake");
+
+        assert_eq!(snapshot.revision, ClientRevision(0));
+        assert_eq!(handshake.pending_events.len(), 1);
+        assert_eq!(handshake.pending_events.front(), Some(&operation));
     }
 
     #[test]
