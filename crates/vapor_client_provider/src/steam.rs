@@ -320,6 +320,22 @@ pub fn smoke(stage: &distribution::StageReport, options: &StageOptions) -> Resul
                     "staged Linux depot has no target Vapor Launcher binary",
                 )?;
                 require_file(
+                    depot.root().join("bin").join(target).join("vapor-studio"),
+                    "staged Linux depot has no target Vapor Studio binary",
+                )?;
+                require_file(
+                    depot.root().join("bin").join(target).join("vapor-ide"),
+                    "staged Linux depot has no target Vapor IDE binary",
+                )?;
+                require_file(
+                    depot
+                        .root()
+                        .join("bin")
+                        .join(target)
+                        .join("vapor-installer-gui"),
+                    "staged Linux depot has no target Vapor Installer GUI binary",
+                )?;
+                require_file(
                     depot.root().join("bin").join(target).join("vapor-ide-host"),
                     "staged Linux depot has no target Vapor IDE host binary",
                 )?;
@@ -382,6 +398,26 @@ pub fn smoke(stage: &distribution::StageReport, options: &StageOptions) -> Resul
                         .join(target)
                         .join("vapor-launcher.exe"),
                     "staged Windows depot has no target Vapor Launcher binary",
+                )?;
+                require_file(
+                    depot
+                        .root()
+                        .join("bin")
+                        .join(target)
+                        .join("vapor-studio.exe"),
+                    "staged Windows depot has no target Vapor Studio binary",
+                )?;
+                require_file(
+                    depot.root().join("bin").join(target).join("vapor-ide.exe"),
+                    "staged Windows depot has no target Vapor IDE binary",
+                )?;
+                require_file(
+                    depot
+                        .root()
+                        .join("bin")
+                        .join(target)
+                        .join("vapor-installer-gui.exe"),
+                    "staged Windows depot has no target Vapor Installer GUI binary",
                 )?;
                 require_file(
                     depot

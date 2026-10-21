@@ -802,9 +802,10 @@ fn empty_snapshot() -> ClientSnapshot {
 mod tests {
     use super::{
         Client, ClientError, ClientHostConfig, ServiceHandshake, drain_service_startup_stderr,
-        empty_snapshot, ensure_service_with_timeout, resolve_host_context,
-        service_sibling_path_for, startup_diagnostics,
+        empty_snapshot, service_sibling_path_for, startup_diagnostics,
     };
+    #[cfg(unix)]
+    use super::{ensure_service_with_timeout, resolve_host_context};
     use std::{
         collections::VecDeque,
         io::Cursor,
