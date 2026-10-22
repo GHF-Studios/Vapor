@@ -4434,6 +4434,7 @@ mod tests {
             .find(|action| action.id == "composition.launch")
             .expect("launch readiness remains projected during install");
         assert!(!launch_during_install.enabled);
+        assert!(launch_during_install.queueable);
         assert_eq!(
             launch_during_install.reason.as_deref(),
             Some("This composition already has an operation running.")

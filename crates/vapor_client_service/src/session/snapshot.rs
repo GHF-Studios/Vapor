@@ -155,9 +155,12 @@ impl ClientSession {
         });
         let active_composition_key =
             OperationResourceKey::Composition(self.durable_state.active_composition_id.clone());
+        let composition_operation_conflict =
+            !self.can_start_operation(active_composition_key.clone());
         let workspace_key = OperationResourceKey::Workspace(
             self.bootstrap.workspace_root.clone().unwrap_or_default(),
         );
+        let workspace_operation_conflict = !self.can_start_operation(workspace_key.clone());
         let installation_role = if self.bootstrap.fixture_mode {
             InstallationRoleSnapshot {
                 role: "player".to_owned(),
@@ -166,7 +169,7 @@ impl ClientSession {
         } else {
             super::application::installation_role_snapshot()
         };
-        let launch_reason = if !self.can_start_operation(active_composition_key.clone()) {
+        let launch_reason = if composition_operation_conflict {
             Some("This composition already has an operation running.".to_owned())
         } else if !composition_has_root {
             Some("Choose a playable composition first.".to_owned())
@@ -175,14 +178,13 @@ impl ClientSession {
         } else {
             None
         };
-        let composition_operation_reason =
-            if !self.can_start_operation(active_composition_key.clone()) {
-                Some("This composition already has an operation running.".to_owned())
-            } else if !composition_has_root {
-                Some("Choose a playable composition first.".to_owned())
-            } else {
-                None
-            };
+        let composition_operation_reason = if composition_operation_conflict {
+            Some("This composition already has an operation running.".to_owned())
+        } else if !composition_has_root {
+            Some("Choose a playable composition first.".to_owned())
+        } else {
+            None
+        };
         let install_reason = composition_operation_reason.clone().or_else(|| {
             composition_is_installed.then(|| "This composition is already installed.".to_owned())
         });
@@ -198,9 +200,9 @@ impl ClientSession {
             (!composition_is_out_of_date)
                 .then(|| "This composition has no pending update.".to_owned())
         });
-        let build_reason = if !self.can_start_operation(active_composition_key) {
+        let build_reason = if composition_operation_conflict {
             Some("This composition already has an operation running.".to_owned())
-        } else if !self.can_start_operation(workspace_key) {
+        } else if workspace_operation_conflict {
             Some("A conflicting workspace operation is already running.".to_owned())
         } else if !has_workspace_source {
             Some("Open a project-backed composition before building and launching.".to_owned())
@@ -218,6 +220,9 @@ impl ClientSession {
                 }),
                 install_reason.is_none(),
                 install_reason,
+            )
+            .with_queueable(
+                composition_operation_conflict && composition_has_root && !composition_is_installed,
             ),
             AvailableAction::from_action(
                 &ClientAction::Composition(CompositionAction::Verify {
@@ -225,6 +230,13 @@ impl ClientSession {
                 }),
                 verify_reason.is_none(),
                 verify_reason,
+            )
+            .with_queueable(
+                composition_operation_conflict
+                    && composition_has_root
+                    && (composition_is_installed
+                        || composition_needs_repair
+                        || composition_is_out_of_date),
             ),
             AvailableAction::from_action(
                 &ClientAction::Composition(CompositionAction::Repair {
@@ -232,20 +244,27 @@ impl ClientSession {
                 }),
                 repair_reason.is_none(),
                 repair_reason,
-            ),
+            )
+            .with_queueable(composition_operation_conflict && composition_needs_repair),
             AvailableAction::from_action(
                 &ClientAction::Composition(CompositionAction::Update {
                     composition_id: String::new(),
                 }),
                 update_reason.is_none(),
                 update_reason,
-            ),
+            )
+            .with_queueable(composition_operation_conflict && composition_is_out_of_date),
             AvailableAction::from_action(
                 &ClientAction::Composition(CompositionAction::Launch {
                     composition_id: String::new(),
                 }),
                 launch_reason.is_none(),
                 launch_reason,
+            )
+            .with_queueable(
+                composition_operation_conflict
+                    && composition_has_root
+                    && !composition_is_out_of_date,
             ),
             AvailableAction::from_profile(
                 "composition.build-and-launch",
@@ -253,6 +272,11 @@ impl ClientSession {
                 build_reason,
                 ActionProfile::new(WorkflowTier::Composer)
                     .with_local_capabilities(&[LocalCapability::ManagedRustToolchain]),
+            )
+            .with_queueable(
+                (composition_operation_conflict || workspace_operation_conflict)
+                    && has_workspace_source
+                    && (self.bootstrap.fixture_mode || installation_role.rust_ready),
             ),
         ]);
         let mut workshop = self.workshop.clone();

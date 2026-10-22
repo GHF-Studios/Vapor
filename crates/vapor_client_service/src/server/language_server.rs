@@ -72,8 +72,20 @@ pub(super) fn start(
     generation: u64,
     events: SyncSender<LocalInput>,
 ) -> Result<Process, String> {
-    let toolchain = vapor_core::ManagedToolchain::discover()
-        .map_err(|error| format!("could not discover Vapor's pinned Rust toolchain: {error}"))?;
+    // The service is usually launched from Vapor's installed app root, which
+    // has `App.vapor.toml` rather than a source `Workspace.vapor.toml`. Resolve
+    // the pin from the workspace explicitly selected by the IDE instead of
+    // inheriting the service process's working directory.
+    let source = vapor_core::VaporWorkspace::discover_from(workspace).map_err(|error| {
+        format!(
+            "could not discover the selected source workspace at '{}': {error}",
+            workspace.display()
+        )
+    })?;
+    let toolchain = vapor_core::ManagedToolchain::for_workspace(&source)
+        .map_err(|error| {
+            format!("could not prepare the selected workspace's Rust toolchain: {error}")
+        })?;
     if !toolchain.rust_analyzer_path.is_file() {
         return Err(format!(
             "Vapor's pinned Rust Analyzer is unavailable at {}; repair or promote this installation's developer tools.",

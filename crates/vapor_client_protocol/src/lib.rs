@@ -742,6 +742,7 @@ mod tests {
             available_actions: vec![AvailableAction {
                 id: "catalog.refresh".into(),
                 enabled: true,
+                queueable: false,
                 reason: None,
                 profile: ActionProfileSnapshot::default(),
             }],

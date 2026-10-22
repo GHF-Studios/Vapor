@@ -27,6 +27,10 @@ pub struct HostSummary {
 pub struct AvailableAction {
     pub id: String,
     pub enabled: bool,
+    /// The request is valid but currently conflicts with a running operation;
+    /// a frontend may accept it into its bounded operation queue.
+    #[serde(default)]
+    pub queueable: bool,
     pub reason: Option<String>,
     #[serde(default)]
     pub profile: ActionProfileSnapshot,
@@ -37,6 +41,7 @@ impl AvailableAction {
         Self {
             id: action.id().to_owned(),
             enabled,
+            queueable: false,
             reason,
             profile: ActionProfileSnapshot::from(action.profile()),
         }
@@ -51,9 +56,15 @@ impl AvailableAction {
         Self {
             id: id.into(),
             enabled,
+            queueable: false,
             reason,
             profile: ActionProfileSnapshot::from(profile),
         }
+    }
+
+    pub fn with_queueable(mut self, queueable: bool) -> Self {
+        self.queueable = queueable;
+        self
     }
 }
 
