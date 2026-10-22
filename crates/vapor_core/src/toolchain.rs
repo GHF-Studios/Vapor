@@ -501,8 +501,9 @@ fn executable_name(stem: &str) -> String {
 
 fn current_host_triple() -> Result<&'static str, ToolchainError> {
     crate::HostTarget::current()
-        .map(|target| target.triple())
-        .map_err(|_| ToolchainError::UnsupportedHost)
+        .map_err(|_| ToolchainError::UnsupportedHost)?
+        .rustup_host_triple()
+        .ok_or(ToolchainError::UnsupportedHost)
 }
 
 #[derive(Debug)]

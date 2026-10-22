@@ -200,7 +200,9 @@ pub fn toolchain_status() -> Result<ToolchainStatus, ToolchainStatusError> {
         .map_err(|error| ToolchainStatusError::Core(error.to_string()))?;
     let host =
         HostTarget::current().map_err(|error| ToolchainStatusError::Core(error.to_string()))?;
-    let host_triple = host.triple();
+    let host_triple = host.rustup_host_triple().ok_or_else(|| {
+        ToolchainStatusError::Core("this app target has no supported Rustup host".to_owned())
+    })?;
     let toolchain = CanonicalToolchain {
         channel: managed.pin.channel.clone(),
         version: Some(managed.pin.version.clone()),
