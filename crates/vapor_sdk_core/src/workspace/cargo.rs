@@ -137,6 +137,50 @@ fn vapor_path_prefix(toolchain: &ToolchainStatus) -> Result<OsString, WorkspaceC
     if let Some(existing) = env::var_os("PATH") {
         paths.extend(env::split_paths(&existing));
     }
+    for host_tools in host_tool_paths() {
+        if !paths.contains(&host_tools) {
+            paths.push(host_tools);
+        }
+    }
 
     Ok(env::join_paths(paths)?)
+}
+
+#[cfg(unix)]
+fn host_tool_paths() -> Vec<PathBuf> {
+    [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .filter(|path| path.is_dir())
+    .collect()
+}
+
+#[cfg(not(unix))]
+fn host_tool_paths() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::host_tool_paths;
+    use std::path::Path;
+
+    #[test]
+    fn managed_cargo_path_includes_host_tool_directories() {
+        let paths = host_tool_paths();
+
+        for directory in ["/usr/bin", "/bin"] {
+            let directory = Path::new(directory);
+            if directory.is_dir() {
+                assert!(paths.iter().any(|path| path == directory));
+            }
+        }
+    }
 }
