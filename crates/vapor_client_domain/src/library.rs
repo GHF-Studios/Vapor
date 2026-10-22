@@ -71,11 +71,11 @@ pub enum LibraryAction {
     },
 }
 
-/// User-owned policy for one non-Packagepack Library item.
+/// Auto-Install lifecycle policy for one non-Packagepack Library item.
 ///
-/// Workshop subscription and composition membership are separate facts. This
-/// policy controls whether Vapor follows compatible updates and may collect a
-/// local copy when no composition uses the item.
+/// Workshop subscription, Packagepack dependency ownership, and composition
+/// membership are separate facts. Packagepacks may establish default owners;
+/// an explicit user choice overrides that default while an owner exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LibraryItemPolicy {
@@ -84,6 +84,12 @@ pub struct LibraryItemPolicy {
     /// Follow newer versions that satisfy every active composition constraint,
     /// and permit collection when the item is no longer needed.
     pub auto_install: bool,
+    /// Packagepacks whose dependency closure currently owns this item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packagepack_owners: Vec<VaporId>,
+    /// Whether the user explicitly chose the current Auto-Install value.
+    #[serde(default)]
+    pub user_selected: bool,
 }
 
 /// A composition edge that predates persisted dependency requirements.
@@ -217,6 +223,36 @@ pub const fn can_collect_library_item(
     policy.auto_install && dependent_compositions == 0
 }
 
+/// Add a Packagepack as an automatic lifecycle owner for one dependency.
+/// An existing user choice is preserved.
+pub fn add_auto_install_owner(
+    policies: &mut Vec<LibraryItemPolicy>,
+    content_id: VaporId,
+    packagepack_id: VaporId,
+) {
+    let policy = policy_mut_or_insert(policies, content_id);
+    if !policy.packagepack_owners.contains(&packagepack_id) {
+        policy.packagepack_owners.push(packagepack_id);
+        policy.packagepack_owners.sort();
+    }
+    if !policy.user_selected {
+        policy.auto_install = true;
+    }
+}
+
+/// Remove a Packagepack ownership edge after its subscription or installation ends.
+pub fn remove_auto_install_owner(policies: &mut Vec<LibraryItemPolicy>, packagepack_id: &VaporId) {
+    policies.retain_mut(|policy| {
+        policy
+            .packagepack_owners
+            .retain(|owner| owner != packagepack_id);
+        if !policy.packagepack_owners.is_empty() {
+            return true;
+        }
+        policy.auto_install || policy.user_selected
+    });
+}
+
 /// Read the durable Auto-Install preference; absence means user-managed retention.
 pub fn library_auto_install_enabled(policies: &[LibraryItemPolicy], content_id: &VaporId) -> bool {
     policies
@@ -231,19 +267,41 @@ pub fn set_library_auto_install(
     content_id: VaporId,
     enabled: bool,
 ) {
-    policies.retain(|policy| policy.content_id != content_id);
-    if enabled {
-        policies.push(LibraryItemPolicy {
-            content_id,
-            auto_install: true,
-        });
-        policies.sort_by(|left, right| left.content_id.cmp(&right.content_id));
+    let policy = policy_mut_or_insert(policies, content_id);
+    policy.auto_install = enabled;
+    policy.user_selected = true;
+}
+
+fn policy_mut_or_insert(
+    policies: &mut Vec<LibraryItemPolicy>,
+    content_id: VaporId,
+) -> &mut LibraryItemPolicy {
+    if let Some(index) = policies
+        .iter()
+        .position(|policy| policy.content_id == content_id)
+    {
+        return &mut policies[index];
     }
+    policies.push(LibraryItemPolicy {
+        content_id: content_id.clone(),
+        auto_install: false,
+        packagepack_owners: Vec::new(),
+        user_selected: false,
+    });
+    policies.sort_by(|left, right| left.content_id.cmp(&right.content_id));
+    let index = policies
+        .iter()
+        .position(|policy| policy.content_id == content_id)
+        .expect("inserted Library policy is present");
+    &mut policies[index]
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{can_auto_install_library_item, dependent_composition_id};
+    use super::{
+        add_auto_install_owner, can_auto_install_library_item, dependent_composition_id,
+        remove_auto_install_owner, set_library_auto_install,
+    };
     use crate::{
         Composition, CompositionDocument, ResolvedCompositionGraph, ResolvedDependencyIdentity,
         ResolvedNodeIdentity,
@@ -270,6 +328,28 @@ mod tests {
             "game-mod", true, true, false
         ));
         assert!(!can_auto_install_library_item("unknown", true, true, true));
+    }
+
+    #[test]
+    fn packagepack_defaults_are_owned_and_user_opt_out_survives_reacquisition() {
+        let mut policies = Vec::new();
+        let game: vapor_content::VaporId = "studio/game/main".parse().unwrap();
+        let pack: vapor_content::VaporId = "studio/pack/main".parse().unwrap();
+
+        add_auto_install_owner(&mut policies, game.clone(), pack.clone());
+        assert!(policies[0].auto_install);
+        assert_eq!(
+            policies[0].packagepack_owners.as_slice(),
+            std::slice::from_ref(&pack)
+        );
+
+        set_library_auto_install(&mut policies, game.clone(), false);
+        remove_auto_install_owner(&mut policies, &pack);
+        add_auto_install_owner(&mut policies, game, pack.clone());
+
+        assert!(!policies[0].auto_install);
+        assert!(policies[0].user_selected);
+        assert_eq!(policies[0].packagepack_owners, [pack]);
     }
 
     #[test]

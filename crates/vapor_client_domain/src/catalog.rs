@@ -55,12 +55,41 @@ pub struct CatalogContent {
     pub kind: String,
     /// Associated Workshop item, when known.
     pub published_file_id: Option<String>,
-    /// Human-readable dependency descriptions from local manifests.
-    pub dependencies: Vec<String>,
+    /// Authored dependency edges retained as structured identity and policy.
+    pub dependencies: Vec<CatalogDependency>,
     /// Provider observations for this exact identity.
     pub locations: Vec<CatalogLocation>,
     /// Conflicts make this identity unsafe to select or publish until resolved.
     pub conflicts: Vec<CatalogConflict>,
+}
+
+/// One authored dependency edge for a catalog item.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CatalogDependency {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub relationship: String,
+    #[serde(default)]
+    pub optional: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workshop_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl std::fmt::Display for CatalogDependency {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.id)?;
+        if let Some(version) = &self.version {
+            write!(formatter, " {version}")?;
+        }
+        if self.optional {
+            write!(formatter, " (optional)")?;
+        }
+        Ok(())
+    }
 }
 
 impl CatalogContent {
@@ -128,8 +157,8 @@ fn merge_entry(
         if first_dependencies != next_dependencies {
             conflicts.push((
                 "dependencies",
-                first_dependencies.join(", "),
-                next_dependencies.join(", "),
+                format_catalog_dependencies(&first_dependencies),
+                format_catalog_dependencies(&next_dependencies),
             ));
         }
         let first_fingerprint = existing
@@ -172,4 +201,24 @@ fn merge_entry(
     } else {
         entries.insert(key, incoming);
     }
+}
+
+fn format_catalog_dependencies(dependencies: &[CatalogDependency]) -> String {
+    dependencies
+        .iter()
+        .map(|dependency| {
+            let version = dependency
+                .version
+                .as_deref()
+                .map(|version| format!("@{version}"))
+                .unwrap_or_default();
+            let optional = if dependency.optional {
+                " (optional)"
+            } else {
+                ""
+            };
+            format!("{}{version}{optional}", dependency.id)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }

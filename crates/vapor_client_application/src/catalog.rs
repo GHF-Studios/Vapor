@@ -1,6 +1,6 @@
 use std::path::Path;
 pub use vapor_client_domain::{
-    CatalogConflict, CatalogContent, CatalogLocation, CatalogLocationKind,
+    CatalogConflict, CatalogContent, CatalogDependency, CatalogLocation, CatalogLocationKind,
 };
 use vapor_client_provider::{
     content,
@@ -38,7 +38,7 @@ pub fn discover_content_catalog(
                     dependencies: artifact
                         .dependencies()
                         .iter()
-                        .map(dependency_description)
+                        .map(catalog_dependency)
                         .collect(),
                     locations: vec![CatalogLocation {
                         kind: CatalogLocationKind::Workspace,
@@ -64,7 +64,7 @@ pub fn discover_content_catalog(
             dependencies: artifact
                 .dependencies()
                 .iter()
-                .map(dependency_description)
+                .map(catalog_dependency)
                 .collect(),
             locations: vec![CatalogLocation {
                 kind: CatalogLocationKind::Cache,
@@ -93,7 +93,7 @@ pub fn discover_content_catalog(
                 dependencies: artifact
                     .dependencies()
                     .iter()
-                    .map(dependency_description)
+                    .map(catalog_dependency)
                     .collect(),
                 locations: vec![CatalogLocation {
                     kind: CatalogLocationKind::Installed,
@@ -114,31 +114,13 @@ pub fn discover_content_catalog(
     Ok(vapor_client_domain::merge_catalog_entries(entries))
 }
 
-fn dependency_description(dependency: &content::ContentReference) -> String {
-    let version = dependency
-        .version()
-        .map(|version| format!(" @ {version}"))
-        .unwrap_or_default();
-    let optional = if dependency.optional() {
-        " · optional"
-    } else {
-        ""
-    };
-    let workshop = dependency
-        .workshop_id()
-        .map(|id| format!(" · Workshop {id}"))
-        .unwrap_or_default();
-    let reason = dependency
-        .reason()
-        .map(|reason| format!(" · {reason}"))
-        .unwrap_or_default();
-    format!(
-        "{} · {}{}{}{}{}",
-        dependency.relationship(),
-        dependency.id(),
-        version,
-        optional,
-        workshop,
-        reason
-    )
+fn catalog_dependency(dependency: &content::ContentReference) -> CatalogDependency {
+    CatalogDependency {
+        id: dependency.id().to_owned(),
+        version: dependency.version().map(ToOwned::to_owned),
+        relationship: dependency.relationship().to_owned(),
+        optional: dependency.optional(),
+        workshop_id: dependency.workshop_id().map(ToOwned::to_owned),
+        reason: dependency.reason().map(ToOwned::to_owned),
+    }
 }

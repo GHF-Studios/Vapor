@@ -131,14 +131,50 @@ impl ClientSession {
         let content_id = reference
             .vapor_id()
             .map_err(|error| format!("invalid Library content ID: {error}"))?;
-        if vapor_client_protocol::dependent_composition_id(
-            &self.durable_state.compositions,
-            &content_id,
-        )
-        .is_none()
-        {
+        let policy_has_packagepack_owner = self
+            .durable_state
+            .library_policies
+            .iter()
+            .find(|policy| policy.content_id == content_id)
+            .is_some_and(|policy| !policy.packagepack_owners.is_empty());
+        let installed_composition_owns_item = self
+            .durable_state
+            .compositions
+            .compositions
+            .iter()
+            .filter(|composition| {
+                matches!(
+                    &composition.installation,
+                    vapor_client_protocol::InstallationState::Installed { .. }
+                        | vapor_client_protocol::InstallationState::OutOfDate { .. }
+                        | vapor_client_protocol::InstallationState::Partial { .. }
+                        | vapor_client_protocol::InstallationState::NeedsRepair { .. }
+                )
+            })
+            .filter_map(|composition| {
+                let root = composition.root_package.as_ref()?;
+                let root_entry = self
+                    .catalog
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.id == root.id)?;
+                (root_entry.kind == "packagepack").then_some(composition)
+            })
+            .any(|composition| {
+                composition.resolved_graph.as_ref().is_some_and(|graph| {
+                    graph.nodes.iter().any(|node| {
+                        node.content.id == content_id.as_str()
+                            || node
+                                .dependencies
+                                .iter()
+                                .any(|dependency| dependency.content.id == content_id.as_str())
+                    })
+                })
+            });
+        if !policy_has_packagepack_owner && !installed_composition_owns_item {
             return Err(
-                "Add this item to a composition before enabling automatic updates.".to_owned(),
+                "Auto-Install is available only for content owned by a subscribed or installed Packagepack."
+                    .to_owned(),
             );
         }
         Ok(())

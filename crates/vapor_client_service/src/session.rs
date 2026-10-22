@@ -25,20 +25,21 @@ use vapor_client::ClientHostConfig;
 use vapor_client_application as application;
 use vapor_client_protocol::{
     ApplicationReleaseSnapshot, AuthoringAction, AuthoringCompositionLink, AuthoringResult,
-    AuthoringResultKind, AvailableSuperworkspaceRepositorySnapshot, CatalogAction, ClientAction,
-    ClientEvent, ClientRequest, ClientResponse, ClientResponseKind, ClientRevision, Composition,
-    CompositionAction, ContentReference, DeveloperAction, InstallationState, LegacyStorageSeed,
-    LibraryAction, OperationEvent, OperationOutputEvent, OperationPhase, OperationStatus,
-    OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot, PublishingAction,
-    RootPublishingSnapshot, ServiceError, ServiceErrorCode, SessionAction,
-    SourceMetadataRepairAction, WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot,
-    WorkshopAction, WorkshopItemSnapshot, WorkshopMetadataDraft, WorkshopPackagePreviewSnapshot,
-    WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
-    WorkspaceAction, WorkspaceAssociation, WorkspaceContentSnapshot, WorkspaceFileResult,
-    WorkspaceProjectSelection, WorkspaceToolOperation,
+    AuthoringResultKind, AvailableSuperworkspaceRepositorySnapshot, CatalogAction,
+    CatalogLocationKind, ClientAction, ClientEvent, ClientRequest, ClientResponse,
+    ClientResponseKind, ClientRevision, Composition, CompositionAction, ContentReference,
+    DeveloperAction, InstallationState, LegacyStorageSeed, LibraryAction, OperationEvent,
+    OperationOutputEvent, OperationPhase, OperationStatus, OperationSummary, ProfileReportSnapshot,
+    ProfileTraceSnapshot, PublishingAction, RootPublishingSnapshot, ServiceError, ServiceErrorCode,
+    SessionAction, SourceMetadataRepairAction, WorkshopAcquisitionBatchSnapshot,
+    WorkshopAcquisitionSnapshot, WorkshopAction, WorkshopItemSnapshot, WorkshopMetadataDraft,
+    WorkshopPackagePreviewSnapshot, WorkshopReviewSnapshot, WorkshopSearchSnapshot,
+    WorkshopSnapshot, WorkshopSubscriptionSnapshot, WorkspaceAction, WorkspaceAssociation,
+    WorkspaceContentSnapshot, WorkspaceFileResult, WorkspaceProjectSelection,
+    WorkspaceToolOperation,
 };
 #[cfg(test)]
-use vapor_client_protocol::{CatalogEntry, CatalogItemRole, CatalogLocation, CatalogLocationKind};
+use vapor_client_protocol::{CatalogEntry, CatalogItemRole, CatalogLocation};
 use workspace::is_isolated_fixture_workspace;
 
 const MAX_WORKSPACE_PROJECTS: usize = 10_000;
@@ -1721,7 +1722,11 @@ impl ClientSession {
         }
         let policies = self.durable_state.library_policies.clone();
         let mut collected = Vec::new();
-        for policy in policies.into_iter().filter(|policy| policy.auto_install) {
+        let mut unsubscribe_ids = BTreeSet::new();
+        for policy in policies
+            .into_iter()
+            .filter(|policy| policy.auto_install && policy.packagepack_owners.is_empty())
+        {
             let referenced = self
                 .durable_state
                 .compositions
@@ -1737,12 +1742,63 @@ impl ClientSession {
             if referenced {
                 continue;
             }
-            if application::collect_library_item(
+            let entry = self
+                .catalog
+                .entries()
+                .iter()
+                .find(|entry| entry.id == policy.content_id.as_str())
+                .ok_or_else(|| format!(
+                    "Auto-Install cannot release '{}': refresh the Library to recover its Workshop identity.",
+                    policy.content_id
+                ))?;
+            let published_file_id = entry
+                .published_file_id
+                .as_deref()
+                .ok_or_else(|| format!(
+                    "Auto-Install cannot release '{}': its Workshop subscription identity is missing.",
+                    policy.content_id
+                ))?
+                .parse::<u64>()
+                .map_err(|_| format!(
+                    "Auto-Install cannot release '{}': its Workshop item ID is invalid.",
+                    policy.content_id
+                ))?;
+            application::collect_library_item(
                 &self.bootstrap.application_executable,
                 policy.content_id.as_str(),
-            )? {
-                collected.push(policy.content_id.to_string());
+            )?;
+            unsubscribe_ids.insert(published_file_id);
+            collected.push(policy.content_id.to_string());
+        }
+        if !unsubscribe_ids.is_empty() {
+            let app_id = self.bootstrap.workshop_app_id.ok_or_else(|| {
+                "Auto-Install found managed subscriptions, but this installation has no Workshop application configured.".to_owned()
+            })?;
+            let ids = unsubscribe_ids.into_iter().collect::<Vec<_>>();
+            for batch in ids.chunks(application::MAX_WORKSHOP_SUBSCRIPTION_BATCH) {
+                application::unsubscribe_workshop_items(app_id, batch)?;
             }
+            let published_ids = ids.iter().map(u64::to_string).collect::<BTreeSet<_>>();
+            self.workshop
+                .subscriptions
+                .retain(|item| !published_ids.contains(&item.published_file_id));
+            self.fixture_workshop_subscriptions
+                .retain(|id| !published_ids.contains(id));
+            let previous = self.durable_state.library_policies.clone();
+            let collected_ids = collected.iter().cloned().collect::<BTreeSet<_>>();
+            self.durable_state
+                .library_policies
+                .retain(|policy| !collected_ids.contains(policy.content_id.as_str()));
+            if let Some(store) = &self.state_store
+                && let Err(error) = store.save(&self.durable_state)
+            {
+                self.durable_state.library_policies = previous;
+                return Err(format!(
+                    "Auto-Install released unused Workshop items, but could not save the updated ownership state: {error}"
+                ));
+            }
+            self.workshop.subscriptions_revision =
+                self.workshop.subscriptions_revision.saturating_add(1);
         }
         if !collected.is_empty() {
             self.refresh_catalog();
@@ -2305,6 +2361,11 @@ mod tests {
         let root = ContentReference::parse("author/game/pack".to_owned(), Some("1.0.0".to_owned()))
             .expect("valid composition root");
         session.durable_state.compositions.compositions[0].root_package = Some(root.clone());
+        session.durable_state.compositions.compositions[0].installation =
+            InstallationState::Installed {
+                artifacts: Vec::new(),
+                graph_fingerprint: None,
+            };
         session.durable_state.compositions.compositions[0].resolved_graph =
             Some(vapor_client_protocol::ResolvedCompositionGraph {
                 root: root.clone(),
@@ -2335,6 +2396,7 @@ mod tests {
             kind: "game-mod".to_owned(),
             published_file_id: Some("3762162552".to_owned()),
             dependencies: Vec::new(),
+            dependency_details: Vec::new(),
             conflicts: Vec::new(),
             locations: vec![CatalogLocation {
                 kind: CatalogLocationKind::Cache,
@@ -2346,15 +2408,30 @@ mod tests {
             role: CatalogItemRole::RuntimeContent,
             actions: Vec::new(),
         };
-        session.catalog.replace(vec![entry.clone()]);
+        let root_entry = CatalogEntry {
+            id: root.id.clone(),
+            name: Some("Pack".to_owned()),
+            version: Some("1.0.0".to_owned()),
+            kind: "packagepack".to_owned(),
+            published_file_id: Some("3762162551".to_owned()),
+            dependencies: Vec::new(),
+            dependency_details: Vec::new(),
+            conflicts: Vec::new(),
+            locations: Vec::new(),
+            role: CatalogItemRole::Other,
+            actions: Vec::new(),
+        };
+        session
+            .catalog
+            .replace(vec![entry.clone(), root_entry.clone()]);
 
         assert!(session.validate_auto_install_target(content_id).is_ok());
 
         session.durable_state.compositions.compositions[0].resolved_graph = None;
         assert!(
-            session
-                .validate_auto_install_target(content_id)
-                .is_err_and(|message| message.contains("Add this item to a composition"))
+            session.validate_auto_install_target(content_id).is_err_and(
+                |message| message.contains("owned by a subscribed or installed Packagepack")
+            )
         );
 
         session.durable_state.compositions.compositions[0].resolved_graph =
@@ -2369,7 +2446,7 @@ mod tests {
                 nodes: vec![],
             });
         entry.published_file_id = None;
-        session.catalog.replace(vec![entry]);
+        session.catalog.replace(vec![entry, root_entry]);
         assert!(
             session
                 .validate_auto_install_target(content_id)
@@ -2428,6 +2505,8 @@ mod tests {
             .push(vapor_client_protocol::LibraryItemPolicy {
                 content_id: content.vapor_id().expect("valid Vapor ID"),
                 auto_install: true,
+                packagepack_owners: Vec::new(),
+                user_selected: true,
             });
         session.durable_state.compositions.compositions[0].root_package = Some(root.clone());
         session.durable_state.compositions.compositions[0].installation =
@@ -2478,6 +2557,7 @@ mod tests {
             kind: "game-mod".to_owned(),
             published_file_id: Some("3762162552".to_owned()),
             dependencies: Vec::new(),
+            dependency_details: Vec::new(),
             conflicts: Vec::new(),
             locations: vec![CatalogLocation {
                 kind: CatalogLocationKind::Cache,
@@ -3678,6 +3758,7 @@ mod tests {
             kind: "packagepack".into(),
             published_file_id: Some("3823734148".into()),
             dependencies: vec![],
+            dependency_details: vec![],
             conflicts: vec![],
             locations: vec![CatalogLocation {
                 kind: CatalogLocationKind::Cache,
@@ -3733,6 +3814,7 @@ mod tests {
             kind: "game".into(),
             published_file_id: Some("3823734148".into()),
             dependencies: vec![],
+            dependency_details: vec![],
             conflicts: vec![],
             locations: vec![],
             role: CatalogItemRole::RuntimeContent,

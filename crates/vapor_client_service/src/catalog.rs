@@ -75,6 +75,7 @@ mod tests {
             kind: "game-mod".into(),
             published_file_id: Some("3762162251".into()),
             dependencies: vec![],
+            dependency_details: vec![],
             conflicts: vec![],
             locations: vec![],
             role: vapor_client_protocol::CatalogItemRole::Other,

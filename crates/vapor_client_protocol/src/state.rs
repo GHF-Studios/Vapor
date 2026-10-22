@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+pub use vapor_client_domain::CatalogDependency;
 pub use vapor_client_domain::ClientStateDocument as DurableStateSnapshot;
 use vapor_client_domain::WorkshopMetadataDraft;
 pub use vapor_client_domain::{
@@ -386,7 +387,13 @@ pub struct CatalogEntry {
     pub version: Option<String>,
     pub kind: String,
     pub published_file_id: Option<String>,
+    /// Human-readable dependency labels retained for older frontends.
+    #[serde(default)]
     pub dependencies: Vec<String>,
+    /// Structured dependency facts for lifecycle and compatibility decisions.
+    /// This additive wire field keeps older running frontends compatible.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependency_details: Vec<CatalogDependency>,
     pub conflicts: Vec<CatalogConflict>,
     pub locations: Vec<CatalogLocation>,
     /// Product role used by every frontend to route this item through the

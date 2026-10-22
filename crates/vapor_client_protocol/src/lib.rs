@@ -36,18 +36,18 @@ pub use message::{
 };
 pub use state::{
     ApplicationReleaseSnapshot, AuthoringCompositionLink, AuthoringResult, AuthoringResultKind,
-    AvailableAction, AvailableSuperworkspaceRepositorySnapshot, CatalogConflict, CatalogEntry,
-    CatalogItemAction, CatalogItemRole, CatalogLocation, CatalogLocationKind, ClientEvent,
-    ClientRevision, ClientSnapshot, CompositionPreviewDependency, CompositionPreviewNode,
-    CompositionPreviewSnapshot, CompositionPreviewSource, DevelopmentSessionSnapshot,
-    DurableStateSnapshot, HostSummary, InstallationRoleSnapshot, LanguageServerStatus,
-    OperationEvent, OperationOutputEvent, OperationOutputStream, OperationPhase, OperationStatus,
-    OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot, ProfileZoneSnapshot,
-    RootDistributionIdentitySnapshot, RootPublishingSnapshot, SourceMetadataRepairAction,
-    SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot, WorkshopAcquisitionBatchSnapshot,
-    WorkshopAcquisitionSnapshot, WorkshopBatchReviewSnapshot, WorkshopItemSnapshot,
-    WorkshopPackagePreviewSnapshot, WorkshopReviewItemSnapshot, WorkshopReviewSnapshot,
-    WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
+    AvailableAction, AvailableSuperworkspaceRepositorySnapshot, CatalogConflict, CatalogDependency,
+    CatalogEntry, CatalogItemAction, CatalogItemRole, CatalogLocation, CatalogLocationKind,
+    ClientEvent, ClientRevision, ClientSnapshot, CompositionPreviewDependency,
+    CompositionPreviewNode, CompositionPreviewSnapshot, CompositionPreviewSource,
+    DevelopmentSessionSnapshot, DurableStateSnapshot, HostSummary, InstallationRoleSnapshot,
+    LanguageServerStatus, OperationEvent, OperationOutputEvent, OperationOutputStream,
+    OperationPhase, OperationStatus, OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot,
+    ProfileZoneSnapshot, RootDistributionIdentitySnapshot, RootPublishingSnapshot,
+    SourceMetadataRepairAction, SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot,
+    WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot, WorkshopBatchReviewSnapshot,
+    WorkshopItemSnapshot, WorkshopPackagePreviewSnapshot, WorkshopReviewItemSnapshot,
+    WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
     WorkspaceContentSnapshot, WorkspaceFileResult, WorkspaceProjectCandidate,
     WorkspaceSourceProject, WorkspaceWorkshopPolicy,
 };
@@ -593,6 +593,7 @@ mod tests {
                 kind: "mod".into(),
                 published_file_id: None,
                 dependencies: vec![],
+                dependency_details: vec![],
                 conflicts: vec![],
                 locations: vec![CatalogLocation {
                     kind: CatalogLocationKind::Workspace,
@@ -863,6 +864,17 @@ mod tests {
             WorkspaceContentSnapshot::default()
         );
         assert_eq!(snapshot.workshop, WorkshopSnapshot::default());
+    }
+
+    #[test]
+    fn old_catalog_dependency_labels_remain_readable_with_additive_dependency_facts() {
+        let entry: CatalogEntry = serde_json::from_str(
+            r#"{"id":"studio/game/main","name":"Game","version":"0.5.0","kind":"game","published_file_id":"123","dependencies":["required · studio/engine/main"],"conflicts":[],"locations":[]}"#,
+        )
+        .expect("older string-only catalog entry remains readable");
+
+        assert_eq!(entry.dependencies, ["required · studio/engine/main"]);
+        assert!(entry.dependency_details.is_empty());
     }
 
     #[test]

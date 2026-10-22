@@ -24,6 +24,7 @@ impl ClientSession {
                 kind: "engine".to_owned(),
                 published_file_id: None,
                 dependencies: Vec::new(),
+                dependency_details: Vec::new(),
                 conflicts: Vec::new(),
                 locations: vec![CatalogLocation {
                     kind: CatalogLocationKind::Cache,
@@ -43,6 +44,7 @@ impl ClientSession {
                     kind: "game".to_owned(),
                     published_file_id: Some("1003".to_owned()),
                     dependencies: Vec::new(),
+                    dependency_details: Vec::new(),
                     conflicts: vec![CatalogConflict {
                         field: "fingerprint".to_owned(),
                         first_value: "source".to_owned(),
@@ -68,6 +70,7 @@ impl ClientSession {
                 kind: item.kind.clone(),
                 published_file_id: None,
                 dependencies: Vec::new(),
+                dependency_details: Vec::new(),
                 conflicts: Vec::new(),
                 locations: vec![CatalogLocation {
                     kind: CatalogLocationKind::Cache,
@@ -199,13 +202,19 @@ fn fixture_workspace_content(root: &Path) -> WorkspaceContentSnapshot {
 
 fn catalog_entry(entry: CatalogContent) -> CatalogEntry {
     let role = catalog_item_role(&entry.kind);
+    let dependency_labels = entry
+        .dependencies
+        .iter()
+        .map(|dependency| format!("{}: {}", dependency.relationship, dependency.id))
+        .collect();
     CatalogEntry {
         id: entry.id,
         name: entry.name,
         version: entry.version,
         kind: entry.kind,
         published_file_id: entry.published_file_id,
-        dependencies: entry.dependencies,
+        dependencies: dependency_labels,
+        dependency_details: entry.dependencies,
         conflicts: entry
             .conflicts
             .into_iter()

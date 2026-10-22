@@ -116,6 +116,47 @@ impl ConsoleRecord {
     }
 }
 
+/// Remove terminal control sequences while preserving readable progress output.
+pub fn plain_terminal_text(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\u{1b}' => match chars.next() {
+                Some('[') => {
+                    for next in chars.by_ref() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) | None => {}
+            },
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                output.push('\n');
+            }
+            '\n' | '\t' => output.push(character),
+            value if value.is_control() => {}
+            value => output.push(value),
+        }
+    }
+    output
+}
+
 /// Shared console view filters. Empty values mean no filter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConsoleFilter {
@@ -404,6 +445,14 @@ fn scan_quoted(source: &str, start: usize, quote: char) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_output_removes_color_control_codes_and_keeps_lines() {
+        assert_eq!(
+            plain_terminal_text("\u{1b}[32mFinished\u{1b}[0m\r\nready\rworking"),
+            "Finished\nready\nworking"
+        );
+    }
 
     #[test]
     fn console_history_is_bounded_and_clear_only_clears_the_view() {

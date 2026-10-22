@@ -14,7 +14,8 @@ mod workspace;
 mod workspace_files;
 
 pub use catalog::{
-    CatalogConflict, CatalogContent, CatalogLocation, CatalogLocationKind, discover_content_catalog,
+    CatalogConflict, CatalogContent, CatalogDependency, CatalogLocation, CatalogLocationKind,
+    discover_content_catalog,
 };
 pub use composition::{
     CURRENT_SCHEMA_VERSION, Composition, CompositionDocument, CompositionRecovery,

@@ -69,6 +69,7 @@ mod tests {
             version: Some("1.2.3".into()),
             published_file_id: Some("3762162251".into()),
             dependencies: vec![],
+            dependency_details: vec![],
             conflicts: vec![],
             locations: vec![],
             role: crate::CatalogItemRole::Other,

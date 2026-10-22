@@ -17,7 +17,8 @@ pub use actions::{
     WorkspaceAction, WorkspaceProjectSelection, WorkspaceToolOperation,
 };
 pub use catalog::{
-    CatalogConflict, CatalogContent, CatalogLocation, CatalogLocationKind, merge_catalog_entries,
+    CatalogConflict, CatalogContent, CatalogDependency, CatalogLocation, CatalogLocationKind,
+    merge_catalog_entries,
 };
 pub use composition::{
     COMPOSITION_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION, Composition, CompositionAction,
@@ -32,10 +33,10 @@ pub use install_plan::{
     InstallPlanNode, InstallPlanSource, SelectedInstallCandidate, resolve_install_plan,
 };
 pub use library::{
-    LibraryAction, LibraryItemPolicy, MissingLibraryConstraint, can_auto_install_library_item,
-    can_collect_library_item, dependent_composition_id, library_auto_install_enabled,
-    library_constraints, select_library_version, select_library_version_for_compositions,
-    set_library_auto_install,
+    LibraryAction, LibraryItemPolicy, MissingLibraryConstraint, add_auto_install_owner,
+    can_auto_install_library_item, can_collect_library_item, dependent_composition_id,
+    library_auto_install_enabled, library_constraints, remove_auto_install_owner,
+    select_library_version, select_library_version_for_compositions, set_library_auto_install,
 };
 pub use state::{CLIENT_STATE_SCHEMA_VERSION, ClientStateDocument};
 pub use vapor_content::{
