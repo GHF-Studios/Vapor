@@ -1437,6 +1437,7 @@ fn fixture_workshop_subscription(id: &str) -> vapor_client_application::Workshop
         description: item.description,
         preview_url: item.preview_url,
         updated_at_unix: item.updated_at_unix,
+        tags: item.tags,
         installed: false,
         needs_update: false,
         downloading: false,
@@ -1482,6 +1483,7 @@ fn workshop_subscription_snapshot(
         description: item.description.clone(),
         preview_url: item.preview_url.clone(),
         updated_at_unix: item.updated_at_unix,
+        tags: item.tags.clone(),
         installed: item.installed,
         needs_update: item.needs_update,
         downloading: item.downloading,
@@ -1580,6 +1582,26 @@ mod target_tests {
             dependencies: Vec::new(),
             workshop: WorkspaceWorkshopPolicy::default(),
         }
+    }
+
+    #[test]
+    fn subscription_snapshot_preserves_canonical_workshop_tags() {
+        let subscription = vapor_client_application::WorkshopSubscription {
+            published_file_id: "123".to_owned(),
+            title: "Playable pack".to_owned(),
+            description: String::new(),
+            preview_url: None,
+            updated_at_unix: 1,
+            tags: vec!["packagepack".to_owned(), "space".to_owned()],
+            installed: true,
+            needs_update: false,
+            downloading: false,
+            download_progress: None,
+        };
+
+        let snapshot = super::workshop_subscription_snapshot(&subscription);
+
+        assert_eq!(snapshot.tags, ["packagepack", "space"]);
     }
 
     #[test]

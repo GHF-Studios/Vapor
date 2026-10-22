@@ -691,6 +691,7 @@ mod tests {
                     description: "Fixture content".into(),
                     preview_url: None,
                     updated_at_unix: 1_797_000_000,
+                    tags: vec!["game".into()],
                     installed: false,
                     needs_update: false,
                     downloading: false,
@@ -800,6 +801,12 @@ mod tests {
         assert!(snapshot.required_tags.is_empty());
         assert_eq!(snapshot.content_kind, None);
         assert!(snapshot.items[0].tags.is_empty());
+
+        let subscription: WorkshopSubscriptionSnapshot = serde_json::from_str(
+            r#"{"published_file_id":"12","title":"Moon","description":"","preview_url":null,"updated_at_unix":0,"installed":false,"needs_update":false,"downloading":false,"download_progress":null}"#,
+        )
+        .expect("prior subscription snapshot remains readable without tags");
+        assert!(subscription.tags.is_empty());
     }
 
     #[test]

@@ -40,12 +40,41 @@ pub struct WorkshopPage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkshopSubscriptionDetails {
+    title: String,
+    description: String,
+    preview_url: Option<String>,
+    updated_at_unix: u32,
+    tags: Vec<String>,
+}
+
+fn workshop_subscription_details(item: Option<WorkshopItem>) -> WorkshopSubscriptionDetails {
+    item.map_or_else(
+        || WorkshopSubscriptionDetails {
+            title: "Workshop item details unavailable".to_owned(),
+            description: String::new(),
+            preview_url: None,
+            updated_at_unix: 0,
+            tags: Vec::new(),
+        },
+        |item| WorkshopSubscriptionDetails {
+            title: item.title,
+            description: item.description,
+            preview_url: item.preview_url,
+            updated_at_unix: item.updated_at_unix,
+            tags: item.tags,
+        },
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkshopSubscription {
     pub published_file_id: String,
     pub title: String,
     pub description: String,
     pub preview_url: Option<String>,
     pub updated_at_unix: u32,
+    pub tags: Vec<String>,
     pub installed: bool,
     pub needs_update: bool,
     pub downloading: bool,
@@ -352,30 +381,14 @@ pub fn subscribed_items(app_id: u32) -> Result<Vec<WorkshopSubscription>, String
             let item = details.remove(&published_file_id);
             let (installed, needs_update, downloading, download_progress) =
                 states.remove(&id).unwrap_or_default();
-            let (title, description, preview_url, updated_at_unix) = item.map_or_else(
-                || {
-                    (
-                        "Workshop item details unavailable".to_owned(),
-                        String::new(),
-                        None,
-                        0,
-                    )
-                },
-                |item| {
-                    (
-                        item.title,
-                        item.description,
-                        item.preview_url,
-                        item.updated_at_unix,
-                    )
-                },
-            );
+            let details = workshop_subscription_details(item);
             WorkshopSubscription {
                 published_file_id,
-                title,
-                description,
-                preview_url,
-                updated_at_unix,
+                title: details.title,
+                description: details.description,
+                preview_url: details.preview_url,
+                updated_at_unix: details.updated_at_unix,
+                tags: details.tags,
                 installed,
                 needs_update,
                 downloading,
@@ -548,6 +561,20 @@ mod tests {
         assert!(!should_reuse_local_item(current, true));
         assert!(!should_reuse_local_item(outdated, false));
         assert!(!should_reuse_local_item(ItemState::NONE, false));
+    }
+
+    #[test]
+    fn subscription_details_preserve_steam_tags() {
+        let details = super::workshop_subscription_details(Some(super::WorkshopItem {
+            published_file_id: "123".to_owned(),
+            title: "Playable pack".to_owned(),
+            description: String::new(),
+            preview_url: None,
+            updated_at_unix: 1,
+            tags: vec!["packagepack".to_owned(), "space".to_owned()],
+        }));
+
+        assert_eq!(details.tags, ["packagepack", "space"]);
     }
 
     #[test]

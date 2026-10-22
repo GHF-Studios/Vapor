@@ -317,6 +317,8 @@ pub struct WorkshopSubscriptionSnapshot {
     pub description: String,
     pub preview_url: Option<String>,
     pub updated_at_unix: u32,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub installed: bool,
     pub needs_update: bool,
     pub downloading: bool,
