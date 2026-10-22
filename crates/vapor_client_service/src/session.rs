@@ -565,11 +565,18 @@ impl ClientSession {
             }
         }
         if bootstrap.workspace_root.is_none() {
-            bootstrap.workspace_root = loaded
-                .state
-                .authoring_workspace_root
-                .as_deref()
-                .map(PathBuf::from);
+            if let Some(root) = loaded.state.authoring_workspace_root.as_deref() {
+                let root = PathBuf::from(root);
+                if is_installed_application_root(&root) {
+                    // The installed app root is runtime content. A persisted
+                    // source selection must never turn it into an authoring
+                    // workspace just because every frontend shares this state.
+                    loaded.state.authoring_workspace_root = None;
+                    store.save(&loaded.state)?;
+                } else {
+                    bootstrap.workspace_root = Some(root);
+                }
+            }
         }
         let superworkspace_setup_error = if bootstrap.fixture_mode {
             None
@@ -2100,6 +2107,10 @@ fn ensure_workshop_app_id(bootstrap: &mut ClientHostConfig) {
     }
 }
 
+fn is_installed_application_root(root: &Path) -> bool {
+    root.join("App.vapor.toml").is_file() && !root.join("Workspace.vapor.toml").is_file()
+}
+
 fn default_superworkspace_path() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -2390,6 +2401,59 @@ mod tests {
             session.operation_receiver.try_iter().count(),
             MAX_PENDING_BACKGROUND_OPERATION_MESSAGES
         );
+    }
+
+    #[test]
+    fn installed_app_root_is_not_restored_as_an_authoring_workspace() {
+        let app_root = fixture_temp_workspace("installed-app-root");
+        let bin = app_root.join("bin");
+        std::fs::create_dir_all(&bin).expect("create installed app bin");
+        std::fs::write(app_root.join("App.vapor.toml"), "[app]\nid = \"test\"\n")
+            .expect("write installed app manifest");
+
+        let state_directory = fixture_temp_workspace("installed-app-state");
+        let store = ClientStateStore::new(state_directory.clone());
+        let mut saved_state = ClientPersistentState::default();
+        saved_state.authoring_workspace_root = Some(app_root.display().to_string());
+        store.save(&saved_state).expect("save stale authoring selection");
+
+        let host_context = ClientHostContext {
+            application_executable: bin.join("vapor-installer"),
+            app_root: Some(app_root.clone()),
+            workspace_root: None,
+            state_directory: state_directory.clone(),
+            platform: vapor_client::HostPlatform::Linux,
+            steam_client_available: true,
+        };
+        let session = ClientSession::with_persistent_state(
+            ClientHostConfig {
+                application_executable: bin.join("vapor-installer"),
+                workshop_app_id: Some(2122620),
+                workspace_root: None,
+                active_composition_id: None,
+                fixture_mode: true,
+                legacy_storage: LegacyStorageSeed::default(),
+                state_directory: Some(state_directory.clone()),
+            },
+            host_context,
+            store,
+            None,
+        )
+        .expect("start service from installed app");
+
+        assert_eq!(session.bootstrap.workspace_root, None);
+        assert_eq!(session.durable_state.authoring_workspace_root, None);
+        assert_eq!(
+            ClientStateStore::new(state_directory.clone())
+                .load_or_import(None)
+                .expect("load corrected state")
+                .state
+                .authoring_workspace_root,
+            None
+        );
+
+        std::fs::remove_dir_all(app_root).expect("remove installed app fixture");
+        std::fs::remove_dir_all(state_directory).expect("remove state fixture");
     }
 
     fn session() -> ClientSession {
