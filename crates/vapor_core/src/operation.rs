@@ -76,6 +76,12 @@ pub enum OperationOutputStream {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationOutput {
     pub stream: OperationOutputStream,
+    /// Explicit semantic severity when supplied by the producer. Plain process
+    /// stderr is not automatically an error; the pipe remains a separate field.
+    #[serde(default)]
+    pub level: crate::ConsoleLevel,
+    /// Executable or managed process that emitted the line, when known.
+    pub process: Option<String>,
     pub text: String,
 }
 
@@ -181,6 +187,7 @@ impl OperationContext {
 
     /// Forward one child-process output line to subscribed frontends.
     pub fn report_output(&self, mut output: OperationOutput) {
+        output.text = vapor_console_core::plain_terminal_text(&output.text);
         if output.text.len() > MAX_OPERATION_OUTPUT_BYTES {
             let suffix = " … [truncated]";
             let mut end = MAX_OPERATION_OUTPUT_BYTES.saturating_sub(suffix.len());
@@ -345,7 +352,9 @@ mod tests {
         let _ = OperationService::run(request, sink, |context| {
             context.report_output(OperationOutput {
                 stream: OperationOutputStream::Stderr,
-                text: "failure detail".to_owned(),
+                level: crate::ConsoleLevel::Info,
+                process: None,
+                text: "\u{1b}[31mfailure detail\u{1b}[0m".to_owned(),
             });
             Ok::<_, String>(())
         });
@@ -354,6 +363,8 @@ mod tests {
             event.output
                 == Some(OperationOutput {
                     stream: OperationOutputStream::Stderr,
+                    level: crate::ConsoleLevel::Info,
+                    process: None,
                     text: "failure detail".to_owned(),
                 })
         }));
@@ -374,6 +385,8 @@ mod tests {
         let _ = OperationService::run(request, sink, |context| {
             context.report_output(OperationOutput {
                 stream: OperationOutputStream::Stdout,
+                level: crate::ConsoleLevel::Info,
+                process: None,
                 text: format!("{}🌌", "x".repeat(MAX_OPERATION_OUTPUT_BYTES)),
             });
             Ok::<_, String>(())

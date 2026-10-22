@@ -7,3 +7,4 @@ edition.workspace = true
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 vapor_content = { path = "../vapor_content" }
+vapor_console_core = { path = "../vapor_console_core" }

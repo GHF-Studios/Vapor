@@ -6,6 +6,7 @@
 mod actions;
 mod catalog;
 mod composition;
+mod console_command;
 mod developer;
 mod install_plan;
 mod library;
@@ -27,6 +28,10 @@ pub use composition::{
     ResolvedCompositionGraph, ResolvedDependencyIdentity, ResolvedNodeIdentity,
     WorkspaceAssociation, add_composition, apply_composition_action, duplicate_composition,
     fingerprint_resolved_graph, remove_composition, rename_composition, resolved_graph_matches,
+};
+pub use console_command::{
+    ConsoleCommand, ConsoleCommandError, ConsoleCommandOutcome, ConsoleCommandScope,
+    ConsoleCommandSpec, console_command_catalog,
 };
 pub use developer::{ProfileAnalysisOptions, ProfileTraceSort};
 pub use install_plan::{

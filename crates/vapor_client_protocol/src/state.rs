@@ -559,7 +559,21 @@ pub enum OperationOutputStream {
 pub struct OperationOutputEvent {
     pub id: String,
     pub stream: OperationOutputStream,
+    #[serde(default)]
+    pub timestamp_unix_ms: u64,
+    #[serde(default = "default_operation_output_level")]
+    pub level: vapor_console_core::ConsoleLevel,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub process: Option<String>,
     pub text: String,
+}
+
+fn default_operation_output_level() -> vapor_console_core::ConsoleLevel {
+    vapor_console_core::ConsoleLevel::Info
 }
 
 /// Result of a service-owned workspace editor operation.

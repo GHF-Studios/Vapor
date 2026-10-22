@@ -144,6 +144,24 @@ pub fn promote_role(
     installation: &VaporInstallation,
     target: VaporRole,
 ) -> Result<RoleTransitionReport, RoleError> {
+    promote_role_inner(installation, target, None)
+}
+
+/// Promote the active installation while publishing developer-tool setup to
+/// the operation stream consumed by Studio, IDE, Launcher and CLI.
+pub fn promote_role_with_context(
+    installation: &VaporInstallation,
+    target: VaporRole,
+    context: &crate::OperationContext,
+) -> Result<RoleTransitionReport, RoleError> {
+    promote_role_inner(installation, target, Some(context))
+}
+
+fn promote_role_inner(
+    installation: &VaporInstallation,
+    target: VaporRole,
+    context: Option<&crate::OperationContext>,
+) -> Result<RoleTransitionReport, RoleError> {
     let current = installed_role(installation)?;
 
     if target <= current {
@@ -158,9 +176,11 @@ pub fn promote_role(
     if target.requires_developer_environment() {
         let mut environment = DeveloperEnvironment::discover_for_installation(installation)
             .map_err(RoleError::DeveloperEnvironment)?;
-        let report = environment
-            .reconcile()
-            .map_err(RoleError::DeveloperEnvironment)?;
+        let report = match context {
+            Some(context) => environment.reconcile_with_context(context),
+            None => environment.reconcile(),
+        }
+        .map_err(RoleError::DeveloperEnvironment)?;
         developer_environment_changed = report.changed();
     }
 

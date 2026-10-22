@@ -273,6 +273,8 @@ impl ClientSession {
                             move |stream, text| {
                                 output_context.report_output(application::OperationOutput {
                                     stream,
+                                    level: vapor_core::ConsoleLevel::Info,
+                                    process: Some("cargo".to_owned()),
                                     text: text.to_owned(),
                                 });
                             },

@@ -22,6 +22,7 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, SyncSender},
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use vapor_client::ClientHostConfig;
 use vapor_client_application as application;
@@ -129,11 +130,23 @@ fn queue_operation_output(events: &mut VecDeque<ClientEvent>, output: OperationO
             ClientEvent::OperationOutput(OperationOutputEvent {
                 id: output.id.clone(),
                 stream: vapor_client_protocol::OperationOutputStream::Stderr,
+                timestamp_unix_ms: unix_time_millis(),
+                level: vapor_client_protocol::ConsoleLevel::Warn,
+                source: output.source.clone(),
+                action: output.action.clone(),
+                process: output.process.clone(),
                 text: OPERATION_OUTPUT_OMISSION_NOTICE.to_owned(),
             }),
         );
     }
     events.push_back(ClientEvent::OperationOutput(output));
+}
+
+fn unix_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1291,13 +1304,6 @@ impl ClientSession {
                             "developer.demote-installation-role"
                         };
                         let execute_target = target.clone();
-                        let execute = if promote {
-                            application::promote_installation_role
-                                as fn(&str) -> Result<String, String>
-                        } else {
-                            application::demote_installation_role
-                                as fn(&str) -> Result<String, String>
-                        };
                         let spawn = self.spawn_background_operation(
                             BackgroundOperationSpec {
                                 domain: "installation-role",
@@ -1307,7 +1313,16 @@ impl ClientSession {
                                 composition_id: None,
                                 phase: OperationPhase::Installing,
                             },
-                            move |_| execute(&execute_target),
+                            move |context| {
+                                if promote {
+                                    application::promote_installation_role_with_context(
+                                        &execute_target,
+                                        &context,
+                                    )
+                                } else {
+                                    application::demote_installation_role(&execute_target)
+                                }
+                            },
                             |result| result.clone(),
                             |id, result| {
                                 BackgroundOperationMessage::CompleteRoleTransition(Box::new(
@@ -1795,6 +1810,11 @@ impl ClientSession {
                                         vapor_client_protocol::OperationOutputStream::Stderr
                                     }
                                 },
+                                timestamp_unix_ms: unix_time_millis(),
+                                level: output.level,
+                                source: event.domain,
+                                action: event.action,
+                                process: output.process,
                                 text: output.text,
                             },
                         );
@@ -2412,6 +2432,11 @@ mod tests {
                 OperationOutputEvent {
                     id: "operation-1".to_owned(),
                     stream: vapor_client_protocol::OperationOutputStream::Stdout,
+                    timestamp_unix_ms: 1,
+                    level: vapor_client_protocol::ConsoleLevel::Info,
+                    source: "workspace".to_owned(),
+                    action: "workspace.build".to_owned(),
+                    process: Some("cargo".to_owned()),
                     text: format!("line-{index}"),
                 },
             );
@@ -2453,6 +2478,8 @@ mod tests {
             progress: None,
             output: Some(application::OperationOutput {
                 stream: application::OperationOutputStream::Stdout,
+                level: vapor_core::ConsoleLevel::Info,
+                process: None,
                 text: "compiler output".to_owned(),
             }),
             status: application::OperationStatus::Running,

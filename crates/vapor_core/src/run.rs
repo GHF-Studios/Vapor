@@ -228,6 +228,8 @@ pub fn run_workspace_configuration_with_context(
         |stream, text| {
             context.report_output(OperationOutput {
                 stream,
+                level: crate::ConsoleLevel::Info,
+                process: None,
                 text: text.to_owned(),
             });
         },

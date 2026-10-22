@@ -239,6 +239,8 @@ pub fn run_workspace_tool_with_context(
         |stream, text| {
             context.report_output(vapor_core::OperationOutput {
                 stream,
+                level: vapor_core::ConsoleLevel::Info,
+                process: Some("cargo".to_owned()),
                 text: text.to_owned(),
             });
         },

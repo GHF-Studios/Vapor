@@ -14,7 +14,8 @@
 //! Vapor Workspace remains the source of the pin.
 
 use crate::{
-    InstallationRootSource, ToolchainPin, VaporInstallation, VaporWorkspace, WorkspaceError,
+    InstallationRootSource, OperationOutputStream, ToolchainPin,
+    VaporInstallation, VaporWorkspace, WorkspaceError,
 };
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -241,6 +242,17 @@ impl ManagedToolchain {
     /// toolchain metadata so installed Vapor can subsequently recover this pin
     /// without source discovery.
     pub fn install(&self) -> Result<(), ToolchainError> {
+        self.install_with_output(|_, _, _| {})
+    }
+
+    /// Install or repair the pinned toolchain while forwarding Rustup output.
+    ///
+    /// Output is line-bounded by the shared managed-process runner and tagged
+    /// with the executable name before it reaches the operation stream.
+    pub fn install_with_output(
+        &self,
+        mut report_output: impl FnMut(OperationOutputStream, &str, &str),
+    ) -> Result<(), ToolchainError> {
         fs::create_dir_all(&self.rustup_home).map_err(|source| ToolchainError::Io {
             path: self.rustup_home.clone(),
             source,
@@ -257,7 +269,8 @@ impl ManagedToolchain {
                 expected: self.local_rustup_path(),
             })?;
 
-        let status = crate::managed_process::background_command(&rustup)
+        let mut install = crate::managed_process::background_command(&rustup);
+        install
             .args([
                 "toolchain",
                 "install",
@@ -275,12 +288,14 @@ impl ManagedToolchain {
                 "rust-analyzer",
             ])
             .env("RUSTUP_HOME", &self.rustup_home)
-            .env("CARGO_HOME", &self.cargo_home)
-            .status()
-            .map_err(|source| ToolchainError::Io {
-                path: rustup.clone(),
-                source,
-            })?;
+            .env("CARGO_HOME", &self.cargo_home);
+        let status = crate::managed_process::run(&mut install, |stream, text| {
+            report_output(stream, "rustup toolchain install", text)
+        })
+        .map_err(|message| ToolchainError::Process {
+            path: rustup.clone(),
+            message,
+        })?;
 
         if !status.success() {
             return Err(ToolchainError::RustupFailed {
@@ -289,7 +304,8 @@ impl ManagedToolchain {
             });
         }
 
-        let status = crate::managed_process::background_command(&rustup)
+        let mut target = crate::managed_process::background_command(&rustup);
+        target
             .args([
                 "target",
                 "add",
@@ -298,12 +314,14 @@ impl ManagedToolchain {
                 self.pin.identifier(),
             ])
             .env("RUSTUP_HOME", &self.rustup_home)
-            .env("CARGO_HOME", &self.cargo_home)
-            .status()
-            .map_err(|source| ToolchainError::Io {
-                path: rustup.clone(),
-                source,
-            })?;
+            .env("CARGO_HOME", &self.cargo_home);
+        let status = crate::managed_process::run(&mut target, |stream, text| {
+            report_output(stream, "rustup target add", text)
+        })
+        .map_err(|message| ToolchainError::Process {
+            path: rustup.clone(),
+            message,
+        })?;
         if !status.success() {
             return Err(ToolchainError::RustupFailed {
                 path: rustup,
@@ -537,6 +555,11 @@ pub enum ToolchainError {
         status: ExitStatus,
     },
 
+    Process {
+        path: PathBuf,
+        message: String,
+    },
+
     ToolchainNotInstalled {
         version: String,
         expected: PathBuf,
@@ -606,6 +629,10 @@ impl fmt::Display for ToolchainError {
                     "Rustup `{}` failed with {status}",
                     path.display()
                 )
+            }
+
+            Self::Process { path, message } => {
+                write!(formatter, "managed process `{}` failed: {message}", path.display())
             }
 
             Self::ToolchainNotInstalled { version, expected } => {

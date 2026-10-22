@@ -6,6 +6,72 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+/// Error returned when a quoted command argument is malformed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandLineError {
+    /// The line ended while an argument was quoted.
+    UnterminatedQuote,
+    /// The line ended immediately after an escape character.
+    TrailingEscape,
+}
+
+/// Split a console command line into arguments while preserving quoted spaces.
+///
+/// Single and double quotes group text into one argument. A backslash escapes
+/// the following character outside single quotes and inside double quotes.
+pub fn tokenize_command_line(input: &str) -> Result<Vec<String>, CommandLineError> {
+    let mut arguments = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut started = false;
+
+    for character in input.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            started = true;
+            continue;
+        }
+
+        match (quote, character) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), _) => current.push(character),
+            (Some('"'), '\\') => escaped = true,
+            (Some(_), _) => current.push(character),
+            (None, '\'') | (None, '"') => {
+                quote = Some(character);
+                started = true;
+            }
+            (None, '\\') => {
+                escaped = true;
+                started = true;
+            }
+            (None, character) if character.is_whitespace() => {
+                if started {
+                    arguments.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            (None, _) => {
+                current.push(character);
+                started = true;
+            }
+        }
+    }
+
+    if escaped {
+        return Err(CommandLineError::TrailingEscape);
+    }
+    if quote.is_some() {
+        return Err(CommandLineError::UnterminatedQuote);
+    }
+    if started {
+        arguments.push(current);
+    }
+    Ok(arguments)
+}
+
 /// Severity shared by terminal, GUI, and in-game console adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -58,6 +124,12 @@ impl ConsoleLevel {
             Self::Error => ConsoleStyleRole::Error,
             Self::Input => ConsoleStyleRole::Input,
         }
+    }
+}
+
+impl Default for ConsoleLevel {
+    fn default() -> Self {
+        Self::Info
     }
 }
 
@@ -525,5 +597,18 @@ mod tests {
         assert!(tokens.iter().any(|token| {
             token.category == SyntaxCategory::String && token_text(token).contains("雪")
         }));
+    }
+
+    #[test]
+    fn command_line_parser_preserves_quoted_arguments_and_rejects_unclosed_quotes() {
+        assert_eq!(
+            tokenize_command_line("workspace open \"/home/user/My Project\""),
+            Ok(vec![
+                "workspace".to_owned(),
+                "open".to_owned(),
+                "/home/user/My Project".to_owned(),
+            ])
+        );
+        assert!(tokenize_command_line("workspace open \"/home/user/My Project").is_err());
     }
 }

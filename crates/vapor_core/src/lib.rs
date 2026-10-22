@@ -122,6 +122,7 @@ pub use operation::{
     OperationOutput, OperationOutputStream, OperationPhase, OperationRequest, OperationService,
     OperationStatus, Progress,
 };
+pub use vapor_console_core::ConsoleLevel;
 
 pub use registry::{RegisteredEcosystem, RegisteredRepository, RegistryClient, RegistryError};
 
@@ -146,7 +147,7 @@ pub use profiling::{
 
 pub use role::{
     ParseVaporRoleError, RoleError, RoleStatus, RoleTransitionReport, VaporRole, demote_role,
-    git_available, installed_role, promote_role, role_status,
+    git_available, installed_role, promote_role, promote_role_with_context, role_status,
 };
 
 pub use source::{

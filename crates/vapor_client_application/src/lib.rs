@@ -195,12 +195,31 @@ fn installation_role_snapshot_for(
 
 /// Promote the active Vapor installation to an ordinary local role.
 pub fn promote_installation_role(target: &str) -> Result<String, String> {
+    promote_installation_role_inner(target, None)
+}
+
+/// Promote the active installation and report setup work to the shared
+/// operation stream.
+pub fn promote_installation_role_with_context(
+    target: &str,
+    context: &vapor_core::OperationContext,
+) -> Result<String, String> {
+    promote_installation_role_inner(target, Some(context))
+}
+
+fn promote_installation_role_inner(
+    target: &str,
+    context: Option<&vapor_core::OperationContext>,
+) -> Result<String, String> {
     use std::str::FromStr as _;
     let installation =
         vapor_core::VaporInstallation::discover().map_err(|error| error.to_string())?;
     let target = vapor_core::VaporRole::from_str(target).map_err(|error| error.to_string())?;
-    let report =
-        vapor_core::promote_role(&installation, target).map_err(|error| error.to_string())?;
+    let report = match context {
+        Some(context) => vapor_core::promote_role_with_context(&installation, target, context),
+        None => vapor_core::promote_role(&installation, target),
+    }
+    .map_err(|error| error.to_string())?;
     Ok(format!(
         "Installation promoted from {} to {}.{}",
         report.previous_role,

@@ -30,6 +30,7 @@ pub use vapor_client_domain::{
     can_auto_install_library_item, dependent_composition_id,
 };
 pub use vapor_telemetry::{TelemetryEvent, TelemetryPayload};
+pub use vapor_console_core::ConsoleLevel;
 
 pub use message::{
     ClientRequest, ClientResponse, ClientResponseKind, PROTOCOL_VERSION, ProtocolFrame, RequestId,
@@ -782,6 +783,11 @@ mod tests {
         assert_round_trip(ClientEvent::OperationOutput(OperationOutputEvent {
             id: "operation-7".to_owned(),
             stream: OperationOutputStream::Stderr,
+            timestamp_unix_ms: 42,
+            level: ConsoleLevel::Warn,
+            source: "workspace".to_owned(),
+            action: "workspace.build".to_owned(),
+            process: Some("cargo".to_owned()),
             text: "warning: example".to_owned(),
         }));
     }
