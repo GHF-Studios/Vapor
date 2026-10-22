@@ -7,7 +7,6 @@ impl ClientSession {
         &mut self,
         action: vapor_client_protocol::CompositionAction,
     ) -> Result<(), ServiceError> {
-        self.reject_if_operation_in_progress()?;
         use vapor_client_protocol::CompositionAction as Action;
         let (composition_id, kind, selector_override) = match action {
             Action::Preview {
@@ -135,6 +134,9 @@ impl ClientSession {
         &mut self,
         completion: CompositionOperationCompletion,
     ) {
+        if self.operation_registry.get(&completion.id).is_none() {
+            return;
+        }
         let composition_id = completion.composition_id.clone();
         let current_inputs = self
             .durable_state
@@ -172,7 +174,12 @@ impl ClientSession {
             }
         }
         if let Some(message) = failure {
-            self.clear_active_operation();
+            self.finish_operation(
+                &completion.id,
+                OperationStatus::Failed {
+                    message: message.clone(),
+                },
+            );
             self.revision.0 = self.revision.0.saturating_add(1);
             self.operation_events
                 .push_back(ClientEvent::OperationChanged(OperationEvent {
@@ -190,7 +197,7 @@ impl ClientSession {
             return;
         }
         let summary = outcome.unwrap_or_else(|_| "Completed".to_owned());
-        self.clear_active_operation();
+        self.finish_operation(&completion.id, OperationStatus::Succeeded);
         if matches!(
             completion.action,
             CompositionOperationKind::Install
@@ -270,7 +277,16 @@ impl ClientSession {
                 ),
             }
         };
-        self.clear_active_operation();
+        self.finish_operation(
+            &completion.id,
+            if succeeded {
+                OperationStatus::Succeeded
+            } else {
+                OperationStatus::Failed {
+                    message: summary.clone(),
+                }
+            },
+        );
         self.revision.0 = self.revision.0.saturating_add(1);
         self.operation_events
             .push_back(ClientEvent::OperationChanged(OperationEvent {

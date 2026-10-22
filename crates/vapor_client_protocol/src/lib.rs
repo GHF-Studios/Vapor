@@ -25,7 +25,8 @@ pub use composition::{
     WorkspaceAssociation,
 };
 pub use vapor_client_domain::{
-    ClientStateDocument, ContentKind, LibraryItemPolicy, ProfileAnalysisOptions, ProfileTraceSort,
+    ActionProfile, AuthorityRequirement, ClientStateDocument, ContentKind, LibraryItemPolicy,
+    LocalCapability, ProfileAnalysisOptions, ProfileTraceSort, WorkflowTier,
     can_auto_install_library_item, dependent_composition_id,
 };
 pub use vapor_telemetry::{TelemetryEvent, TelemetryPayload};
@@ -35,19 +36,20 @@ pub use message::{
     ServiceError, ServiceErrorCode,
 };
 pub use state::{
-    ApplicationReleaseSnapshot, AuthoringCompositionLink, AuthoringResult, AuthoringResultKind,
-    AvailableAction, AvailableSuperworkspaceRepositorySnapshot, CatalogConflict, CatalogDependency,
-    CatalogEntry, CatalogItemAction, CatalogItemRole, CatalogLocation, CatalogLocationKind,
-    ClientEvent, ClientRevision, ClientSnapshot, CompositionPreviewDependency,
-    CompositionPreviewNode, CompositionPreviewSnapshot, CompositionPreviewSource,
-    DevelopmentSessionSnapshot, DurableStateSnapshot, HostSummary, InstallationRoleSnapshot,
-    LanguageServerStatus, OperationEvent, OperationOutputEvent, OperationOutputStream,
-    OperationPhase, OperationStatus, OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot,
-    ProfileZoneSnapshot, RootDistributionIdentitySnapshot, RootPublishingSnapshot,
-    SourceMetadataRepairAction, SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot,
-    WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot, WorkshopBatchReviewSnapshot,
-    WorkshopItemSnapshot, WorkshopPackagePreviewSnapshot, WorkshopReviewItemSnapshot,
-    WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
+    ActionProfileSnapshot, ApplicationReleaseSnapshot, AuthoringCompositionLink, AuthoringResult,
+    AuthoringResultKind, AvailableAction, AvailableSuperworkspaceRepositorySnapshot,
+    CatalogConflict, CatalogDependency, CatalogEntry, CatalogItemAction, CatalogItemRole,
+    CatalogLocation, CatalogLocationKind, ClientEvent, ClientRevision, ClientSnapshot,
+    CompositionPreviewDependency, CompositionPreviewNode, CompositionPreviewSnapshot,
+    CompositionPreviewSource, DevelopmentSessionSnapshot, DurableStateSnapshot, HostSummary,
+    InstallationRoleSnapshot, LanguageServerStatus, OperationEvent, OperationOutputEvent,
+    OperationOutputStream, OperationPhase, OperationStatus, OperationSummary,
+    ProfileReportSnapshot, ProfileTraceSnapshot, ProfileZoneSnapshot,
+    RootDistributionIdentitySnapshot, RootPublishingSnapshot, SourceMetadataRepairAction,
+    SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot, WorkshopAcquisitionBatchSnapshot,
+    WorkshopAcquisitionSnapshot, WorkshopBatchReviewSnapshot, WorkshopItemSnapshot,
+    WorkshopPackagePreviewSnapshot, WorkshopReviewItemSnapshot, WorkshopReviewSnapshot,
+    WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
     WorkspaceContentSnapshot, WorkspaceFileResult, WorkspaceProjectCandidate,
     WorkspaceSourceProject, WorkspaceWorkshopPolicy,
 };
@@ -585,6 +587,8 @@ mod tests {
                 status: OperationStatus::Running,
                 progress: None,
             }),
+            active_operations: vec![],
+            operation_history: vec![],
             composition_preview: None,
             catalog: vec![CatalogEntry {
                 id: "moon".into(),
@@ -739,6 +743,7 @@ mod tests {
                 id: "catalog.refresh".into(),
                 enabled: true,
                 reason: None,
+                profile: ActionProfileSnapshot::default(),
             }],
         })));
         assert_round_trip(ClientEvent::OperationChanged(OperationEvent {
@@ -864,6 +869,8 @@ mod tests {
             WorkspaceContentSnapshot::default()
         );
         assert_eq!(snapshot.workshop, WorkshopSnapshot::default());
+        assert!(snapshot.active_operations.is_empty());
+        assert!(snapshot.operation_history.is_empty());
     }
 
     #[test]
@@ -900,5 +907,47 @@ mod tests {
         .expect("encode composition action");
         assert_eq!(action["action"]["composition_id"], "default");
         assert!(action["action"].get("profile_id").is_none());
+    }
+
+    #[test]
+    fn workflow_tiers_have_stable_wire_names() {
+        assert_eq!(
+            serde_json::to_string(&WorkflowTier::Player).unwrap(),
+            "\"player\""
+        );
+        assert_eq!(
+            serde_json::to_string(&WorkflowTier::Composer).unwrap(),
+            "\"composer\""
+        );
+        assert_eq!(
+            serde_json::to_string(&WorkflowTier::Developer).unwrap(),
+            "\"developer\""
+        );
+        assert_round_trip(WorkflowTier::Developer);
+    }
+
+    #[test]
+    fn available_action_serializes_its_canonical_profile() {
+        let action = AvailableAction::from_action(
+            &ClientAction::Workshop(WorkshopAction::Publish {
+                review_id: "review".into(),
+                account: "publisher".into(),
+                confirmation: "PUBLISH".into(),
+                change_note: String::new(),
+            }),
+            false,
+            Some("Publisher access is unavailable.".into()),
+        );
+
+        assert_eq!(action.id, "workshop.publish");
+        assert_eq!(action.profile.workflow_tier, WorkflowTier::Developer);
+        assert_eq!(
+            action.profile.authority_requirements,
+            vec![AuthorityRequirement::WorkshopPublisher]
+        );
+        assert_eq!(
+            action.reason.as_deref(),
+            Some("Publisher access is unavailable.")
+        );
     }
 }

@@ -10,6 +10,7 @@ mod developer;
 mod install_plan;
 mod library;
 mod state;
+mod workflow;
 
 pub use actions::{
     AuthoringAction, CatalogAction, ClientAction, CompositionDependency, DeveloperAction,
@@ -45,3 +46,4 @@ pub use vapor_content::{
     dependency_choice_group_for_relationship, dependency_kind_allowed, dependency_relationship,
     required_dependency_choice_groups,
 };
+pub use workflow::{ActionProfile, AuthorityRequirement, LocalCapability, WorkflowTier};

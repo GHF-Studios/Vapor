@@ -847,6 +847,8 @@ fn empty_snapshot() -> ClientSnapshot {
         active_composition_id: None,
         durable_state: vapor_client_protocol::DurableStateSnapshot::default(),
         active_operation: None,
+        active_operations: Vec::new(),
+        operation_history: Vec::new(),
         composition_preview: None,
         catalog: Vec::new(),
         catalog_status: vapor_client_protocol::CatalogStatus::default(),

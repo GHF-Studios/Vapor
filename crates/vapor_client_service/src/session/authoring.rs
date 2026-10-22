@@ -14,7 +14,6 @@ impl ClientSession {
                 retryable: false,
             });
         }
-        self.reject_if_operation_in_progress()?;
         let workspace = self.bootstrap.workspace_root.clone();
         let executable = self.bootstrap.application_executable.clone();
         if let AuthoringAction::PackageContent {
@@ -85,6 +84,9 @@ impl ClientSession {
     }
 
     pub(super) fn apply_authoring_completion(&mut self, completion: AuthoringOperationCompletion) {
+        if self.operation_registry.get(&completion.id).is_none() {
+            return;
+        }
         let mut result = completion.result;
         if completion.workspace_bound
             && self.bootstrap.workspace_root.as_deref() != completion.workspace.as_deref()
@@ -96,7 +98,16 @@ impl ClientSession {
             .map(authoring_result_message)
             .unwrap_or_else(|error| error.clone());
         let succeeded = result.is_ok();
-        self.clear_active_operation();
+        self.finish_operation(
+            &completion.id,
+            if succeeded {
+                OperationStatus::Succeeded
+            } else {
+                OperationStatus::Failed {
+                    message: message.clone(),
+                }
+            },
+        );
         self.revision.0 = self.revision.0.saturating_add(1);
         self.operation_events
             .push_back(ClientEvent::OperationChanged(OperationEvent {
@@ -122,10 +133,12 @@ impl ClientSession {
                 | AuthoringResultKind::ContentPackaged { .. } => {}
                 AuthoringResultKind::Composition { .. }
                 | AuthoringResultKind::WorkshopMetadata { .. }
-                | AuthoringResultKind::RuntimeOutputs { .. } => self.refresh_catalog(),
-                AuthoringResultKind::ContentCreated { .. } => self.refresh_catalog(),
-                AuthoringResultKind::SourceWorkspaceCreated { .. } => self.refresh_catalog(),
-                AuthoringResultKind::SourceMetadataRepaired { .. } => self.refresh_catalog(),
+                | AuthoringResultKind::RuntimeOutputs { .. } => self.refresh_workspace_content(),
+                AuthoringResultKind::ContentCreated { .. }
+                | AuthoringResultKind::SourceWorkspaceCreated { .. }
+                | AuthoringResultKind::SourceMetadataRepaired { .. } => {
+                    self.refresh_all_content_views()
+                }
                 AuthoringResultKind::WorkspaceCreated { .. } => {}
             }
             self.operation_events

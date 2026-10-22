@@ -126,7 +126,7 @@ impl ManagedToolchain {
         read_installation_toolchain_metadata(installation)
     }
 
-    /// Discover the managed toolchain for the current Vapor environment.
+    /// Discover the managed toolchain for the current source or installed context.
     ///
     /// The active Installation always owns physical Rust/Cargo state.
     ///
@@ -136,24 +136,35 @@ impl ManagedToolchain {
     pub fn discover() -> Result<Self, ToolchainError> {
         let installation = VaporInstallation::discover().map_err(ToolchainError::Installation)?;
 
-        Self::discover_for_installation(&installation)
+        if let Some(pin) = read_installation_toolchain_metadata(&installation)? {
+            return Self::for_installation(&installation, installation.root.clone(), pin);
+        }
+
+        // This is the source-oriented entry point. Keep workspace discovery
+        // here, where the caller's source context is intentional, rather than
+        // allowing installation-scoped operations to inherit ambient CWD.
+        let workspace = VaporWorkspace::discover().map_err(ToolchainError::Workspace)?;
+        Self::for_installation(
+            &installation,
+            workspace.root.clone(),
+            workspace.manifest.toolchain.clone(),
+        )
     }
 
     /// Discover the toolchain using a caller-selected installation root.
     pub fn discover_for_installation(
         installation: &VaporInstallation,
     ) -> Result<Self, ToolchainError> {
-        if let Some(pin) = read_installation_toolchain_metadata(installation)? {
-            return Self::for_installation(installation, installation.root.clone(), pin);
-        }
-
-        let workspace = VaporWorkspace::discover().map_err(ToolchainError::Workspace)?;
-
-        Self::for_installation(
-            installation,
-            workspace.root.clone(),
-            workspace.manifest.toolchain.clone(),
-        )
+        let metadata_path = installation
+            .root
+            .join(INSTALLATION_METADATA_DIR)
+            .join(TOOLCHAIN_METADATA_FILE);
+        let pin = read_installation_toolchain_metadata(installation)?.ok_or_else(|| {
+            ToolchainError::MissingInstallationMetadata {
+                path: metadata_path,
+            }
+        })?;
+        Self::for_installation(installation, installation.root.clone(), pin)
     }
 
     /// Construct the managed toolchain for a known authored Workspace.
@@ -505,6 +516,10 @@ pub enum ToolchainError {
         message: String,
     },
 
+    MissingInstallationMetadata {
+        path: PathBuf,
+    },
+
     Io {
         path: PathBuf,
         source: io::Error,
@@ -557,6 +572,12 @@ impl fmt::Display for ToolchainError {
                     path.display()
                 )
             }
+
+            Self::MissingInstallationMetadata { path } => write!(
+                formatter,
+                "this Vapor installation is missing its packaged Rust toolchain pin (`{}`); verify or reinstall the Vapor app files",
+                path.display()
+            ),
 
             Self::Io { path, source } => {
                 write!(formatter, "failed to access `{}`: {source}", path.display())
@@ -647,7 +668,7 @@ impl std::error::Error for ToolchainError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ManagedToolchain, RustToolchainCommandEnvironment};
+    use super::{ManagedToolchain, RustToolchainCommandEnvironment, ToolchainError};
     use crate::VaporInstallation;
     use std::{
         collections::BTreeMap,
@@ -739,6 +760,28 @@ mod tests {
             toolchain.installation_source,
             crate::InstallationRootSource::Explicit
         );
+
+        fs::remove_dir_all(&installation.root).expect("remove test installation");
+    }
+
+    #[test]
+    fn installed_toolchain_discovery_does_not_borrow_the_process_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "vapor-installation-without-pin-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create app root");
+        fs::write(root.join("App.vapor.toml"), "[root]\n").expect("write app manifest");
+
+        let installation = VaporInstallation::from_explicit_root(root.clone())
+            .expect("construct explicit installation context");
+        let result = ManagedToolchain::discover_for_installation(&installation);
+
+        assert!(matches!(
+            result,
+            Err(ToolchainError::MissingInstallationMetadata { .. })
+        ));
 
         fs::remove_dir_all(&installation.root).expect("remove test installation");
     }

@@ -7,6 +7,7 @@ mod authoring;
 mod catalog;
 mod composition;
 mod library;
+mod operation_registry;
 mod publishing;
 mod snapshot;
 mod workshop;
@@ -14,6 +15,7 @@ mod workspace;
 #[cfg(test)]
 use composition::fixture_composition_result;
 use composition::{protocol_phase, protocol_status};
+use operation_registry::{OperationRegistry, OperationReservationError, OperationResourceKey};
 use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -24,19 +26,19 @@ use std::{
 use vapor_client::ClientHostConfig;
 use vapor_client_application as application;
 use vapor_client_protocol::{
-    ApplicationReleaseSnapshot, AuthoringAction, AuthoringCompositionLink, AuthoringResult,
-    AuthoringResultKind, AvailableSuperworkspaceRepositorySnapshot, CatalogAction,
+    ActionProfile, ApplicationReleaseSnapshot, AuthoringAction, AuthoringCompositionLink,
+    AuthoringResult, AuthoringResultKind, AvailableSuperworkspaceRepositorySnapshot, CatalogAction,
     CatalogLocationKind, ClientAction, ClientEvent, ClientRequest, ClientResponse,
     ClientResponseKind, ClientRevision, Composition, CompositionAction, ContentReference,
-    DeveloperAction, InstallationState, LegacyStorageSeed, LibraryAction, OperationEvent,
-    OperationOutputEvent, OperationPhase, OperationStatus, OperationSummary, ProfileReportSnapshot,
-    ProfileTraceSnapshot, PublishingAction, RootPublishingSnapshot, ServiceError, ServiceErrorCode,
-    SessionAction, SourceMetadataRepairAction, WorkshopAcquisitionBatchSnapshot,
-    WorkshopAcquisitionSnapshot, WorkshopAction, WorkshopItemSnapshot, WorkshopMetadataDraft,
-    WorkshopPackagePreviewSnapshot, WorkshopReviewSnapshot, WorkshopSearchSnapshot,
-    WorkshopSnapshot, WorkshopSubscriptionSnapshot, WorkspaceAction, WorkspaceAssociation,
-    WorkspaceContentSnapshot, WorkspaceFileResult, WorkspaceProjectSelection,
-    WorkspaceToolOperation,
+    DeveloperAction, InstallationRoleSnapshot, InstallationState, LegacyStorageSeed, LibraryAction,
+    LocalCapability, OperationEvent, OperationOutputEvent, OperationPhase, OperationStatus,
+    OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot, PublishingAction,
+    RootPublishingSnapshot, ServiceError, ServiceErrorCode, SessionAction,
+    SourceMetadataRepairAction, WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot,
+    WorkshopAction, WorkshopItemSnapshot, WorkshopMetadataDraft, WorkshopPackagePreviewSnapshot,
+    WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
+    WorkspaceAction, WorkspaceAssociation, WorkspaceContentSnapshot, WorkspaceFileResult,
+    WorkspaceProjectSelection, WorkspaceToolOperation,
 };
 #[cfg(test)]
 use vapor_client_protocol::{CatalogEntry, CatalogItemRole, CatalogLocation};
@@ -59,6 +61,32 @@ fn operation_cancellation_error(message: &str) -> ServiceError {
         message: message.to_owned(),
         retryable: true,
     }
+}
+
+fn action_capability_error(
+    profile: ActionProfile,
+    readiness: &InstallationRoleSnapshot,
+) -> Option<ServiceError> {
+    let missing = profile
+        .local_capabilities
+        .iter()
+        .find(|capability| match capability {
+            LocalCapability::ManagedRustToolchain => !readiness.rust_ready,
+            LocalCapability::RustAnalyzer => !readiness.rust_analyzer_ready,
+            LocalCapability::TracyProfiler => !readiness.tracy_profiler_ready,
+        })?;
+    let label = match missing {
+        LocalCapability::ManagedRustToolchain => "Vapor-managed Rust/Cargo",
+        LocalCapability::RustAnalyzer => "Vapor-managed rust-analyzer",
+        LocalCapability::TracyProfiler => "Vapor-managed Tracy profiler",
+    };
+    Some(ServiceError {
+        code: ServiceErrorCode::ActionUnavailable,
+        message: readiness.error.clone().unwrap_or_else(|| {
+            format!("{label} is not ready. Set it up in Vapor Installer first.")
+        }),
+        retryable: true,
+    })
 }
 
 fn queue_operation_output(events: &mut VecDeque<ClientEvent>, output: OperationOutputEvent) {
@@ -127,9 +155,9 @@ pub struct ClientSession {
     durable_state: ClientPersistentState,
     state_store: Option<ClientStateStore>,
     host_context: Option<ClientHostContext>,
-    active_operation: Option<OperationSummary>,
-    active_operation_cancellation: Option<application::OperationCancellation>,
-    active_operation_cancellable: bool,
+    operation_registry: OperationRegistry,
+    pending_catalog_refresh: bool,
+    pending_workspace_discovery: bool,
     composition_preview: Option<vapor_client_protocol::CompositionPreviewSnapshot>,
     workshop: WorkshopSnapshot,
     workshop_review: Option<WorkshopReviewState>,
@@ -156,6 +184,8 @@ enum BackgroundOperationMessage {
     CompleteWorkspace(Box<WorkspaceOperationCompletion>),
     CompleteAuthoring(Box<AuthoringOperationCompletion>),
     CompleteLibrary(Box<LibraryOperationCompletion>),
+    CompleteCatalogRefresh(Box<CatalogRefreshCompletion>),
+    CompleteWorkspaceDiscovery(Box<WorkspaceDiscoveryCompletion>),
     CompleteProfileAnalysis(Box<ProfileAnalysisCompletion>),
     CompleteRoleTransition(Box<RoleTransitionCompletion>),
 }
@@ -172,6 +202,8 @@ impl BackgroundOperationMessage {
             Self::CompleteWorkspace(completion) => Some(&completion.id),
             Self::CompleteAuthoring(completion) => Some(&completion.id),
             Self::CompleteLibrary(completion) => Some(&completion.id),
+            Self::CompleteCatalogRefresh(completion) => Some(&completion.id),
+            Self::CompleteWorkspaceDiscovery(completion) => Some(&completion.id),
             Self::CompleteProfileAnalysis(completion) => Some(&completion.id),
             Self::CompleteRoleTransition(completion) => Some(&completion.id),
         }
@@ -201,6 +233,17 @@ struct LibraryOperationCompletion {
     id: String,
     action: LibraryAction,
     result: Result<String, String>,
+}
+
+struct CatalogRefreshCompletion {
+    id: String,
+    result: Result<Vec<vapor_client_protocol::CatalogEntry>, String>,
+}
+
+struct WorkspaceDiscoveryCompletion {
+    id: String,
+    workspace: PathBuf,
+    result: vapor_client_protocol::WorkspaceContentSnapshot,
 }
 
 struct ProfileAnalysisCompletion {
@@ -548,6 +591,8 @@ impl ClientSession {
         );
         if let Some(message) = loaded.recovery_message {
             session.catalog.fail(message);
+        } else {
+            session.refresh_all_content_views();
         }
         Ok(session)
     }
@@ -576,9 +621,9 @@ impl ClientSession {
             durable_state,
             state_store,
             host_context,
-            active_operation: None,
-            active_operation_cancellation: None,
-            active_operation_cancellable: false,
+            operation_registry: OperationRegistry::default(),
+            pending_catalog_refresh: false,
+            pending_workspace_discovery: false,
             composition_preview: None,
             workshop: WorkshopSnapshot::default(),
             workshop_review: None,
@@ -597,23 +642,102 @@ impl ClientSession {
     }
 
     pub fn has_active_operation(&self) -> bool {
-        self.active_operation.is_some()
+        !self.operation_registry.is_empty()
     }
 
-    pub(super) fn clear_active_operation(&mut self) {
-        self.active_operation = None;
-        self.active_operation_cancellation = None;
-        self.active_operation_cancellable = false;
-    }
-
-    pub(super) fn reject_if_operation_in_progress(&self) -> Result<(), ServiceError> {
-        if self.active_operation.is_some() {
-            return Err(ServiceError {
-                code: ServiceErrorCode::OperationInProgress,
-                message: "Wait for the current operation to finish.".to_owned(),
-                retryable: true,
-            });
+    pub(super) fn finish_operation(
+        &mut self,
+        operation_id: &str,
+        status: OperationStatus,
+    ) -> Option<OperationSummary> {
+        let completed = self.operation_registry.complete(operation_id, status);
+        if completed.is_some() {
+            if self.pending_catalog_refresh
+                && !self.bootstrap.fixture_mode
+                && self.start_catalog_refresh_operation().is_ok()
+            {
+                self.pending_catalog_refresh = false;
+            }
+            if self.pending_workspace_discovery
+                && !self.bootstrap.fixture_mode
+                && self.start_workspace_discovery_operation().is_ok()
+            {
+                self.pending_workspace_discovery = false;
+            }
         }
+        completed
+    }
+
+    fn remove_operation(&mut self, operation_id: &str) {
+        self.operation_registry.remove(operation_id);
+    }
+
+    fn operation_resources(&self, spec: &BackgroundOperationSpec) -> Vec<OperationResourceKey> {
+        let workspace = self.bootstrap.workspace_root.clone().unwrap_or_default();
+        if spec.domain == "studio-composition" && spec.action == "composition.run-source" {
+            return vec![
+                OperationResourceKey::Composition(
+                    spec.composition_id
+                        .clone()
+                        .or_else(|| self.active_composition_id.clone())
+                        .unwrap_or_else(|| "selected".to_owned()),
+                ),
+                OperationResourceKey::Workspace(workspace),
+            ];
+        }
+        let resource = match spec.domain {
+            "studio-composition" => OperationResourceKey::Composition(
+                spec.composition_id
+                    .clone()
+                    .or_else(|| self.active_composition_id.clone())
+                    .unwrap_or_else(|| "selected".to_owned()),
+            ),
+            "studio-authoring" if spec.action == "authoring.list-registered-sources" => {
+                OperationResourceKey::WorkspaceScan(workspace)
+            }
+            "studio-authoring" if spec.action == "authoring.discover-content-projects" => {
+                OperationResourceKey::WorkspaceScan(workspace)
+            }
+            "studio-workspace"
+                if matches!(spec.action, "workspace.save-file" | "workspace.create-file") =>
+            {
+                OperationResourceKey::WorkspaceEdit(workspace)
+            }
+            "studio-authoring" | "studio-workspace" => OperationResourceKey::Workspace(workspace),
+            "studio-workshop" => OperationResourceKey::WorkshopAccount,
+            "vapor-library" => OperationResourceKey::CatalogRefresh,
+            "studio-root-publishing" | "application-release" => OperationResourceKey::Publishing,
+            "installation-role" => OperationResourceKey::InstallationTools,
+            "profiling" => OperationResourceKey::Profiling,
+            domain => OperationResourceKey::Exclusive(domain.to_owned()),
+        };
+        vec![resource]
+    }
+
+    pub(in crate::session) fn can_start_operation(&self, resource: OperationResourceKey) -> bool {
+        self.operation_registry
+            .conflicts_with(&[resource])
+            .is_none()
+    }
+
+    fn validate_action_capabilities(&self, action: &ClientAction) -> Result<(), ServiceError> {
+        if self.bootstrap.fixture_mode {
+            return Ok(());
+        }
+
+        let profile = action.profile();
+        if profile.local_capabilities.is_empty() {
+            return Ok(());
+        }
+
+        let readiness = application::installation_role_snapshot();
+        if let Some(error) = action_capability_error(profile, &readiness) {
+            return Err(error);
+        }
+
+        // Authority requirements are represented for shared UI projection, but
+        // are resolved by the concrete publish handler against its account and
+        // target before any external effect occurs.
         Ok(())
     }
 
@@ -627,6 +751,7 @@ impl ClientSession {
         );
         if !is_cancel_request
             && !is_registered_source_list_query(&request.action)
+            && !action_can_rebase_on_current_state(&request.action)
             && request
                 .expected_revision
                 .is_some_and(|expected| expected != self.revision)
@@ -641,25 +766,46 @@ impl ClientSession {
                 ),
                 retryable: true,
             });
+        } else if let Err(prerequisite_error) = self.validate_action_capabilities(&request.action) {
+            response_kind = ClientResponseKind::Rejected;
+            error = Some(prerequisite_error);
         } else {
             match request.action {
                 ClientAction::Catalog(CatalogAction::Refresh) => {
-                    self.refresh_catalog();
-                    self.revision.0 = self.revision.0.saturating_add(1);
-                    if let Some(message) = self.catalog.status().error.clone() {
-                        response_kind = ClientResponseKind::Rejected;
-                        error = Some(ServiceError {
-                            code: ServiceErrorCode::ProviderFailure,
-                            message,
-                            retryable: true,
-                        });
+                    if self.bootstrap.fixture_mode {
+                        self.refresh_catalog();
+                        self.revision.0 = self.revision.0.saturating_add(1);
+                    } else {
+                        match self.start_catalog_refresh_operation() {
+                            Ok(()) => {
+                                response_kind = ClientResponseKind::OperationAccepted;
+                                self.revision.0 = self.revision.0.saturating_add(1);
+                            }
+                            Err(operation_error) => {
+                                response_kind = ClientResponseKind::Rejected;
+                                error = Some(operation_error);
+                            }
+                        }
                     }
                 }
                 ClientAction::Catalog(CatalogAction::DiscoverContentProjects)
                     if self.bootstrap.workspace_root.is_some() =>
                 {
-                    self.refresh_workspace_content();
-                    self.revision.0 = self.revision.0.saturating_add(1);
+                    if self.bootstrap.fixture_mode {
+                        self.refresh_workspace_content();
+                        self.revision.0 = self.revision.0.saturating_add(1);
+                    } else {
+                        match self.start_workspace_discovery_operation() {
+                            Ok(()) => {
+                                response_kind = ClientResponseKind::OperationAccepted;
+                                self.revision.0 = self.revision.0.saturating_add(1);
+                            }
+                            Err(operation_error) => {
+                                response_kind = ClientResponseKind::Rejected;
+                                error = Some(operation_error);
+                            }
+                        }
+                    }
                 }
                 ClientAction::Catalog(CatalogAction::DiscoverContentProjects) => {
                     response_kind = ClientResponseKind::Rejected;
@@ -811,6 +957,7 @@ impl ClientSession {
                                     self.application_release_snapshot = None;
                                 }
                                 self.refresh_catalog();
+                                self.refresh_workspace_content();
                                 self.revision.0 = self.revision.0.saturating_add(1);
                             }
                             Ok(root) if self.bootstrap.fixture_mode && root.is_dir() => {
@@ -872,9 +1019,9 @@ impl ClientSession {
                 ClientAction::Authoring(action) => {
                     let active_source_list =
                         matches!(&action, AuthoringAction::ListRegisteredSources)
-                            && self.active_operation.as_ref().is_some_and(|operation| {
-                                operation.action == "authoring.list-registered-sources"
-                            });
+                            && self
+                                .operation_registry
+                                .has_action("authoring.list-registered-sources");
                     if active_source_list {
                         // Several frontends can ask for the initial source list
                         // at once. Reuse its in-flight read instead of making
@@ -897,7 +1044,7 @@ impl ClientSession {
                     content_id,
                     enabled,
                 }) => {
-                    if !enabled && !self.bootstrap.fixture_mode {
+                    if !self.bootstrap.fixture_mode {
                         match self.start_library_operation(LibraryAction::SetAutoInstall {
                             content_id: content_id.clone(),
                             enabled,
@@ -912,23 +1059,6 @@ impl ClientSession {
                             }
                         }
                     } else {
-                        if self.active_operation.is_some() {
-                            response_kind = ClientResponseKind::Rejected;
-                            error = Some(ServiceError {
-                                code: ServiceErrorCode::OperationInProgress,
-                                message: "Wait for the current operation to finish before changing Library update policy.".to_owned(),
-                                retryable: true,
-                            });
-                            let snapshot = self.snapshot();
-                            return ClientResponse {
-                                protocol_version: vapor_client_protocol::PROTOCOL_VERSION,
-                                request_id: request.request_id,
-                                revision: snapshot.revision,
-                                kind: response_kind,
-                                snapshot,
-                                error,
-                            };
-                        }
                         let parsed = vapor_client_protocol::ContentReference::parse(
                             content_id.clone(),
                             None,
@@ -1068,10 +1198,14 @@ impl ClientSession {
                     }
                 }
                 ClientAction::Session(SessionAction::CancelOperation { operation_id }) => {
-                    let Some(active) = self.active_operation.as_ref() else {
+                    let Some(active) = self
+                        .operation_registry
+                        .get(&operation_id)
+                        .map(|operation| operation.summary.clone())
+                    else {
                         response_kind = ClientResponseKind::Rejected;
                         error = Some(operation_cancellation_error(
-                            "There is no running operation to cancel.",
+                            "That operation is no longer active.",
                         ));
                         let snapshot = self.snapshot();
                         return ClientResponse {
@@ -1083,30 +1217,24 @@ impl ClientSession {
                             error,
                         };
                     };
-                    if active.id != operation_id {
-                        response_kind = ClientResponseKind::Rejected;
-                        error = Some(operation_cancellation_error(
-                            "That operation is no longer active.",
-                        ));
-                    } else if !self.active_operation_cancellable {
+                    if !self.operation_registry.is_cancellable(&operation_id) {
                         response_kind = ClientResponseKind::Rejected;
                         error = Some(operation_cancellation_error(
                             "This operation cannot be stopped safely once it has started.",
                         ));
-                    } else if let Some(cancellation) = &self.active_operation_cancellation {
+                    } else if let Some(cancellation) =
+                        self.operation_registry.cancellation(&operation_id)
+                    {
                         cancellation.cancel();
-                        if let Some(active) = self.active_operation.as_mut() {
-                            active.status = OperationStatus::Cancelling;
-                        }
-                        self.active_operation_cancellable = false;
+                        self.operation_registry
+                            .set_status(&operation_id, OperationStatus::Cancelling);
                         self.revision.0 = self.revision.0.saturating_add(1);
-                        let active = self.active_operation.as_ref().expect("active operation");
                         self.operation_events
                             .push_back(ClientEvent::OperationChanged(OperationEvent {
                                 revision: self.revision,
-                                id: active.id.clone(),
-                                composition_id: active.composition_id.clone(),
-                                action: active.action.clone(),
+                                id: active.id,
+                                composition_id: active.composition_id,
+                                action: active.action,
                                 phase: OperationPhase::Finalizing,
                                 status: OperationStatus::Cancelling,
                                 progress: active.progress,
@@ -1139,9 +1267,6 @@ impl ClientSession {
                                 .to_owned(),
                             retryable: false,
                         });
-                    } else if let Err(failure) = self.reject_if_operation_in_progress() {
-                        response_kind = ClientResponseKind::Rejected;
-                        error = Some(failure);
                     } else {
                         let operation = if promote {
                             "developer.promote-installation-role"
@@ -1266,9 +1391,6 @@ impl ClientSession {
                             message: "Fixture sessions cannot analyze managed traces.".to_owned(),
                             retryable: false,
                         });
-                    } else if let Err(failure) = self.reject_if_operation_in_progress() {
-                        response_kind = ClientResponseKind::Rejected;
-                        error = Some(failure);
                     } else if let Some(record) = self
                         .profile_traces
                         .iter()
@@ -1460,18 +1582,35 @@ impl ClientSession {
                 | "workspace.build"
                 | "workspace.run-configuration"
                 | "workspace.package-application"
+                | "authoring.discover-content-projects"
         ) && !self.bootstrap.fixture_mode;
         let cancellation = application::OperationCancellation::default();
-        self.active_operation_cancellation = Some(cancellation.clone());
-        self.active_operation_cancellable = cancellable;
-        self.active_operation = Some(OperationSummary {
+        let resources = self.operation_resources(&spec);
+        let summary = OperationSummary {
             id: id.clone(),
-            composition_id: spec.composition_id,
+            composition_id: spec.composition_id.clone(),
             action: spec.action.to_owned(),
             phase: spec.phase,
             status: OperationStatus::Running,
             progress: None,
-        });
+        };
+        self.operation_registry
+            .start(summary, resources, Some(cancellation.clone()), cancellable)
+            .map_err(|conflict| {
+                let message = match conflict {
+                    OperationReservationError::Conflict { existing_operation_id } => format!(
+                        "This request conflicts with operation {existing_operation_id}; it can start when that operation finishes."
+                    ),
+                    OperationReservationError::DuplicateOperationId => {
+                        "The service generated a duplicate operation identifier.".to_owned()
+                    }
+                };
+                ServiceError {
+                    code: ServiceErrorCode::OperationInProgress,
+                    message,
+                    retryable: true,
+                }
+            })?;
 
         let request = application::CoreOperationRequest {
             id: operation_id,
@@ -1480,13 +1619,12 @@ impl ClientSession {
         };
         let lifecycle_sender = self.operation_sender.clone();
         let completion_sender = self.operation_sender.clone();
+        let worker_operation_id = id.clone();
         let failure_label = spec.failure_label;
         thread::Builder::new()
             .name(format!("{}-{id}", spec.thread_prefix))
             .spawn(move || {
                 let sink: application::OperationEventSink = std::sync::Arc::new(move |event| {
-                    // The service emits terminal events only after it has applied
-                    // and persisted the operation's user-visible state.
                     if matches!(
                         event.status,
                         application::OperationStatus::Running
@@ -1506,18 +1644,18 @@ impl ClientSession {
                 }));
                 match result {
                     Ok(result) => {
-                        let _ = completion_sender.send(completion(id, result));
+                        let _ = completion_sender.send(completion(worker_operation_id, result));
                     }
                     Err(payload) => {
                         let _ = completion_sender.send(BackgroundOperationMessage::Panicked {
-                            id,
+                            id: worker_operation_id,
                             message: background_operation_panic_message(payload),
                         });
                     }
                 }
             })
             .map_err(|error| {
-                self.clear_active_operation();
+                self.remove_operation(&id);
                 ServiceError {
                     code: ServiceErrorCode::InternalFailure,
                     message: format!("Could not start {failure_label}: {error}"),
@@ -1529,28 +1667,52 @@ impl ClientSession {
 
     fn poll_background_operation_messages(&mut self) {
         while let Ok(message) = self.operation_receiver.try_recv() {
-            if message.completion_id().is_some_and(|completion_id| {
-                self.active_operation.as_ref().is_some_and(|operation| {
-                    operation.id == completion_id && operation.status == OperationStatus::Cancelled
-                })
-            }) {
-                self.clear_active_operation();
+            if let Some(completion_id) = message.completion_id()
+                && self
+                    .operation_registry
+                    .get(completion_id)
+                    .is_some_and(|operation| {
+                        matches!(
+                            operation.summary.status,
+                            OperationStatus::Cancelling | OperationStatus::Cancelled
+                        )
+                    })
+            {
+                if let Some(active) = self
+                    .operation_registry
+                    .get(completion_id)
+                    .map(|operation| operation.summary.clone())
+                {
+                    let status = OperationStatus::Cancelled;
+                    self.finish_operation(completion_id, status.clone());
+                    self.revision.0 = self.revision.0.saturating_add(1);
+                    self.operation_events
+                        .push_back(ClientEvent::OperationChanged(OperationEvent {
+                            revision: self.revision,
+                            id: completion_id.to_owned(),
+                            composition_id: active.composition_id,
+                            action: active.action,
+                            phase: OperationPhase::Complete,
+                            status,
+                            progress: active.progress,
+                            message: Some("Operation cancelled.".to_owned()),
+                        }));
+                }
                 continue;
             }
             match message {
                 BackgroundOperationMessage::Panicked { id, message } => {
-                    if !self
-                        .active_operation
-                        .as_ref()
-                        .is_some_and(|operation| operation.id == id)
-                    {
+                    let Some(active) = self
+                        .operation_registry
+                        .get(&id)
+                        .map(|op| op.summary.clone())
+                    else {
                         continue;
-                    }
-                    let active = self
-                        .active_operation
-                        .take()
-                        .expect("matching active operation exists");
-                    self.clear_active_operation();
+                    };
+                    let status = OperationStatus::Failed {
+                        message: message.clone(),
+                    };
+                    self.finish_operation(&id, status.clone());
                     self.revision.0 = self.revision.0.saturating_add(1);
                     self.operation_events
                         .push_back(ClientEvent::OperationChanged(OperationEvent {
@@ -1558,27 +1720,25 @@ impl ClientSession {
                             id,
                             composition_id: active.composition_id,
                             action: active.action,
-                            phase: active.phase,
-                            status: OperationStatus::Failed {
-                                message: message.clone(),
-                            },
+                            phase: OperationPhase::Complete,
+                            status,
                             progress: active.progress,
                             message: Some(message),
                         }));
                 }
                 BackgroundOperationMessage::Lifecycle(event) => {
                     let id = event.id.0.to_string();
-                    let Some(active) = self.active_operation.as_mut().filter(|op| op.id == id)
-                    else {
-                        continue;
-                    };
-                    active.phase = protocol_phase(event.phase);
-                    active.progress = event.progress.as_ref().and_then(|progress| {
+                    let progress = event.progress.as_ref().and_then(|progress| {
                         progress
                             .total
                             .filter(|total| *total > 0)
                             .map(|total| (progress.completed as f32 / total as f32).clamp(0.0, 1.0))
                     });
+                    let Some(active) = self.operation_registry.get_mut(&id) else {
+                        continue;
+                    };
+                    active.summary.phase = protocol_phase(event.phase);
+                    active.summary.progress = progress;
                     if let Some(output) = event.output {
                         queue_operation_output(
                             &mut self.operation_events,
@@ -1598,7 +1758,7 @@ impl ClientSession {
                         continue;
                     }
                     let (mut status, message) = protocol_status(event.status);
-                    if active.status == OperationStatus::Cancelling
+                    if active.summary.status == OperationStatus::Cancelling
                         && status == OperationStatus::Running
                     {
                         status = OperationStatus::Cancelling;
@@ -1609,17 +1769,32 @@ impl ClientSession {
                             .as_ref()
                             .and_then(|progress| progress.message.clone())
                     });
-                    active.status = status.clone();
+                    if matches!(
+                        status,
+                        OperationStatus::Succeeded
+                            | OperationStatus::Failed { .. }
+                            | OperationStatus::Cancelled
+                    ) {
+                        // The typed completion carries the authoritative outcome.
+                        // Publishing terminal lifecycle events here would report
+                        // success/failure twice for one accepted operation.
+                        if status == OperationStatus::Cancelled {
+                            active.summary.status = OperationStatus::Cancelled;
+                        }
+                        continue;
+                    }
+                    active.summary.status = status.clone();
+                    let event_summary = active.summary.clone();
                     self.revision.0 = self.revision.0.saturating_add(1);
                     self.operation_events
                         .push_back(ClientEvent::OperationChanged(OperationEvent {
                             revision: self.revision,
                             id,
-                            composition_id: active.composition_id.clone(),
-                            action: active.action.clone(),
-                            phase: active.phase,
+                            composition_id: event_summary.composition_id,
+                            action: event_summary.action,
+                            phase: event_summary.phase,
                             status,
-                            progress: active.progress,
+                            progress: event_summary.progress,
                             message,
                         }));
                 }
@@ -1644,6 +1819,12 @@ impl ClientSession {
                 BackgroundOperationMessage::CompleteLibrary(completion) => {
                     self.apply_library_completion(*completion);
                 }
+                BackgroundOperationMessage::CompleteCatalogRefresh(completion) => {
+                    self.apply_catalog_refresh_completion(*completion);
+                }
+                BackgroundOperationMessage::CompleteWorkspaceDiscovery(completion) => {
+                    self.apply_workspace_discovery_completion(*completion);
+                }
                 BackgroundOperationMessage::CompleteProfileAnalysis(completion) => {
                     self.apply_profile_analysis_completion(*completion);
                 }
@@ -1656,15 +1837,13 @@ impl ClientSession {
 
     fn apply_profile_analysis_completion(&mut self, completion: ProfileAnalysisCompletion) {
         let Some(active) = self
-            .active_operation
-            .as_ref()
-            .filter(|operation| operation.id == completion.id)
+            .operation_registry
+            .get(&completion.id)
+            .map(|operation| operation.summary.clone())
         else {
             return;
         };
         let action = active.action.clone();
-        self.clear_active_operation();
-        self.revision.0 = self.revision.0.saturating_add(1);
         let (status, message) = match &completion.result {
             Ok(_) => (
                 OperationStatus::Succeeded,
@@ -1677,6 +1856,8 @@ impl ClientSession {
                 Some(message.clone()),
             ),
         };
+        self.finish_operation(&completion.id, status.clone());
+        self.revision.0 = self.revision.0.saturating_add(1);
         self.operation_events
             .push_back(ClientEvent::OperationChanged(OperationEvent {
                 revision: self.revision,
@@ -1694,15 +1875,13 @@ impl ClientSession {
 
     fn apply_role_transition_completion(&mut self, completion: RoleTransitionCompletion) {
         let Some(active) = self
-            .active_operation
-            .as_ref()
-            .filter(|operation| operation.id == completion.id)
+            .operation_registry
+            .get(&completion.id)
+            .map(|operation| operation.summary.clone())
         else {
             return;
         };
         let action = active.action.clone();
-        self.clear_active_operation();
-        self.revision.0 = self.revision.0.saturating_add(1);
         let (status, message) = match completion.result {
             Ok(message) => (OperationStatus::Succeeded, Some(message)),
             Err(message) => (
@@ -1712,6 +1891,8 @@ impl ClientSession {
                 Some(message),
             ),
         };
+        self.finish_operation(&completion.id, status.clone());
+        self.revision.0 = self.revision.0.saturating_add(1);
         self.operation_events
             .push_back(ClientEvent::OperationChanged(OperationEvent {
                 revision: self.revision,
@@ -1895,6 +2076,24 @@ fn is_registered_source_list_query(action: &ClientAction) -> bool {
     )
 }
 
+fn action_can_rebase_on_current_state(action: &ClientAction) -> bool {
+    matches!(
+        action,
+        ClientAction::Catalog(CatalogAction::Refresh | CatalogAction::DiscoverContentProjects)
+            | ClientAction::Composition(_)
+            | ClientAction::Workspace(_)
+            | ClientAction::Workshop(_)
+            | ClientAction::Authoring(_)
+            | ClientAction::Library(_)
+            | ClientAction::Publishing(_)
+            | ClientAction::Developer(
+                DeveloperAction::AnalyzeProfileTrace { .. }
+                    | DeveloperAction::PromoteInstallationRole { .. }
+                    | DeveloperAction::DemoteInstallationRole { .. }
+            )
+    )
+}
+
 fn ensure_workshop_app_id(bootstrap: &mut ClientHostConfig) {
     if !bootstrap.fixture_mode && bootstrap.workshop_app_id.is_none() {
         bootstrap.workshop_app_id = Some(vapor_sdk_core::root::types::ROOT_STEAM_APP_ID);
@@ -1962,6 +2161,80 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
     use vapor_client_protocol::{ClientAction, ClientRequest, RequestId};
+
+    #[test]
+    fn action_profiles_reject_missing_local_capabilities() {
+        let action = ClientAction::Workspace(WorkspaceAction::BuildDocumentation);
+        let mut readiness = InstallationRoleSnapshot::default();
+        let unavailable = action_capability_error(action.profile(), &readiness)
+            .expect("managed Rust is required by this action");
+        assert!(unavailable.message.contains("Rust/Cargo"));
+
+        readiness.rust_ready = true;
+        assert!(action_capability_error(action.profile(), &readiness).is_none());
+    }
+
+    #[test]
+    fn operation_registry_allows_independent_work_and_rejects_same_workspace_scan() {
+        let mut registry = OperationRegistry::default();
+        let workspace = PathBuf::from("/fixture/workspace");
+        let other_workspace = PathBuf::from("/fixture/other-workspace");
+
+        registry
+            .start(
+                running_operation("catalog", "catalog.refresh"),
+                [OperationResourceKey::CatalogRefresh],
+                None,
+                false,
+            )
+            .expect("catalog refresh should be reserved");
+        registry
+            .start(
+                running_operation("workspace-scan", "workspace.scan"),
+                [OperationResourceKey::WorkspaceScan(workspace.clone())],
+                None,
+                false,
+            )
+            .expect("workspace scan should not conflict with catalog refresh");
+        registry
+            .start(
+                running_operation("workspace-build", "workspace.build"),
+                [OperationResourceKey::Workspace(workspace.clone())],
+                None,
+                false,
+            )
+            .expect("read-only discovery and workspace build may proceed independently");
+        registry
+            .start(
+                running_operation("other-workspace-scan", "workspace.scan"),
+                [OperationResourceKey::WorkspaceScan(other_workspace)],
+                None,
+                false,
+            )
+            .expect("different workspace scans should not conflict");
+
+        let conflict = registry.start(
+            running_operation("duplicate-workspace-scan", "workspace.scan"),
+            [OperationResourceKey::WorkspaceScan(workspace.clone())],
+            None,
+            false,
+        );
+        assert!(matches!(
+            conflict,
+            Err(OperationReservationError::Conflict { .. })
+        ));
+        let edit_conflict = registry.start(
+            running_operation("workspace-edit", "workspace.save-file"),
+            [OperationResourceKey::WorkspaceEdit(workspace.clone())],
+            None,
+            false,
+        );
+        assert!(matches!(
+            edit_conflict,
+            Err(OperationReservationError::Conflict { .. })
+        ));
+        assert_eq!(registry.active_summaries().len(), 4);
+    }
 
     #[test]
     fn manifest_seed_initializes_only_the_legacy_empty_selection() {
@@ -2163,14 +2436,29 @@ mod tests {
         }
     }
 
+    fn register_test_operation(
+        session: &mut ClientSession,
+        summary: OperationSummary,
+        cancellation: Option<application::OperationCancellation>,
+        cancellable: bool,
+    ) {
+        let resource = OperationResourceKey::Exclusive(summary.id.clone());
+        session
+            .operation_registry
+            .start(summary, [resource], cancellation, cancellable)
+            .expect("register test operation");
+    }
+
     #[test]
     fn concurrent_registered_source_queries_join_the_active_lookup() {
         let mut session = session();
         session.revision = ClientRevision(5);
-        session.active_operation = Some(running_operation(
-            "source-list-1",
-            "authoring.list-registered-sources",
-        ));
+        register_test_operation(
+            &mut session,
+            running_operation("source-list-1", "authoring.list-registered-sources"),
+            None,
+            false,
+        );
 
         let response = session.dispatch(request(
             Some(0),
@@ -2190,9 +2478,12 @@ mod tests {
     fn cancellation_targets_the_active_operation_even_after_its_revision_changes() {
         let mut session = session();
         let cancellation = application::OperationCancellation::default();
-        session.active_operation = Some(running_operation("42", "workspace.test"));
-        session.active_operation_cancellation = Some(cancellation.clone());
-        session.active_operation_cancellable = true;
+        register_test_operation(
+            &mut session,
+            running_operation("42", "workspace.test"),
+            Some(cancellation.clone()),
+            true,
+        );
 
         let response = session.dispatch(request(
             Some(u64::MAX),
@@ -2204,7 +2495,7 @@ mod tests {
         assert_eq!(response.kind, ClientResponseKind::Applied);
         assert!(cancellation.is_cancelled());
         assert_eq!(
-            session.active_operation.as_ref().unwrap().status,
+            session.operation_registry.primary().unwrap().status,
             OperationStatus::Cancelling
         );
         assert!(matches!(
@@ -2214,15 +2505,51 @@ mod tests {
                 ..
             }))
         ));
+
+        session
+            .operation_sender
+            .send(BackgroundOperationMessage::Panicked {
+                id: "42".to_owned(),
+                message: "worker stopped".to_owned(),
+            })
+            .expect("send terminal worker result");
+        session.poll_background_operation_messages();
+        assert!(session.operation_registry.is_empty());
+        assert_eq!(
+            session
+                .operation_registry
+                .history()
+                .back()
+                .map(|summary| &summary.status),
+            Some(&OperationStatus::Cancelled)
+        );
+        assert_eq!(
+            session
+                .operation_events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    ClientEvent::OperationChanged(OperationEvent {
+                        id,
+                        phase: OperationPhase::Complete,
+                        ..
+                    }) if id == "42"
+                ))
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn cancellation_rejects_non_cancellable_operations_instead_of_cancelling_them() {
         let mut session = session();
         let cancellation = application::OperationCancellation::default();
-        session.active_operation = Some(running_operation("42", "publishing.publish-root"));
-        session.active_operation_cancellation = Some(cancellation.clone());
-        session.active_operation_cancellable = false;
+        register_test_operation(
+            &mut session,
+            running_operation("42", "publishing.publish-root"),
+            Some(cancellation.clone()),
+            false,
+        );
 
         let response = session.dispatch(request(
             None,
@@ -2238,17 +2565,17 @@ mod tests {
         );
         assert!(!cancellation.is_cancelled());
         assert_eq!(
-            session.active_operation.as_ref().unwrap().status,
+            session.operation_registry.primary().unwrap().status,
             OperationStatus::Running
         );
     }
 
     #[test]
-    fn cancellation_discards_the_late_worker_result() {
+    fn cancellation_records_one_terminal_outcome_and_discards_the_late_result() {
         let mut session = session();
         let mut active = running_operation("42", "developer.analyze-profile-trace");
         active.status = OperationStatus::Cancelled;
-        session.active_operation = Some(active);
+        register_test_operation(&mut session, active, None, false);
         session
             .operation_sender
             .send(BackgroundOperationMessage::CompleteProfileAnalysis(
@@ -2261,8 +2588,31 @@ mod tests {
 
         session.poll_background_operation_messages();
 
-        assert!(session.active_operation.is_none());
-        assert!(session.operation_events.is_empty());
+        assert!(!session.has_active_operation());
+        assert_eq!(
+            session
+                .operation_registry
+                .history()
+                .back()
+                .map(|summary| &summary.status),
+            Some(&OperationStatus::Cancelled)
+        );
+        assert_eq!(
+            session
+                .operation_events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    ClientEvent::OperationChanged(OperationEvent {
+                        id,
+                        phase: OperationPhase::Complete,
+                        status: OperationStatus::Cancelled,
+                        ..
+                    }) if id == "42"
+                ))
+                .count(),
+            1
+        );
         assert!(session.profile_traces.is_empty());
     }
 
@@ -2327,7 +2677,7 @@ mod tests {
         ));
 
         assert_eq!(response.kind, ClientResponseKind::Rejected);
-        assert!(session.active_operation.is_none());
+        assert!(!session.has_active_operation());
         assert!(session.application_release_review.is_some());
 
         let mut unbuilt_review = review;
@@ -2363,7 +2713,7 @@ mod tests {
                 .error
                 .is_some_and(|error| error.message.contains("service-validated release build"))
         );
-        assert!(session.active_operation.is_none());
+        assert!(!session.has_active_operation());
         std::fs::remove_dir_all(root).expect("remove isolated workspace");
     }
 
@@ -2488,7 +2838,7 @@ mod tests {
         let mut events = Vec::new();
         while Instant::now() < deadline {
             events.extend(session.poll_background_operations());
-            if session.active_operation.is_none() {
+            if !session.has_active_operation() {
                 return events;
             }
             thread::sleep(Duration::from_millis(2));
@@ -2507,9 +2857,9 @@ mod tests {
         assert_eq!(response.revision, ClientRevision(1));
         assert_eq!(response.snapshot.catalog[0].id, "fixture.engine");
         assert_eq!(response.snapshot.host.mode, "fixture");
-        assert!(response.snapshot.workspace_content.source_projects_loaded);
+        assert!(!response.snapshot.workspace_content.source_projects_loaded);
         assert!(
-            response
+            !response
                 .snapshot
                 .workspace_content
                 .unregistered_projects_loaded
@@ -3054,7 +3404,7 @@ mod tests {
                 .as_ref()
                 .is_some_and(|error| error.message.contains("composition 'default'"))
         );
-        assert!(session.active_operation.is_none());
+        assert!(!session.has_active_operation());
     }
 
     #[test]
@@ -3085,14 +3435,19 @@ mod tests {
             "fixture.first@1.0.0".into(),
             CompositionOperationKind::Install,
         );
-        session.active_operation = Some(OperationSummary {
-            id: "operation-install-first".into(),
-            composition_id: Some("default".into()),
-            action: "composition.install".into(),
-            phase: OperationPhase::Installing,
-            status: OperationStatus::Running,
-            progress: None,
-        });
+        register_test_operation(
+            &mut session,
+            OperationSummary {
+                id: "operation-install-first".into(),
+                composition_id: Some("default".into()),
+                action: "composition.install".into(),
+                phase: OperationPhase::Installing,
+                status: OperationStatus::Running,
+                progress: None,
+            },
+            None,
+            false,
+        );
 
         let second_root = ContentReference {
             id: "fixture.second".into(),
@@ -3121,7 +3476,7 @@ mod tests {
         assert_eq!(composition.root_package.as_ref(), Some(&second_root));
         assert!(composition.resolved_graph.is_none());
         assert_eq!(composition.installation, InstallationState::Unknown);
-        assert!(session.active_operation.is_none());
+        assert!(!session.has_active_operation());
         assert!(session.operation_events.iter().any(|event| matches!(
             event,
             ClientEvent::OperationChanged(OperationEvent {
@@ -3138,21 +3493,26 @@ mod tests {
     #[test]
     fn verification_failure_has_one_terminal_event_after_composition_reconciliation() {
         let mut session = session();
-        let composition = &session.durable_state.compositions.compositions[0];
-        session.active_operation = Some(OperationSummary {
-            id: "operation-verify".to_owned(),
-            composition_id: Some("default".to_owned()),
-            action: "composition.verify".to_owned(),
-            phase: OperationPhase::Verifying,
-            status: OperationStatus::Running,
-            progress: None,
-        });
+        let composition = session.durable_state.compositions.compositions[0].clone();
+        register_test_operation(
+            &mut session,
+            OperationSummary {
+                id: "operation-verify".to_owned(),
+                composition_id: Some("default".to_owned()),
+                action: "composition.verify".to_owned(),
+                phase: OperationPhase::Verifying,
+                status: OperationStatus::Running,
+                progress: None,
+            },
+            None,
+            false,
+        );
         session.apply_composition_completion(CompositionOperationCompletion {
             id: "operation-verify".to_owned(),
             composition_id: "default".to_owned(),
             action: CompositionOperationKind::Verify,
             inputs: CompositionOperationInputs::capture(
-                composition,
+                &composition,
                 CompositionOperationKind::Verify,
             ),
             result: CompositionOperationResult::Verify(Ok(
@@ -3166,7 +3526,7 @@ mod tests {
             )),
         });
 
-        assert!(session.active_operation.is_none());
+        assert!(!session.has_active_operation());
         assert!(matches!(
             &session.durable_state.compositions.compositions[0].installation,
             InstallationState::NeedsRepair { .. }
@@ -3218,13 +3578,19 @@ mod tests {
             ),
             nodes: Vec::new(),
         };
-        let composition = &session.durable_state.compositions.compositions[0];
+        let composition = session.durable_state.compositions.compositions[0].clone();
+        register_test_operation(
+            &mut session,
+            running_operation("operation-verify-target", "composition.verify"),
+            None,
+            false,
+        );
         session.apply_composition_completion(CompositionOperationCompletion {
             id: "operation-verify-target".to_owned(),
             composition_id: "default".to_owned(),
             action: CompositionOperationKind::Verify,
             inputs: CompositionOperationInputs::capture(
-                composition,
+                &composition,
                 CompositionOperationKind::Verify,
             ),
             result: CompositionOperationResult::Verify(Ok(
@@ -3277,6 +3643,12 @@ mod tests {
             response.snapshot.workspace_content.unregistered_projects[0].id,
             "fixture.addon"
         );
+        assert!(response.snapshot.catalog.iter().all(|entry| {
+            entry
+                .locations
+                .iter()
+                .all(|location| location.kind != CatalogLocationKind::Workspace)
+        }));
     }
 
     #[test]
@@ -3480,14 +3852,19 @@ mod tests {
     #[test]
     fn profile_analysis_completion_clears_the_operation_and_returns_the_report_event() {
         let mut session = session();
-        session.active_operation = Some(OperationSummary {
-            id: "profile-analysis-1".to_owned(),
-            composition_id: None,
-            action: "analyze-trace".to_owned(),
-            phase: OperationPhase::Finalizing,
-            status: OperationStatus::Running,
-            progress: None,
-        });
+        register_test_operation(
+            &mut session,
+            OperationSummary {
+                id: "profile-analysis-1".to_owned(),
+                composition_id: None,
+                action: "analyze-trace".to_owned(),
+                phase: OperationPhase::Finalizing,
+                status: OperationStatus::Running,
+                progress: None,
+            },
+            None,
+            false,
+        );
         let report = ProfileReportSnapshot {
             trace: PathBuf::from("/captures/run.tracy"),
             self_time: false,
@@ -3991,6 +4368,23 @@ mod tests {
             initially_disabled.reason.as_deref(),
             Some("Choose a playable composition first.")
         );
+        for action_id in [
+            "composition.install",
+            "composition.verify",
+            "composition.repair",
+            "composition.update",
+        ] {
+            assert!(
+                !session
+                    .snapshot()
+                    .available_actions
+                    .iter()
+                    .find(|action| action.id == action_id)
+                    .expect("composition action readiness is projected")
+                    .enabled,
+                "{action_id} should require a selected composition root"
+            );
+        }
         let response = session.dispatch(request(
             Some(0),
             ClientAction::Composition(CompositionAction::ResolveDefaultRoot {
@@ -4016,6 +4410,15 @@ mod tests {
             .expect("launch readiness is projected after choosing a composition");
         assert!(launch.enabled);
         assert_eq!(launch.reason, None);
+        assert!(
+            response
+                .snapshot
+                .available_actions
+                .iter()
+                .find(|action| action.id == "composition.install")
+                .expect("install readiness is projected")
+                .enabled
+        );
 
         let install = session.dispatch(request(
             Some(response.revision.0),
@@ -4033,8 +4436,26 @@ mod tests {
         assert!(!launch_during_install.enabled);
         assert_eq!(
             launch_during_install.reason.as_deref(),
-            Some("Wait for the current operation to finish.")
+            Some("This composition already has an operation running.")
         );
+        for action_id in [
+            "composition.install",
+            "composition.verify",
+            "composition.repair",
+            "composition.update",
+            "composition.launch",
+        ] {
+            assert!(
+                !install
+                    .snapshot
+                    .available_actions
+                    .iter()
+                    .find(|action| action.id == action_id)
+                    .expect("composition action readiness remains projected during install")
+                    .enabled,
+                "{action_id} should be blocked by the active composition operation"
+            );
+        }
         let _ = wait_for_operation(&mut session);
         assert!(
             session

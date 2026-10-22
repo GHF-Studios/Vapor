@@ -15,7 +15,7 @@ mod workspace_files;
 
 pub use catalog::{
     CatalogConflict, CatalogContent, CatalogDependency, CatalogLocation, CatalogLocationKind,
-    discover_content_catalog,
+    discover_local_content_catalog,
 };
 pub use composition::{
     CURRENT_SCHEMA_VERSION, Composition, CompositionDocument, CompositionRecovery,
@@ -159,12 +159,24 @@ pub fn installation_role_snapshot() -> vapor_client_protocol::InstallationRoleSn
         let installation =
             vapor_core::VaporInstallation::discover().map_err(|error| error.to_string())?;
         let role = vapor_core::installed_role(&installation).map_err(|error| error.to_string())?;
-        let environment =
-            vapor_core::DeveloperEnvironment::discover_for_installation(&installation)
-                .map_err(|error| error.to_string())?;
-        let tools = environment.status();
-        Ok(vapor_client_protocol::InstallationRoleSnapshot {
-            role: role.as_str().to_owned(),
+        let tools = vapor_core::DeveloperEnvironment::discover_for_installation(&installation)
+            .map(|environment| environment.status())
+            .map_err(|error| error.to_string());
+        Ok(installation_role_snapshot_for(role.as_str(), tools))
+    })();
+    result.unwrap_or_else(|error| vapor_client_protocol::InstallationRoleSnapshot {
+        error: Some(error),
+        ..Default::default()
+    })
+}
+
+fn installation_role_snapshot_for(
+    role: &str,
+    tools: Result<vapor_core::DeveloperEnvironmentStatus, String>,
+) -> vapor_client_protocol::InstallationRoleSnapshot {
+    match tools {
+        Ok(tools) => vapor_client_protocol::InstallationRoleSnapshot {
+            role: role.to_owned(),
             rust_ready: tools.rust_installed,
             rust_analyzer_ready: tools.rust_analyzer_installed,
             windows_gnu_target_ready: tools.windows_gnu_target_installed,
@@ -172,12 +184,33 @@ pub fn installation_role_snapshot() -> vapor_client_protocol::InstallationRoleSn
             tracy_profiler_ready: tools.tracy_profiler_installed,
             tracy_analysis_ready: tools.tracy_analysis_installed,
             error: None,
-        })
-    })();
-    result.unwrap_or_else(|error| vapor_client_protocol::InstallationRoleSnapshot {
-        error: Some(error),
-        ..Default::default()
-    })
+        },
+        Err(error) => vapor_client_protocol::InstallationRoleSnapshot {
+            role: role.to_owned(),
+            error: Some(error),
+            ..Default::default()
+        },
+    }
+}
+
+#[cfg(test)]
+mod installation_role_snapshot_tests {
+    use super::installation_role_snapshot_for;
+
+    #[test]
+    fn readiness_failure_does_not_erase_the_installed_role() {
+        let snapshot = installation_role_snapshot_for(
+            "ecosystem-developer",
+            Err("packaged toolchain pin is missing".to_owned()),
+        );
+
+        assert_eq!(snapshot.role, "ecosystem-developer");
+        assert!(!snapshot.rust_ready);
+        assert_eq!(
+            snapshot.error.as_deref(),
+            Some("packaged toolchain pin is missing")
+        );
+    }
 }
 
 /// Promote the active Vapor installation to an ordinary local role.

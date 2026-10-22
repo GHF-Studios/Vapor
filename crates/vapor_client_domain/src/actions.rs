@@ -1,5 +1,8 @@
+use crate::{
+    ActionProfile, AuthorityRequirement, ContentKind, LocalCapability, ProfileAnalysisOptions,
+    WorkflowTier,
+};
 pub use crate::{CompositionAction, LibraryAction};
-use crate::{ContentKind, ProfileAnalysisOptions};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,6 +381,124 @@ pub enum DeveloperAction {
 }
 
 impl ClientAction {
+    /// Classify this operation and list its local and external prerequisites.
+    ///
+    /// The workflow tier is used for progressive product navigation only.
+    /// Service handlers must still validate the declared prerequisites and
+    /// operation-specific policy before performing effects.
+    pub const fn profile(&self) -> ActionProfile {
+        const RUST: &[LocalCapability] = &[LocalCapability::ManagedRustToolchain];
+        const RUST_ANALYZER: &[LocalCapability] = &[LocalCapability::RustAnalyzer];
+        const TRACY: &[LocalCapability] = &[LocalCapability::TracyProfiler];
+        const WORKSHOP_PUBLISHER: &[AuthorityRequirement] =
+            &[AuthorityRequirement::WorkshopPublisher];
+        const ROOT_PUBLISHER: &[AuthorityRequirement] = &[AuthorityRequirement::RootPublisher];
+
+        match self {
+            Self::Catalog(action) => match action {
+                CatalogAction::Refresh
+                | CatalogAction::Search { .. }
+                | CatalogAction::Inspect { .. } => ActionProfile::new(WorkflowTier::Player),
+                CatalogAction::DiscoverContentProjects
+                | CatalogAction::AdoptWorkspaceProject { .. } => {
+                    ActionProfile::new(WorkflowTier::Developer)
+                }
+            },
+            Self::Composition(action) => match action {
+                CompositionAction::Create { .. }
+                | CompositionAction::CreateFromContent { .. }
+                | CompositionAction::Duplicate { .. }
+                | CompositionAction::Rename { .. }
+                | CompositionAction::Remove { .. }
+                | CompositionAction::SetRoot { .. }
+                | CompositionAction::ResolveDefaultRoot { .. }
+                | CompositionAction::SetLaunchArguments { .. }
+                | CompositionAction::AdoptVerifiedGraph { .. }
+                | CompositionAction::InvalidateContent { .. }
+                | CompositionAction::Preview { .. } => ActionProfile::new(WorkflowTier::Composer),
+                CompositionAction::RunSource { .. } => ActionProfile::new(WorkflowTier::Developer),
+                CompositionAction::Select { .. }
+                | CompositionAction::Install { .. }
+                | CompositionAction::Verify { .. }
+                | CompositionAction::Repair { .. }
+                | CompositionAction::Update { .. }
+                | CompositionAction::Launch { .. } => ActionProfile::new(WorkflowTier::Player),
+            },
+            Self::Library(_) => ActionProfile::new(WorkflowTier::Player),
+            Self::Workspace(action) => {
+                let profile = ActionProfile::new(WorkflowTier::Developer);
+                match action {
+                    WorkspaceAction::RunTool { .. }
+                    | WorkspaceAction::BuildDocumentation
+                    | WorkspaceAction::RunConfiguration { .. }
+                    | WorkspaceAction::DeployApplication { .. }
+                    | WorkspaceAction::PackageApplication { .. }
+                    | WorkspaceAction::Validate => profile.with_local_capabilities(RUST),
+                    _ => profile,
+                }
+            }
+            Self::LanguageServer(action) => {
+                let profile = ActionProfile::new(WorkflowTier::Developer);
+                match action {
+                    LanguageServerAction::Start { .. } => {
+                        profile.with_local_capabilities(RUST_ANALYZER)
+                    }
+                    LanguageServerAction::Stop => profile,
+                }
+            }
+            Self::Authoring(action) => match action {
+                AuthoringAction::LoadComposition { .. }
+                | AuthoringAction::SaveComposition { .. } => {
+                    ActionProfile::new(WorkflowTier::Composer)
+                }
+                AuthoringAction::PackageContent { .. } => {
+                    ActionProfile::new(WorkflowTier::Developer).with_local_capabilities(RUST)
+                }
+                AuthoringAction::ValidateContent { .. } => {
+                    ActionProfile::new(WorkflowTier::Developer).with_local_capabilities(RUST)
+                }
+                _ => ActionProfile::new(WorkflowTier::Developer),
+            },
+            Self::Workshop(action) => match action {
+                WorkshopAction::Search { .. }
+                | WorkshopAction::LoadSubscriptions
+                | WorkshopAction::Subscribe { .. }
+                | WorkshopAction::Unsubscribe { .. }
+                | WorkshopAction::Acquire { .. } => ActionProfile::new(WorkflowTier::Player),
+                WorkshopAction::Stage { .. } | WorkshopAction::StageBatch { .. } => {
+                    ActionProfile::new(WorkflowTier::Developer).with_local_capabilities(RUST)
+                }
+                WorkshopAction::Publish { .. } | WorkshopAction::PublishBatch { .. } => {
+                    ActionProfile::new(WorkflowTier::Developer).with_authority(WORKSHOP_PUBLISHER)
+                }
+                WorkshopAction::DiscardReview => ActionProfile::new(WorkflowTier::Developer),
+            },
+            Self::Publishing(action) => match action {
+                PublishingAction::StageRoot { .. } | PublishingAction::StageApplication { .. } => {
+                    ActionProfile::new(WorkflowTier::Developer).with_local_capabilities(RUST)
+                }
+                PublishingAction::PublishRoot { .. }
+                | PublishingAction::PublishApplication { .. } => {
+                    ActionProfile::new(WorkflowTier::Developer).with_authority(ROOT_PUBLISHER)
+                }
+                PublishingAction::DiscardRootReview => ActionProfile::new(WorkflowTier::Developer),
+            },
+            Self::Developer(action) => {
+                let profile = ActionProfile::new(WorkflowTier::Developer);
+                match action {
+                    DeveloperAction::OpenProfiler => profile.with_local_capabilities(TRACY),
+                    _ => profile,
+                }
+            }
+            Self::Session(_) => ActionProfile::new(WorkflowTier::Player),
+        }
+    }
+
+    /// The minimum product workflow that contains this action.
+    pub const fn workflow_tier(&self) -> WorkflowTier {
+        self.profile().workflow_tier
+    }
+
     /// Stable diagnostic identifier for the semantic action.
     pub fn id(&self) -> &'static str {
         match self {
@@ -522,5 +643,72 @@ impl ClientAction {
             }
             Self::Session(SessionAction::CancelOperation { .. }) => "session.cancel-operation",
         }
+    }
+}
+
+#[cfg(test)]
+mod workflow_tests {
+    use super::{
+        AuthoringAction, AuthorityRequirement, ClientAction, CompositionAction,
+        LanguageServerAction, LocalCapability, SessionAction, WorkflowTier, WorkshopAction,
+        WorkspaceAction,
+    };
+
+    #[test]
+    fn actions_are_classified_by_their_user_workflow() {
+        assert_eq!(
+            ClientAction::Workshop(WorkshopAction::LoadSubscriptions).workflow_tier(),
+            WorkflowTier::Player
+        );
+        assert_eq!(
+            ClientAction::Composition(CompositionAction::Create {
+                name: "My composition".to_owned(),
+            })
+            .workflow_tier(),
+            WorkflowTier::Composer
+        );
+        assert_eq!(
+            ClientAction::Workspace(WorkspaceAction::OpenFile {
+                path: "src/lib.rs".to_owned(),
+            })
+            .workflow_tier(),
+            WorkflowTier::Developer
+        );
+        assert_eq!(
+            ClientAction::Authoring(AuthoringAction::CreateWorkspace {
+                parent: "/tmp".to_owned(),
+                organization: "example".to_owned(),
+                name: "demo".to_owned(),
+            })
+            .workflow_tier(),
+            WorkflowTier::Developer
+        );
+        assert_eq!(
+            ClientAction::Session(SessionAction::CheckpointLocalState {
+                editor_drafts: None,
+                operation_history: None,
+            })
+            .workflow_tier(),
+            WorkflowTier::Player
+        );
+        assert_eq!(
+            ClientAction::LanguageServer(LanguageServerAction::Start {
+                workspace_root: "/workspace".to_owned(),
+            })
+            .profile()
+            .local_capabilities,
+            &[LocalCapability::RustAnalyzer]
+        );
+        assert_eq!(
+            ClientAction::Workshop(WorkshopAction::Publish {
+                review_id: "review".to_owned(),
+                account: "publisher".to_owned(),
+                confirmation: "PUBLISH".to_owned(),
+                change_note: String::new(),
+            })
+            .profile()
+            .authority,
+            &[AuthorityRequirement::WorkshopPublisher]
+        );
     }
 }

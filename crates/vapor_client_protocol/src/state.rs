@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 pub use vapor_client_domain::CatalogDependency;
 pub use vapor_client_domain::ClientStateDocument as DurableStateSnapshot;
-use vapor_client_domain::WorkshopMetadataDraft;
+use vapor_client_domain::{ActionProfile, ClientAction, WorkshopMetadataDraft};
 pub use vapor_client_domain::{
     InstallPlanDependency as CompositionPreviewDependency,
     InstallPlanNode as CompositionPreviewNode, InstallPlanSource as CompositionPreviewSource,
@@ -28,6 +28,53 @@ pub struct AvailableAction {
     pub id: String,
     pub enabled: bool,
     pub reason: Option<String>,
+    #[serde(default)]
+    pub profile: ActionProfileSnapshot,
+}
+
+impl AvailableAction {
+    pub fn from_action(action: &ClientAction, enabled: bool, reason: Option<String>) -> Self {
+        Self {
+            id: action.id().to_owned(),
+            enabled,
+            reason,
+            profile: ActionProfileSnapshot::from(action.profile()),
+        }
+    }
+
+    pub fn from_profile(
+        id: impl Into<String>,
+        enabled: bool,
+        reason: Option<String>,
+        profile: ActionProfile,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            enabled,
+            reason,
+            profile: ActionProfileSnapshot::from(profile),
+        }
+    }
+}
+
+/// Frontend-ready workflow and prerequisite metadata for one available action.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionProfileSnapshot {
+    pub workflow_tier: vapor_client_domain::WorkflowTier,
+    #[serde(default)]
+    pub local_capabilities: Vec<vapor_client_domain::LocalCapability>,
+    #[serde(default)]
+    pub authority_requirements: Vec<vapor_client_domain::AuthorityRequirement>,
+}
+
+impl From<ActionProfile> for ActionProfileSnapshot {
+    fn from(profile: ActionProfile) -> Self {
+        Self {
+            workflow_tier: profile.workflow_tier,
+            local_capabilities: profile.local_capabilities.to_vec(),
+            authority_requirements: profile.authority.to_vec(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,6 +87,12 @@ pub struct ClientSnapshot {
     #[serde(default)]
     pub durable_state: DurableStateSnapshot,
     pub active_operation: Option<OperationSummary>,
+    /// All currently running operations in start order.
+    #[serde(default)]
+    pub active_operations: Vec<OperationSummary>,
+    /// Bounded terminal operation history, newest last.
+    #[serde(default)]
+    pub operation_history: Vec<OperationSummary>,
     #[serde(default)]
     pub composition_preview: Option<CompositionPreviewSnapshot>,
     /// Complete retained catalog facts; a search never narrows this collection.

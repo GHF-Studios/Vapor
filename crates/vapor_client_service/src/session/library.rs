@@ -15,8 +15,6 @@ impl ClientSession {
         &mut self,
         action: LibraryAction,
     ) -> Result<(), ServiceError> {
-        self.reject_if_operation_in_progress()?;
-
         let retained_subscription = match &action {
             LibraryAction::SetAutoInstall {
                 content_id,
@@ -226,6 +224,9 @@ impl ClientSession {
     }
 
     pub(super) fn apply_library_completion(&mut self, completion: LibraryOperationCompletion) {
+        if self.operation_registry.get(&completion.id).is_none() {
+            return;
+        }
         let (mut succeeded, mut message) = match completion.result {
             Ok(message) => {
                 self.refresh_catalog();
@@ -269,7 +270,16 @@ impl ClientSession {
                     format!("{message} Automatic updates are off; the item remains subscribed.");
             }
         }
-        self.clear_active_operation();
+        self.finish_operation(
+            &completion.id,
+            if succeeded {
+                OperationStatus::Succeeded
+            } else {
+                OperationStatus::Failed {
+                    message: message.clone(),
+                }
+            },
+        );
         self.revision.0 = self.revision.0.saturating_add(1);
         self.operation_events
             .push_back(ClientEvent::OperationChanged(OperationEvent {

@@ -1,21 +1,214 @@
 //! Service-owned discovery refresh and catalog projections.
 
-use super::{ClientSession, MAX_WORKSPACE_DIAGNOSTICS, MAX_WORKSPACE_PROJECTS};
+use super::{
+    BackgroundOperationMessage, BackgroundOperationSpec, CatalogRefreshCompletion, ClientSession,
+    MAX_WORKSPACE_DIAGNOSTICS, MAX_WORKSPACE_PROJECTS, WorkspaceDiscoveryCompletion,
+};
 use crate::persistence::ClientPersistentState;
 use std::path::Path;
 use vapor_client_application::{
-    CatalogContent, SourceContent, discover_content_catalog, discover_source_content,
+    CatalogContent, SourceContent, discover_local_content_catalog, discover_source_content,
     scan_unregistered_content_projects,
 };
 use vapor_client_protocol::{
     CatalogConflict, CatalogEntry, CatalogItemAction, CatalogItemRole, CatalogLocation,
-    CatalogLocationKind, InstallationState, WorkspaceContentSnapshot, WorkspaceProjectCandidate,
-    WorkspaceSourceProject, WorkspaceWorkshopPolicy,
+    CatalogLocationKind, ClientEvent, InstallationState, OperationEvent, OperationPhase,
+    OperationStatus, WorkspaceContentSnapshot, WorkspaceProjectCandidate, WorkspaceSourceProject,
+    WorkspaceWorkshopPolicy,
 };
 
 impl ClientSession {
-    pub(super) fn refresh_catalog(&mut self) {
+    pub(super) fn start_workspace_discovery_operation(
+        &mut self,
+    ) -> Result<(), vapor_client_protocol::ServiceError> {
+        let workspace = self.bootstrap.workspace_root.clone().ok_or_else(|| {
+            vapor_client_protocol::ServiceError {
+                code: vapor_client_protocol::ServiceErrorCode::ActionUnavailable,
+                message: "Open a workspace before discovering its content projects.".to_owned(),
+                retryable: false,
+            }
+        })?;
+        let executable = self.bootstrap.application_executable.clone();
+        let execution_workspace = workspace.clone();
+        self.spawn_background_operation(
+            BackgroundOperationSpec {
+                domain: "studio-authoring",
+                action: "authoring.discover-content-projects",
+                thread_prefix: "studio-workspace-discovery",
+                failure_label: "workspace content discovery",
+                composition_id: None,
+                phase: OperationPhase::Resolving,
+            },
+            move |context| {
+                discover_workspace_content(
+                    &executable,
+                    Some(&execution_workspace),
+                    false,
+                    Some(&context),
+                )
+            },
+            |snapshot| {
+                Ok(format!(
+                    "Found {} source projects and {} unregistered candidates.",
+                    snapshot.source_projects.len(),
+                    snapshot.unregistered_projects.len()
+                ))
+            },
+            move |id, result| {
+                BackgroundOperationMessage::CompleteWorkspaceDiscovery(Box::new(
+                    WorkspaceDiscoveryCompletion {
+                        id,
+                        workspace,
+                        result,
+                    },
+                ))
+            },
+        )?;
+        self.workspace_content.source_projects_loaded = false;
+        self.workspace_content.unregistered_projects_loaded = false;
+        self.workspace_content.source_projects_error = None;
+        self.workspace_content.unregistered_projects_error = None;
+        self.pending_workspace_discovery = false;
+        Ok(())
+    }
+
+    pub(super) fn apply_workspace_discovery_completion(
+        &mut self,
+        completion: WorkspaceDiscoveryCompletion,
+    ) {
+        let Some(active) = self
+            .operation_registry
+            .get(&completion.id)
+            .map(|operation| operation.summary.clone())
+        else {
+            return;
+        };
+        let same_workspace =
+            self.bootstrap.workspace_root.as_deref() == Some(&completion.workspace);
+        let succeeded = same_workspace;
+        let message = (!same_workspace).then(|| {
+            "The active workspace changed during discovery; the result was discarded.".to_owned()
+        });
+        if same_workspace {
+            self.workspace_content = completion.result;
+        }
+        let status = if let Some(message) = &message {
+            OperationStatus::Failed {
+                message: message.clone(),
+            }
+        } else {
+            OperationStatus::Succeeded
+        };
+        self.finish_operation(&completion.id, status.clone());
+        self.revision.0 = self.revision.0.saturating_add(1);
+        self.operation_events
+            .push_back(ClientEvent::OperationChanged(OperationEvent {
+                revision: self.revision,
+                id: completion.id,
+                composition_id: active.composition_id,
+                action: active.action,
+                phase: OperationPhase::Complete,
+                status,
+                progress: succeeded.then_some(1.0),
+                message,
+            }));
+    }
+
+    pub(super) fn start_catalog_refresh_operation(
+        &mut self,
+    ) -> Result<(), vapor_client_protocol::ServiceError> {
+        if self.bootstrap.fixture_mode {
+            self.refresh_catalog();
+            return Ok(());
+        }
+        let executable = self.bootstrap.application_executable.clone();
+        self.spawn_background_operation(
+            BackgroundOperationSpec {
+                domain: "vapor-library",
+                action: "catalog.refresh",
+                thread_prefix: "vapor-catalog-refresh",
+                failure_label: "Library refresh",
+                composition_id: None,
+                phase: OperationPhase::Resolving,
+            },
+            move |context| {
+                context.set_phase(vapor_client_application::OperationPhase::Resolving);
+                context.report_progress(vapor_client_application::Progress {
+                    completed: 0,
+                    total: Some(1),
+                    unit: "scan".to_owned(),
+                    message: Some("Scanning installed and cached content.".to_owned()),
+                });
+                let result = discover_catalog_entries(&executable);
+                context.report_progress(vapor_client_application::Progress {
+                    completed: 1,
+                    total: Some(1),
+                    unit: "scan".to_owned(),
+                    message: Some("Library scan finished.".to_owned()),
+                });
+                result
+            },
+            |result| {
+                result
+                    .as_ref()
+                    .map(|entries| format!("Found {} local items.", entries.len()))
+                    .map_err(Clone::clone)
+            },
+            |id, result| {
+                BackgroundOperationMessage::CompleteCatalogRefresh(Box::new(
+                    CatalogRefreshCompletion { id, result },
+                ))
+            },
+        )?;
+        self.pending_catalog_refresh = false;
+        Ok(())
+    }
+
+    pub(super) fn apply_catalog_refresh_completion(
+        &mut self,
+        completion: CatalogRefreshCompletion,
+    ) {
+        let Some(active) = self
+            .operation_registry
+            .get(&completion.id)
+            .map(|operation| operation.summary.clone())
+        else {
+            return;
+        };
+        let result = completion.result;
+        match &result {
+            Ok(entries) => self.catalog.replace(entries.clone()),
+            Err(message) => self.catalog.fail(message.clone()),
+        }
+        let status = match &result {
+            Ok(_) => OperationStatus::Succeeded,
+            Err(message) => OperationStatus::Failed {
+                message: message.clone(),
+            },
+        };
+        self.finish_operation(&completion.id, status.clone());
+        self.revision.0 = self.revision.0.saturating_add(1);
+        self.operation_events
+            .push_back(ClientEvent::OperationChanged(OperationEvent {
+                revision: self.revision,
+                id: completion.id,
+                composition_id: active.composition_id,
+                action: active.action,
+                phase: OperationPhase::Complete,
+                status,
+                progress: result.as_ref().ok().map(|_| 1.0),
+                message: result
+                    .map(|entries| format!("Found {} local items.", entries.len()))
+                    .err(),
+            }));
+    }
+
+    pub(super) fn refresh_all_content_views(&mut self) {
+        self.refresh_catalog();
         self.refresh_workspace_content();
+    }
+
+    pub(super) fn refresh_catalog(&mut self) {
         if self.bootstrap.fixture_mode {
             let mut entries = vec![CatalogEntry {
                 id: "fixture.engine".to_owned(),
@@ -85,70 +278,118 @@ impl ClientSession {
             self.catalog.replace(entries);
             return;
         }
-        match discover_content_catalog(
-            &self.bootstrap.application_executable,
-            self.bootstrap.workspace_root.as_deref(),
-        ) {
-            Ok(catalog) => self
-                .catalog
-                .replace(catalog.into_iter().map(catalog_entry).collect()),
-            Err(error) => self.catalog.fail(error),
+        if let Err(error) = self.start_catalog_refresh_operation() {
+            if error.code == vapor_client_protocol::ServiceErrorCode::OperationInProgress {
+                self.pending_catalog_refresh = true;
+            } else {
+                self.catalog.fail(error.message);
+            }
         }
     }
 
     pub(super) fn refresh_workspace_content(&mut self) {
-        let Some(root) = self.bootstrap.workspace_root.clone() else {
-            self.workspace_content = WorkspaceContentSnapshot {
-                source_projects_loaded: true,
-                unregistered_projects_loaded: true,
-                ..WorkspaceContentSnapshot::default()
-            };
-            return;
-        };
-        if self.bootstrap.fixture_mode {
-            self.workspace_content = fixture_workspace_content(&root);
-            return;
-        }
-
-        self.workspace_content.workspace_validation_error =
-            vapor_client_application::validate_workspace(&root).err();
-
-        match discover_source_content(&self.bootstrap.application_executable, &root) {
-            Ok(projects) => {
-                self.workspace_content.source_projects = projects
-                    .into_iter()
-                    .take(MAX_WORKSPACE_PROJECTS)
-                    .map(source_project)
-                    .collect();
-                self.workspace_content.source_projects_loaded = true;
-                self.workspace_content.source_projects_error = None;
+        if self.bootstrap.fixture_mode || self.bootstrap.workspace_root.is_none() {
+            self.workspace_content = discover_workspace_content(
+                &self.bootstrap.application_executable,
+                self.bootstrap.workspace_root.as_deref(),
+                self.bootstrap.fixture_mode,
+                None,
+            );
+        } else {
+            if self.start_workspace_discovery_operation().is_err() {
+                self.pending_workspace_discovery = true;
             }
-            Err(error) => self.workspace_content.source_projects_error = Some(error),
-        }
-
-        match scan_unregistered_content_projects(&self.bootstrap.application_executable, &root) {
-            Ok(scan) => {
-                self.workspace_content.unregistered_projects = scan
-                    .candidates
-                    .into_iter()
-                    .take(MAX_WORKSPACE_PROJECTS)
-                    .map(|candidate| WorkspaceProjectCandidate {
-                        path: candidate.path.display().to_string(),
-                        id: candidate.id,
-                        kind: candidate.kind.to_string(),
-                    })
-                    .collect();
-                self.workspace_content.unregistered_diagnostics = scan
-                    .diagnostics
-                    .into_iter()
-                    .take(MAX_WORKSPACE_DIAGNOSTICS)
-                    .collect();
-                self.workspace_content.unregistered_projects_loaded = true;
-                self.workspace_content.unregistered_projects_error = None;
-            }
-            Err(error) => self.workspace_content.unregistered_projects_error = Some(error),
         }
     }
+}
+
+fn discover_workspace_content(
+    executable: &Path,
+    root: Option<&Path>,
+    fixture_mode: bool,
+    context: Option<&vapor_client_application::OperationContext>,
+) -> WorkspaceContentSnapshot {
+    let Some(root) = root else {
+        return WorkspaceContentSnapshot {
+            source_projects_loaded: true,
+            unregistered_projects_loaded: true,
+            ..WorkspaceContentSnapshot::default()
+        };
+    };
+    if fixture_mode {
+        return fixture_workspace_content(root);
+    }
+    let mut snapshot = WorkspaceContentSnapshot::default();
+    snapshot.workspace_validation_error = vapor_client_application::validate_workspace(root).err();
+    if let Some(context) = context {
+        context.set_phase(vapor_client_application::OperationPhase::Resolving);
+        context.report_progress(vapor_client_application::Progress {
+            completed: 0,
+            total: Some(2),
+            unit: "discovery phase".to_owned(),
+            message: Some("Discovering registered source projects.".to_owned()),
+        });
+        if context.is_cancelled() {
+            return snapshot;
+        }
+    }
+    match discover_source_content(executable, root) {
+        Ok(projects) => {
+            snapshot.source_projects = projects
+                .into_iter()
+                .take(MAX_WORKSPACE_PROJECTS)
+                .map(source_project)
+                .collect();
+            snapshot.source_projects_loaded = true;
+        }
+        Err(error) => snapshot.source_projects_error = Some(error),
+    }
+    if let Some(context) = context {
+        context.report_progress(vapor_client_application::Progress {
+            completed: 1,
+            total: Some(2),
+            unit: "discovery phase".to_owned(),
+            message: Some("Scanning for unregistered content projects.".to_owned()),
+        });
+        if context.is_cancelled() {
+            return snapshot;
+        }
+    }
+    match scan_unregistered_content_projects(executable, root) {
+        Ok(scan) => {
+            snapshot.unregistered_projects = scan
+                .candidates
+                .into_iter()
+                .take(MAX_WORKSPACE_PROJECTS)
+                .map(|candidate| WorkspaceProjectCandidate {
+                    path: candidate.path.display().to_string(),
+                    id: candidate.id,
+                    kind: candidate.kind.to_string(),
+                })
+                .collect();
+            snapshot.unregistered_diagnostics = scan
+                .diagnostics
+                .into_iter()
+                .take(MAX_WORKSPACE_DIAGNOSTICS)
+                .collect();
+            snapshot.unregistered_projects_loaded = true;
+        }
+        Err(error) => snapshot.unregistered_projects_error = Some(error),
+    }
+    if let Some(context) = context {
+        context.report_progress(vapor_client_application::Progress {
+            completed: 2,
+            total: Some(2),
+            unit: "discovery phase".to_owned(),
+            message: Some("Workspace discovery finished.".to_owned()),
+        });
+    }
+    snapshot
+}
+
+fn discover_catalog_entries(executable: &Path) -> Result<Vec<CatalogEntry>, String> {
+    discover_local_content_catalog(executable)
+        .map(|catalog| catalog.into_iter().map(catalog_entry).collect())
 }
 
 fn source_project(project: SourceContent) -> WorkspaceSourceProject {

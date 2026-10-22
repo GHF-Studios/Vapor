@@ -7,7 +7,6 @@ impl ClientSession {
         &mut self,
         action: WorkspaceAction,
     ) -> Result<(), ServiceError> {
-        self.reject_if_operation_in_progress()?;
         let is_superworkspace_operation = matches!(
             &action,
             WorkspaceAction::DiscoverSuperworkspaceRepositories
@@ -268,6 +267,9 @@ impl ClientSession {
     }
 
     pub(super) fn apply_workspace_completion(&mut self, completion: WorkspaceOperationCompletion) {
+        if self.operation_registry.get(&completion.id).is_none() {
+            return;
+        }
         let source_context_is_current = if matches!(
             &completion.action,
             WorkspaceOperationKind::DiscoverSuperworkspaceRepositories
@@ -341,7 +343,7 @@ impl ClientSession {
                 self.application_release_review = None;
                 self.application_release_snapshot = None;
                 if is_content_manifest_path(Path::new(&path)) {
-                    self.refresh_catalog();
+                    self.refresh_all_content_views();
                 }
                 workspace_file_result = Some(WorkspaceFileResult::Saved {
                     operation_id: completion.id.clone(),
@@ -378,7 +380,7 @@ impl ClientSession {
                     self.workshop_batch_review = None;
                     self.application_release_review = None;
                     self.application_release_snapshot = None;
-                    self.refresh_catalog();
+                    self.refresh_all_content_views();
                 }
                 workspace_file_result = Some(WorkspaceFileResult::Completed {
                     operation_id: completion.id.clone(),
@@ -432,7 +434,7 @@ impl ClientSession {
                 self.workshop_batch_review = None;
                 self.application_release_review = None;
                 self.application_release_snapshot = None;
-                self.refresh_catalog();
+                self.refresh_all_content_views();
                 workspace_file_result = Some(WorkspaceFileResult::UnregisteredContent {
                     operation_id: completion.id.clone(),
                     content_id: identity.id,
@@ -467,7 +469,16 @@ impl ClientSession {
                 error
             }
         };
-        self.clear_active_operation();
+        self.finish_operation(
+            &completion.id,
+            if operation_succeeded {
+                OperationStatus::Succeeded
+            } else {
+                OperationStatus::Failed {
+                    message: message.clone(),
+                }
+            },
+        );
         self.revision.0 = self.revision.0.saturating_add(1);
         let succeeded = operation_succeeded;
         self.operation_events

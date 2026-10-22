@@ -885,7 +885,7 @@ fn production_service_imports_legacy_state_then_uses_its_store_after_restart() {
             .len(),
         1
     );
-    client
+    let creation_request = client
         .send(
             ClientAction::Composition(CompositionAction::Create {
                 name: "Persisted composition".into(),
@@ -893,11 +893,17 @@ fn production_service_imports_legacy_state_then_uses_its_store_after_restart() {
             Some(client.latest_snapshot().revision),
         )
         .expect("send profile creation");
-    let response = client
-        .recv_timeout(Duration::from_secs(2))
-        .expect("receive profile creation");
-    let ProtocolFrame::Response(response) = response else {
-        panic!("expected profile response");
+    let response = loop {
+        match client
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive profile creation")
+        {
+            ProtocolFrame::Response(response) if response.request_id == creation_request => {
+                break response;
+            }
+            ProtocolFrame::Event(_) => continue,
+            other => panic!("expected profile response, received {other:?}"),
+        }
     };
     assert_eq!(response.kind, ClientResponseKind::Applied);
     assert_eq!(
@@ -909,7 +915,7 @@ fn production_service_imports_legacy_state_then_uses_its_store_after_restart() {
             .len(),
         2
     );
-    client
+    let launch_request = client
         .send(
             ClientAction::Composition(CompositionAction::SetLaunchArguments {
                 composition_id: "composition-1".into(),
@@ -918,11 +924,17 @@ fn production_service_imports_legacy_state_then_uses_its_store_after_restart() {
             Some(response.revision),
         )
         .expect("send profile launch settings");
-    let response = client
-        .recv_timeout(Duration::from_secs(2))
-        .expect("receive launch settings");
-    let ProtocolFrame::Response(response) = response else {
-        panic!("expected launch settings response");
+    let response = loop {
+        match client
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive launch settings")
+        {
+            ProtocolFrame::Response(response) if response.request_id == launch_request => {
+                break response;
+            }
+            ProtocolFrame::Event(_) => continue,
+            other => panic!("expected launch settings response, received {other:?}"),
+        }
     };
     assert_eq!(response.kind, ClientResponseKind::Applied);
     assert_eq!(response.snapshot.durable_state.composition_revision, 2);

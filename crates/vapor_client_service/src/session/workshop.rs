@@ -60,6 +60,7 @@ impl ClientSession {
             });
         };
         self.refresh_catalog();
+        self.refresh_workspace_content();
         if let Some(error) = self.catalog.status().error.as_ref() {
             return Err(ServiceError {
                 code: ServiceErrorCode::ProviderFailure,
@@ -100,7 +101,6 @@ impl ClientSession {
         &mut self,
         action: WorkshopAction,
     ) -> Result<(), ServiceError> {
-        self.reject_if_operation_in_progress()?;
         let kind = match action {
             WorkshopAction::Search {
                 query,
@@ -673,6 +673,9 @@ impl ClientSession {
     }
 
     pub(super) fn apply_workshop_completion(&mut self, completion: WorkshopOperationCompletion) {
+        if self.operation_registry.get(&completion.id).is_none() {
+            return;
+        }
         let mut succeeded = completion.result.is_ok();
         let mut failure = completion.result.as_ref().err().cloned();
         let mut summary = None;
@@ -1010,10 +1013,22 @@ impl ClientSession {
             }
             Err(_) => {}
         }
-        self.clear_active_operation();
+        let message = failure.or(summary);
+        let terminal_message = message
+            .clone()
+            .unwrap_or_else(|| "Workshop operation failed.".to_owned());
+        self.finish_operation(
+            &completion.id,
+            if succeeded {
+                OperationStatus::Succeeded
+            } else {
+                OperationStatus::Failed {
+                    message: terminal_message,
+                }
+            },
+        );
         self.revision.0 = self.revision.0.saturating_add(1);
         let action = workshop_operation_action_id(&completion.action).to_owned();
-        let message = failure.or(summary);
         self.operation_events
             .push_back(ClientEvent::OperationChanged(OperationEvent {
                 revision: self.revision,

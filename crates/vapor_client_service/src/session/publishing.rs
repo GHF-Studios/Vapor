@@ -12,7 +12,6 @@ impl ClientSession {
                 "Steam root publishing is unavailable in Vapor Client fixture mode.",
             ));
         }
-        self.reject_if_operation_in_progress()?;
         let (mut request, review_token, staged) = match action {
             PublishingAction::StageRoot {
                 account,
@@ -155,7 +154,6 @@ impl ClientSession {
                 "Steam application releases are unavailable in fixture mode.",
             ));
         }
-        self.reject_if_operation_in_progress()?;
         let workspace_root = self.bootstrap.workspace_root.clone().ok_or_else(|| {
             invalid_client_action_request(
                 "Open the Vapor application source workspace before staging a release.",
@@ -322,6 +320,9 @@ impl ClientSession {
         &mut self,
         completion: ApplicationReleaseOperationCompletion,
     ) {
+        if self.operation_registry.get(&completion.id).is_none() {
+            return;
+        }
         let mut succeeded = false;
         let (message, snapshot) = match completion.result {
             Ok(review) => {
@@ -358,9 +359,21 @@ impl ClientSession {
         if let Some(snapshot) = snapshot {
             self.application_release_snapshot = Some(snapshot);
         }
-        let Some(active) = self.active_operation.take() else {
+        let terminal_status = if succeeded {
+            OperationStatus::Succeeded
+        } else {
+            OperationStatus::Failed {
+                message: message.clone(),
+            }
+        };
+        let Some(active) = self
+            .operation_registry
+            .get(&completion.id)
+            .map(|op| op.summary.clone())
+        else {
             return;
         };
+        self.finish_operation(&completion.id, terminal_status.clone());
         self.revision.0 = self.revision.0.saturating_add(1);
         self.operation_events
             .push_back(ClientEvent::OperationChanged(OperationEvent {
@@ -369,13 +382,7 @@ impl ClientSession {
                 composition_id: None,
                 action: active.action,
                 phase: OperationPhase::Complete,
-                status: if succeeded {
-                    OperationStatus::Succeeded
-                } else {
-                    OperationStatus::Failed {
-                        message: message.clone(),
-                    }
-                },
+                status: terminal_status,
                 progress: None,
                 message: Some(message),
             }));
@@ -385,6 +392,9 @@ impl ClientSession {
         &mut self,
         completion: RootPublishOperationCompletion,
     ) {
+        if self.operation_registry.get(&completion.id).is_none() {
+            return;
+        }
         let mut success = true;
         let message = match completion.result {
             Ok(report) => {
@@ -443,9 +453,21 @@ impl ClientSession {
                 error
             }
         };
-        let Some(active) = self.active_operation.take() else {
+        let terminal_status = if success {
+            OperationStatus::Succeeded
+        } else {
+            OperationStatus::Failed {
+                message: message.clone(),
+            }
+        };
+        let Some(active) = self
+            .operation_registry
+            .get(&completion.id)
+            .map(|op| op.summary.clone())
+        else {
             return;
         };
+        self.finish_operation(&completion.id, terminal_status.clone());
         self.revision.0 = self.revision.0.saturating_add(1);
         self.operation_events
             .push_back(ClientEvent::OperationChanged(OperationEvent {
@@ -454,13 +476,7 @@ impl ClientSession {
                 composition_id: None,
                 action: active.action,
                 phase: OperationPhase::Complete,
-                status: if success {
-                    OperationStatus::Succeeded
-                } else {
-                    OperationStatus::Failed {
-                        message: message.clone(),
-                    }
-                },
+                status: terminal_status,
                 progress: None,
                 message: Some(message),
             }));

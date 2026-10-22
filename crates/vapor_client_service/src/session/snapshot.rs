@@ -4,93 +4,123 @@ use super::{
     ClientSession,
     catalog::catalog_projection,
     default_superworkspace_path,
+    operation_registry::OperationResourceKey,
     workshop::{workshop_batch_review_snapshot, workshop_review_snapshot},
 };
 use vapor_client_protocol::{
-    AvailableAction, ClientSnapshot, DurableStateSnapshot, HostSummary, InstallationRoleSnapshot,
-    InstallationState, RootDistributionIdentitySnapshot, SuperworkspaceRepositorySnapshot,
-    SuperworkspaceSnapshot,
+    ActionProfile, AvailableAction, CatalogAction, ClientAction, ClientSnapshot, CompositionAction,
+    DurableStateSnapshot, HostSummary, InstallationRoleSnapshot, InstallationState,
+    LocalCapability, RootDistributionIdentitySnapshot, SuperworkspaceRepositorySnapshot,
+    SuperworkspaceSnapshot, WorkflowTier, WorkspaceAction,
 };
 
 impl ClientSession {
     pub fn snapshot(&self) -> ClientSnapshot {
-        let mut available_actions = vec![AvailableAction {
-            id: "catalog.refresh".to_owned(),
-            enabled: true,
-            reason: None,
-        }];
+        let mut available_actions = vec![AvailableAction::from_action(
+            &ClientAction::Catalog(CatalogAction::Refresh),
+            self.can_start_operation(OperationResourceKey::CatalogRefresh),
+            (!self.can_start_operation(OperationResourceKey::CatalogRefresh))
+                .then(|| "A Library refresh is already running.".to_owned()),
+        )];
         available_actions.extend([
-            AvailableAction {
-                id: "workspace.initialize-superworkspace".to_owned(),
-                enabled: !self.bootstrap.fixture_mode,
-                reason: self
-                    .bootstrap
+            AvailableAction::from_action(
+                &ClientAction::Workspace(WorkspaceAction::InitializeSuperworkspace),
+                !self.bootstrap.fixture_mode,
+                self.bootstrap
                     .fixture_mode
                     .then(|| "Unavailable in fixture mode.".to_owned()),
-            },
-            AvailableAction {
-                id: "workspace.set-superworkspace-location".to_owned(),
-                enabled: !self.bootstrap.fixture_mode,
-                reason: self
-                    .bootstrap
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Workspace(WorkspaceAction::SetSuperworkspaceLocation {
+                    root: String::new(),
+                }),
+                !self.bootstrap.fixture_mode,
+                self.bootstrap
                     .fixture_mode
                     .then(|| "Unavailable in fixture mode.".to_owned()),
-            },
-            AvailableAction {
-                id: "workspace.discover-superworkspace-repositories".to_owned(),
-                enabled: !self.bootstrap.fixture_mode && self.active_operation.is_none(),
-                reason: if self.bootstrap.fixture_mode {
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Workspace(WorkspaceAction::DiscoverSuperworkspaceRepositories),
+                !self.bootstrap.fixture_mode
+                    && self.can_start_operation(OperationResourceKey::Workspace(
+                        self.bootstrap.workspace_root.clone().unwrap_or_default(),
+                    )),
+                if self.bootstrap.fixture_mode {
                     Some("Unavailable in fixture mode.".to_owned())
-                } else if self.active_operation.is_some() {
-                    Some("Wait for the current operation to finish.".to_owned())
+                } else if !self.can_start_operation(OperationResourceKey::Workspace(
+                    self.bootstrap.workspace_root.clone().unwrap_or_default(),
+                )) {
+                    Some("A conflicting workspace operation is already running.".to_owned())
                 } else {
                     None
                 },
-            },
-            AvailableAction {
-                id: "workspace.acquire-superworkspace-repositories".to_owned(),
-                enabled: !self.bootstrap.fixture_mode && self.active_operation.is_none(),
-                reason: if self.bootstrap.fixture_mode {
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Workspace(WorkspaceAction::AcquireSuperworkspaceRepositories {
+                    repository_names: Vec::new(),
+                }),
+                !self.bootstrap.fixture_mode
+                    && self.can_start_operation(OperationResourceKey::Workspace(
+                        self.bootstrap.workspace_root.clone().unwrap_or_default(),
+                    )),
+                if self.bootstrap.fixture_mode {
                     Some("Unavailable in fixture mode.".to_owned())
-                } else if self.active_operation.is_some() {
-                    Some("Wait for the current operation to finish.".to_owned())
+                } else if !self.can_start_operation(OperationResourceKey::Workspace(
+                    self.bootstrap.workspace_root.clone().unwrap_or_default(),
+                )) {
+                    Some("A conflicting workspace operation is already running.".to_owned())
                 } else {
                     None
                 },
-            },
-            AvailableAction {
-                id: "catalog.discover-content-projects".to_owned(),
-                enabled: self.bootstrap.workspace_root.is_some(),
-                reason: self
-                    .bootstrap
-                    .workspace_root
-                    .is_none()
-                    .then(|| "Open a workspace first.".to_owned()),
-            },
-            AvailableAction {
-                id: "composition.select".to_owned(),
-                enabled: true,
-                reason: None,
-            },
-            AvailableAction {
-                id: "catalog.search".to_owned(),
-                enabled: true,
-                reason: None,
-            },
-            AvailableAction {
-                id: "catalog.inspect".to_owned(),
-                enabled: !self.catalog.entries().is_empty(),
-                reason: self
-                    .catalog
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Catalog(CatalogAction::DiscoverContentProjects),
+                self.bootstrap.workspace_root.is_some()
+                    && self.can_start_operation(OperationResourceKey::WorkspaceScan(
+                        self.bootstrap.workspace_root.clone().unwrap_or_default(),
+                    )),
+                if self.bootstrap.workspace_root.is_none() {
+                    Some("Open a workspace first.".to_owned())
+                } else if !self.can_start_operation(OperationResourceKey::WorkspaceScan(
+                    self.bootstrap.workspace_root.clone().unwrap_or_default(),
+                )) {
+                    Some("Workspace discovery is already running.".to_owned())
+                } else {
+                    None
+                },
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Composition(CompositionAction::Select {
+                    composition_id: String::new(),
+                }),
+                true,
+                None,
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Catalog(CatalogAction::Search {
+                    query: String::new(),
+                }),
+                true,
+                None,
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Catalog(CatalogAction::Inspect {
+                    content_id: String::new(),
+                    version: None,
+                }),
+                !self.catalog.entries().is_empty(),
+                self.catalog
                     .entries()
                     .is_empty()
                     .then(|| "Refresh the catalog first.".to_owned()),
-            },
-            AvailableAction {
-                id: "workspace.open".to_owned(),
-                enabled: true,
-                reason: None,
-            },
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Workspace(WorkspaceAction::Open {
+                    root: String::new(),
+                }),
+                true,
+                None,
+            ),
         ]);
         let active_composition =
             self.durable_state
@@ -108,12 +138,36 @@ impl ClientSession {
                 InstallationState::OutOfDate { .. }
             )
         });
+        let composition_needs_repair = active_composition.is_some_and(|composition| {
+            matches!(
+                &composition.installation,
+                InstallationState::NeedsRepair { .. } | InstallationState::Partial { .. }
+            )
+        });
+        let composition_is_installed = active_composition.is_some_and(|composition| {
+            matches!(
+                &composition.installation,
+                InstallationState::Installed { .. }
+            )
+        });
         let has_workspace_source = active_composition.is_some_and(|composition| {
             composition.root_package.is_some() && composition.workspace.is_some()
         });
-        let operation_is_idle = self.active_operation.is_none();
-        let launch_reason = if !operation_is_idle {
-            Some("Wait for the current operation to finish.".to_owned())
+        let active_composition_key =
+            OperationResourceKey::Composition(self.durable_state.active_composition_id.clone());
+        let workspace_key = OperationResourceKey::Workspace(
+            self.bootstrap.workspace_root.clone().unwrap_or_default(),
+        );
+        let installation_role = if self.bootstrap.fixture_mode {
+            InstallationRoleSnapshot {
+                role: "player".to_owned(),
+                ..Default::default()
+            }
+        } else {
+            super::application::installation_role_snapshot()
+        };
+        let launch_reason = if !self.can_start_operation(active_composition_key.clone()) {
+            Some("This composition already has an operation running.".to_owned())
         } else if !composition_has_root {
             Some("Choose a playable composition first.".to_owned())
         } else if composition_is_out_of_date {
@@ -121,24 +175,85 @@ impl ClientSession {
         } else {
             None
         };
-        let build_reason = if !operation_is_idle {
-            Some("Wait for the current operation to finish.".to_owned())
+        let composition_operation_reason =
+            if !self.can_start_operation(active_composition_key.clone()) {
+                Some("This composition already has an operation running.".to_owned())
+            } else if !composition_has_root {
+                Some("Choose a playable composition first.".to_owned())
+            } else {
+                None
+            };
+        let install_reason = composition_operation_reason.clone().or_else(|| {
+            composition_is_installed.then(|| "This composition is already installed.".to_owned())
+        });
+        let verify_reason = composition_operation_reason.clone().or_else(|| {
+            (!composition_is_installed && !composition_needs_repair && !composition_is_out_of_date)
+                .then(|| "Install this composition before verifying it.".to_owned())
+        });
+        let repair_reason = composition_operation_reason.clone().or_else(|| {
+            (!composition_needs_repair)
+                .then(|| "This composition does not currently need repair.".to_owned())
+        });
+        let update_reason = composition_operation_reason.clone().or_else(|| {
+            (!composition_is_out_of_date)
+                .then(|| "This composition has no pending update.".to_owned())
+        });
+        let build_reason = if !self.can_start_operation(active_composition_key) {
+            Some("This composition already has an operation running.".to_owned())
+        } else if !self.can_start_operation(workspace_key) {
+            Some("A conflicting workspace operation is already running.".to_owned())
         } else if !has_workspace_source {
             Some("Open a project-backed composition before building and launching.".to_owned())
+        } else if !self.bootstrap.fixture_mode && !installation_role.rust_ready {
+            Some(installation_role.error.clone().unwrap_or_else(|| {
+                "Set up Vapor-managed Rust/Cargo in Vapor Installer before building.".to_owned()
+            }))
         } else {
             None
         };
         available_actions.extend([
-            AvailableAction {
-                id: "composition.launch".to_owned(),
-                enabled: launch_reason.is_none(),
-                reason: launch_reason,
-            },
-            AvailableAction {
-                id: "composition.build-and-launch".to_owned(),
-                enabled: build_reason.is_none(),
-                reason: build_reason,
-            },
+            AvailableAction::from_action(
+                &ClientAction::Composition(CompositionAction::Install {
+                    composition_id: String::new(),
+                }),
+                install_reason.is_none(),
+                install_reason,
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Composition(CompositionAction::Verify {
+                    composition_id: String::new(),
+                }),
+                verify_reason.is_none(),
+                verify_reason,
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Composition(CompositionAction::Repair {
+                    composition_id: String::new(),
+                }),
+                repair_reason.is_none(),
+                repair_reason,
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Composition(CompositionAction::Update {
+                    composition_id: String::new(),
+                }),
+                update_reason.is_none(),
+                update_reason,
+            ),
+            AvailableAction::from_action(
+                &ClientAction::Composition(CompositionAction::Launch {
+                    composition_id: String::new(),
+                }),
+                launch_reason.is_none(),
+                launch_reason,
+            ),
+            AvailableAction::from_profile(
+                "composition.build-and-launch",
+                build_reason.is_none(),
+                build_reason,
+                ActionProfile::new(WorkflowTier::Composer)
+                    .with_local_capabilities(&[LocalCapability::ManagedRustToolchain]),
+            ),
         ]);
         let mut workshop = self.workshop.clone();
         workshop.review = self.workshop_review.as_ref().map(workshop_review_snapshot);
@@ -197,7 +312,9 @@ impl ClientSession {
                 operation_history: self.durable_state.operation_history.clone(),
                 recovery_backup: self.durable_state.recovery_backup.clone(),
             },
-            active_operation: self.active_operation.clone(),
+            active_operation: self.operation_registry.primary().cloned(),
+            active_operations: self.operation_registry.active_summaries(),
+            operation_history: self.operation_registry.history().iter().cloned().collect(),
             composition_preview: self.composition_preview.clone(),
             catalog: self
                 .catalog
@@ -217,14 +334,7 @@ impl ClientSession {
             application_release: self.application_release_snapshot.clone(),
             profile_traces: self.profile_traces.clone(),
             profile_trace_error: self.profile_trace_error.clone(),
-            installation_role: if self.bootstrap.fixture_mode {
-                InstallationRoleSnapshot {
-                    role: "player".to_owned(),
-                    ..Default::default()
-                }
-            } else {
-                super::application::installation_role_snapshot()
-            },
+            installation_role,
             selected_content_id: self.selected_content_id.clone(),
             available_actions,
         }

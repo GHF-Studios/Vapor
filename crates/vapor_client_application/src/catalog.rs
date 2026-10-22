@@ -1,57 +1,16 @@
-use std::path::Path;
 pub use vapor_client_domain::{
     CatalogConflict, CatalogContent, CatalogDependency, CatalogLocation, CatalogLocationKind,
 };
-use vapor_client_provider::{
-    content,
-    discovery::{EnvironmentPaths, InstallationPaths},
-};
+use vapor_client_provider::{content, discovery::InstallationPaths};
 
-/// Merge workspace-authored, cached, and installed content by exact identity.
-/// A missing or invalid workspace does not prevent cache and install discovery
-/// when the caller passes no workspace root.
-pub fn discover_content_catalog(
-    application_executable: &Path,
-    workspace_root: Option<&Path>,
+/// Discover acquired content that is usable by player and composition flows.
+/// Authored source projects have their own workspace discovery surface and do
+/// not enter the local Library catalog.
+pub fn discover_local_content_catalog(
+    application_executable: &std::path::Path,
 ) -> Result<Vec<CatalogContent>, String> {
     let installation = InstallationPaths::from_application_executable(application_executable)?;
     let mut entries = Vec::new();
-
-    if let Some(workspace_root) = workspace_root {
-        // Workspace source errors are surfaced through Studio's authored-source
-        // discovery result. They must not hide a usable cache/install catalog.
-        if let Ok(paths) = EnvironmentPaths::from_installation_and_source_path(
-            installation.clone(),
-            workspace_root,
-        ) && let Ok(source_catalog) = content::discover(&paths)
-        {
-            for artifact in source_catalog.artifacts() {
-                entries.push(CatalogContent {
-                    id: artifact.id().to_owned(),
-                    name: Some(artifact.name().to_owned()),
-                    version: artifact.version().map(ToOwned::to_owned),
-                    kind: artifact.kind().to_string(),
-                    published_file_id: artifact
-                        .workshop()
-                        .published_file_id()
-                        .map(ToOwned::to_owned),
-                    dependencies: artifact
-                        .dependencies()
-                        .iter()
-                        .map(catalog_dependency)
-                        .collect(),
-                    locations: vec![CatalogLocation {
-                        kind: CatalogLocationKind::Workspace,
-                        root: artifact.root().to_path_buf(),
-                        enabled: true,
-                        fingerprint: None,
-                        install_source: None,
-                    }],
-                    conflicts: Vec::new(),
-                });
-            }
-        }
-    }
 
     for selector in content::cached_index(&installation)? {
         let artifact = content::cached_artifact(&installation, &selector)?;
