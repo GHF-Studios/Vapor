@@ -29,8 +29,8 @@ pub use vapor_client_domain::{
     LocalCapability, ProfileAnalysisOptions, ProfileTraceSort, WorkflowTier,
     can_auto_install_library_item, dependent_composition_id,
 };
-pub use vapor_telemetry::{TelemetryEvent, TelemetryPayload};
 pub use vapor_console_core::ConsoleLevel;
+pub use vapor_telemetry::{TelemetryEvent, TelemetryPayload};
 
 pub use message::{
     ClientRequest, ClientResponse, ClientResponseKind, PROTOCOL_VERSION, ProtocolFrame, RequestId,

@@ -90,14 +90,13 @@ pub enum ConsoleCommandError {
 pub enum ConsoleCommandOutcome {
     Help,
     Status,
-    Action(ClientAction),
+    Action(Box<ClientAction>),
 }
 
 impl ConsoleCommand {
     /// Parse one user-entered line into a shared, typed service intent.
     pub fn parse(line: &str) -> Result<Self, ConsoleCommandError> {
-        let arguments = tokenize_command_line(line)
-            .map_err(ConsoleCommandError::MalformedLine)?;
+        let arguments = tokenize_command_line(line).map_err(ConsoleCommandError::MalformedLine)?;
         let Some((command, rest)) = arguments.split_first() else {
             return Err(ConsoleCommandError::Empty);
         };
@@ -137,26 +136,26 @@ impl ConsoleCommand {
         match self {
             Self::Help => ConsoleCommandOutcome::Help,
             Self::Status => ConsoleCommandOutcome::Status,
-            Self::CatalogRefresh => ConsoleCommandOutcome::Action(ClientAction::Catalog(
+            Self::CatalogRefresh => ConsoleCommandOutcome::Action(Box::new(ClientAction::Catalog(
                 crate::CatalogAction::Refresh,
-            )),
-            Self::CompositionSelect(composition_id) => ConsoleCommandOutcome::Action(
+            ))),
+            Self::CompositionSelect(composition_id) => ConsoleCommandOutcome::Action(Box::new(
                 ClientAction::Composition(CompositionAction::Select {
                     composition_id: composition_id.clone(),
                 }),
-            ),
-            Self::CompositionLaunch(composition_id) => ConsoleCommandOutcome::Action(
+            )),
+            Self::CompositionLaunch(composition_id) => ConsoleCommandOutcome::Action(Box::new(
                 ClientAction::Composition(CompositionAction::Launch {
                     composition_id: composition_id.clone(),
                 }),
-            ),
-            Self::WorkspaceTool(operation) => ConsoleCommandOutcome::Action(
+            )),
+            Self::WorkspaceTool(operation) => ConsoleCommandOutcome::Action(Box::new(
                 ClientAction::Workspace(WorkspaceAction::RunTool {
                     operation: *operation,
                     project_selection: WorkspaceProjectSelection::All,
                     target_triples: Vec::new(),
                 }),
-            ),
+            )),
         }
     }
 }
@@ -181,21 +180,23 @@ mod tests {
     fn console_commands_parse_into_the_shared_typed_client_actions() {
         assert_eq!(
             ConsoleCommand::parse("workspace build").unwrap().outcome(),
-            ConsoleCommandOutcome::Action(ClientAction::Workspace(WorkspaceAction::RunTool {
-                operation: WorkspaceToolOperation::Build,
-                project_selection: Default::default(),
-                target_triples: Vec::new(),
-            }))
+            ConsoleCommandOutcome::Action(Box::new(ClientAction::Workspace(
+                WorkspaceAction::RunTool {
+                    operation: WorkspaceToolOperation::Build,
+                    project_selection: Default::default(),
+                    target_triples: Vec::new(),
+                }
+            )))
         );
         assert_eq!(
             ConsoleCommand::parse("composition select \"Loo Cast\"")
                 .unwrap()
                 .outcome(),
-            ConsoleCommandOutcome::Action(ClientAction::Composition(
+            ConsoleCommandOutcome::Action(Box::new(ClientAction::Composition(
                 crate::CompositionAction::Select {
                     composition_id: "Loo Cast".to_owned(),
                 }
-            ))
+            )))
         );
     }
 
@@ -203,7 +204,11 @@ mod tests {
     fn console_command_catalog_respects_launcher_read_only_scope() {
         let launcher = console_command_catalog(ConsoleCommandScope::LauncherReadOnly);
         assert!(launcher.iter().all(|command| !command.mutating));
-        assert!(!launcher.iter().any(|command| command.path == "workspace build"));
+        assert!(
+            !launcher
+                .iter()
+                .any(|command| command.path == "workspace build")
+        );
     }
 
     #[test]

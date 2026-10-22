@@ -5,8 +5,8 @@
 
 use crate::{
     CrossTargetToolchainError, InstallationError, ManagedToolchain, ManagedTracyToolset,
-    OperationContext, OperationOutput, OperationPhase, Progress,
-    ToolchainError, TracyError, VaporInstallation,
+    OperationContext, OperationOutput, OperationPhase, Progress, ToolchainError, TracyError,
+    VaporInstallation,
 };
 use std::fmt;
 
@@ -131,7 +131,12 @@ impl DeveloperEnvironment {
             .target_is_installed(crate::toolchain::WINDOWS_GNU_TARGET);
         let windows_gnu_linker_installed = !crate::windows_gnu_linker_installed(&self.installation);
         if rust_installed || rust_analyzer_installed || windows_gnu_target_installed {
-            report_stage(context, 0, 3, "Installing pinned Rust toolchain and components");
+            report_stage(
+                context,
+                0,
+                3,
+                "Installing pinned Rust toolchain and components",
+            );
             self.rust
                 .install_with_output(|stream, process, text| {
                     if let Some(context) = context {

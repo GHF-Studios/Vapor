@@ -73,11 +73,12 @@ pub fn tokenize_command_line(input: &str) -> Result<Vec<String>, CommandLineErro
 }
 
 /// Severity shared by terminal, GUI, and in-game console adapters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConsoleLevel {
     Trace,
     Debug,
+    #[default]
     Info,
     Success,
     Warn,
@@ -124,12 +125,6 @@ impl ConsoleLevel {
             Self::Error => ConsoleStyleRole::Error,
             Self::Input => ConsoleStyleRole::Input,
         }
-    }
-}
-
-impl Default for ConsoleLevel {
-    fn default() -> Self {
-        Self::Info
     }
 }
 

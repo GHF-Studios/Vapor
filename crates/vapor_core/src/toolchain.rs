@@ -14,8 +14,8 @@
 //! Vapor Workspace remains the source of the pin.
 
 use crate::{
-    InstallationRootSource, OperationOutputStream, ToolchainPin,
-    VaporInstallation, VaporWorkspace, WorkspaceError,
+    InstallationRootSource, OperationOutputStream, ToolchainPin, VaporInstallation, VaporWorkspace,
+    WorkspaceError,
 };
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -632,7 +632,11 @@ impl fmt::Display for ToolchainError {
             }
 
             Self::Process { path, message } => {
-                write!(formatter, "managed process `{}` failed: {message}", path.display())
+                write!(
+                    formatter,
+                    "managed process `{}` failed: {message}",
+                    path.display()
+                )
             }
 
             Self::ToolchainNotInstalled { version, expected } => {
