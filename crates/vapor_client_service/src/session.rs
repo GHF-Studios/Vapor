@@ -897,91 +897,111 @@ impl ClientSession {
                     content_id,
                     enabled,
                 }) => {
-                    if self.active_operation.is_some() {
-                        response_kind = ClientResponseKind::Rejected;
-                        error = Some(ServiceError {
-                            code: ServiceErrorCode::OperationInProgress,
-                            message: "Wait for the current operation to finish before changing Library update policy.".to_owned(),
-                            retryable: true,
-                        });
-                        let snapshot = self.snapshot();
-                        return ClientResponse {
-                            protocol_version: vapor_client_protocol::PROTOCOL_VERSION,
-                            request_id: request.request_id,
-                            revision: snapshot.revision,
-                            kind: response_kind,
-                            snapshot,
-                            error,
-                        };
-                    }
-                    let parsed =
-                        vapor_client_protocol::ContentReference::parse(content_id.clone(), None)
-                            .and_then(|reference| {
-                                reference.vapor_id().map_err(|error| error.to_string())
-                            });
-                    match parsed {
-                        Err(message) => {
+                    if !enabled && !self.bootstrap.fixture_mode {
+                        match self.start_library_operation(LibraryAction::SetAutoInstall {
+                            content_id: content_id.clone(),
+                            enabled,
+                        }) {
+                            Ok(()) => {
+                                response_kind = ClientResponseKind::OperationAccepted;
+                                self.revision.0 = self.revision.0.saturating_add(1);
+                            }
+                            Err(operation_error) => {
+                                response_kind = ClientResponseKind::Rejected;
+                                error = Some(operation_error);
+                            }
+                        }
+                    } else {
+                        if self.active_operation.is_some() {
                             response_kind = ClientResponseKind::Rejected;
                             error = Some(ServiceError {
-                                code: ServiceErrorCode::InvalidRequest,
-                                message: format!("invalid content ID `{content_id}`: {message}"),
-                                retryable: false,
+                                code: ServiceErrorCode::OperationInProgress,
+                                message: "Wait for the current operation to finish before changing Library update policy.".to_owned(),
+                                retryable: true,
                             });
+                            let snapshot = self.snapshot();
+                            return ClientResponse {
+                                protocol_version: vapor_client_protocol::PROTOCOL_VERSION,
+                                request_id: request.request_id,
+                                revision: snapshot.revision,
+                                kind: response_kind,
+                                snapshot,
+                                error,
+                            };
                         }
-                        Ok(content_id) => {
-                            if enabled
-                                && let Err(message) =
-                                    self.validate_auto_install_target(&content_id.to_string())
-                            {
+                        let parsed = vapor_client_protocol::ContentReference::parse(
+                            content_id.clone(),
+                            None,
+                        )
+                        .and_then(|reference| {
+                            reference.vapor_id().map_err(|error| error.to_string())
+                        });
+                        match parsed {
+                            Err(message) => {
                                 response_kind = ClientResponseKind::Rejected;
                                 error = Some(ServiceError {
-                                    code: ServiceErrorCode::ActionUnavailable,
-                                    message,
+                                    code: ServiceErrorCode::InvalidRequest,
+                                    message: format!(
+                                        "invalid content ID `{content_id}`: {message}"
+                                    ),
                                     retryable: false,
                                 });
-                                let snapshot = self.snapshot();
-                                return ClientResponse {
-                                    protocol_version: vapor_client_protocol::PROTOCOL_VERSION,
-                                    request_id: request.request_id,
-                                    revision: snapshot.revision,
-                                    kind: response_kind,
-                                    snapshot,
-                                    error,
-                                };
                             }
-                            let previous_state = self.durable_state.clone();
-                            vapor_client_domain::set_library_auto_install(
-                                &mut self.durable_state.library_policies,
-                                content_id,
-                                enabled,
-                            );
-                            if let Some(store) = &self.state_store
-                                && let Err(message) = store.save(&self.durable_state)
-                            {
-                                self.durable_state = previous_state;
-                                response_kind = ClientResponseKind::Rejected;
-                                error = Some(ServiceError {
-                                    code: ServiceErrorCode::PersistenceFailure,
-                                    message,
-                                    retryable: true,
-                                });
-                            } else if enabled {
-                                if let Err(message) = self.collect_unreferenced_auto_install() {
-                                    self.durable_state = previous_state;
-                                    if let Some(store) = &self.state_store {
-                                        let _ = store.save(&self.durable_state);
-                                    }
+                            Ok(content_id) => {
+                                if enabled
+                                    && let Err(message) =
+                                        self.validate_auto_install_target(&content_id.to_string())
+                                {
                                     response_kind = ClientResponseKind::Rejected;
                                     error = Some(ServiceError {
-                                        code: ServiceErrorCode::ProviderFailure,
+                                        code: ServiceErrorCode::ActionUnavailable,
+                                        message,
+                                        retryable: false,
+                                    });
+                                    let snapshot = self.snapshot();
+                                    return ClientResponse {
+                                        protocol_version: vapor_client_protocol::PROTOCOL_VERSION,
+                                        request_id: request.request_id,
+                                        revision: snapshot.revision,
+                                        kind: response_kind,
+                                        snapshot,
+                                        error,
+                                    };
+                                }
+                                let previous_state = self.durable_state.clone();
+                                vapor_client_domain::set_library_auto_install(
+                                    &mut self.durable_state.library_policies,
+                                    content_id,
+                                    enabled,
+                                );
+                                if let Some(store) = &self.state_store
+                                    && let Err(message) = store.save(&self.durable_state)
+                                {
+                                    self.durable_state = previous_state;
+                                    response_kind = ClientResponseKind::Rejected;
+                                    error = Some(ServiceError {
+                                        code: ServiceErrorCode::PersistenceFailure,
                                         message,
                                         retryable: true,
                                     });
+                                } else if enabled {
+                                    if let Err(message) = self.collect_unreferenced_auto_install() {
+                                        self.durable_state = previous_state;
+                                        if let Some(store) = &self.state_store {
+                                            let _ = store.save(&self.durable_state);
+                                        }
+                                        response_kind = ClientResponseKind::Rejected;
+                                        error = Some(ServiceError {
+                                            code: ServiceErrorCode::ProviderFailure,
+                                            message,
+                                            retryable: true,
+                                        });
+                                    } else {
+                                        self.revision.0 = self.revision.0.saturating_add(1);
+                                    }
                                 } else {
                                     self.revision.0 = self.revision.0.saturating_add(1);
                                 }
-                            } else {
-                                self.revision.0 = self.revision.0.saturating_add(1);
                             }
                         }
                     }
@@ -1709,15 +1729,32 @@ impl ClientSession {
         if self.bootstrap.fixture_mode {
             return Ok(Vec::new());
         }
-        if self
+        let has_unresolved_installed_composition = self
             .durable_state
             .compositions
             .compositions
             .iter()
             .any(|composition| {
-                composition.root_package.is_some() && composition.resolved_graph.is_none()
-            })
-        {
+                if composition.root_package.is_none() {
+                    return false;
+                }
+                match &composition.installation {
+                    InstallationState::Partial { .. } => true,
+                    InstallationState::Installed { artifacts, .. } => {
+                        artifacts.is_empty() && composition.resolved_graph.is_none()
+                    }
+                    InstallationState::OutOfDate {
+                        actual_graph,
+                        artifacts,
+                        ..
+                    } => artifacts.is_empty() && actual_graph.nodes.is_empty(),
+                    InstallationState::NeedsRepair { artifacts, .. } => {
+                        artifacts.is_empty() && composition.resolved_graph.is_none()
+                    }
+                    InstallationState::Unknown | InstallationState::NotInstalled => false,
+                }
+            });
+        if has_unresolved_installed_composition {
             return Ok(Vec::new());
         }
         let policies = self.durable_state.library_policies.clone();
@@ -1727,18 +1764,10 @@ impl ClientSession {
             .into_iter()
             .filter(|policy| policy.auto_install && policy.packagepack_owners.is_empty())
         {
-            let referenced = self
-                .durable_state
-                .compositions
-                .compositions
-                .iter()
-                .filter_map(|composition| composition.resolved_graph.as_ref())
-                .any(|graph| {
-                    graph
-                        .nodes
-                        .iter()
-                        .any(|node| node.content.id == policy.content_id.as_str())
-                });
+            let referenced = vapor_client_domain::installed_composition_uses_content(
+                &self.durable_state.compositions,
+                &policy.content_id,
+            );
             if referenced {
                 continue;
             }

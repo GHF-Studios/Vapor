@@ -17,6 +17,46 @@ impl ClientSession {
     ) -> Result<(), ServiceError> {
         self.reject_if_operation_in_progress()?;
 
+        let retained_subscription = match &action {
+            LibraryAction::SetAutoInstall {
+                content_id,
+                enabled: false,
+            } if !self.bootstrap.fixture_mode => {
+                let entry = self
+                    .catalog
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.id == *content_id)
+                    .ok_or_else(|| ServiceError {
+                        code: ServiceErrorCode::ActionUnavailable,
+                        message: "Refresh the Library before keeping this item manually."
+                            .to_owned(),
+                        retryable: true,
+                    })?;
+                let published_file_id = entry
+                    .published_file_id
+                    .as_deref()
+                    .ok_or_else(|| ServiceError {
+                        code: ServiceErrorCode::ActionUnavailable,
+                        message: "This item has no Workshop subscription to keep.".to_owned(),
+                        retryable: false,
+                    })?
+                    .parse::<u64>()
+                    .map_err(|_| ServiceError {
+                        code: ServiceErrorCode::InvalidRequest,
+                        message: "This item has an invalid Workshop identity.".to_owned(),
+                        retryable: false,
+                    })?;
+                let app_id = self.bootstrap.workshop_app_id.ok_or_else(|| ServiceError {
+                    code: ServiceErrorCode::ActionUnavailable,
+                    message: "This installation has no configured Workshop application.".to_owned(),
+                    retryable: false,
+                })?;
+                Some((app_id, published_file_id))
+            }
+            _ => None,
+        };
+
         let selector = library_action_selector(&action);
         if library_action_can_invalidate_composition(&action) {
             let dependent = if let Some(selector) = selector {
@@ -85,13 +125,18 @@ impl ClientSession {
             },
             move |context| {
                 context.set_phase(application_library_phase(&worker_action));
-                let workspace_root =
-                    library_action_workspace_root(&worker_action).map(PathBuf::from);
-                application::run_library_operation(
-                    &bootstrap.application_executable,
-                    workspace_root.as_deref(),
-                    &worker_action,
-                )
+                if let Some((app_id, published_file_id)) = retained_subscription {
+                    application::subscribe_workshop_items(app_id, &[published_file_id])?;
+                    Ok("Kept this item subscribed for manual use.".to_owned())
+                } else {
+                    let workspace_root =
+                        library_action_workspace_root(&worker_action).map(PathBuf::from);
+                    application::run_library_operation(
+                        &bootstrap.application_executable,
+                        workspace_root.as_deref(),
+                        &worker_action,
+                    )
+                }
             },
             library_result_outcome,
             move |id, result| {
@@ -181,13 +226,49 @@ impl ClientSession {
     }
 
     pub(super) fn apply_library_completion(&mut self, completion: LibraryOperationCompletion) {
-        let (succeeded, message) = match completion.result {
+        let (mut succeeded, mut message) = match completion.result {
             Ok(message) => {
                 self.refresh_catalog();
                 (true, message)
             }
             Err(message) => (false, message),
         };
+        if succeeded
+            && let LibraryAction::SetAutoInstall {
+                content_id,
+                enabled: false,
+            } = &completion.action
+        {
+            let previous_policies = self.durable_state.library_policies.clone();
+            let update = ContentReference::parse(content_id.clone(), None)
+                .and_then(|reference| reference.vapor_id().map_err(|error| error.to_string()))
+                .map(|content_id| {
+                    vapor_client_domain::set_library_auto_install(
+                        &mut self.durable_state.library_policies,
+                        content_id,
+                        false,
+                    );
+                });
+            if let Err(error) = update {
+                succeeded = false;
+                message = format!(
+                    "Subscribed the item, but could not update its Library policy: {error}"
+                );
+            } else if let Some(store) = &self.state_store
+                && let Err(error) = store.save(&self.durable_state)
+            {
+                self.durable_state.library_policies = previous_policies;
+                succeeded = false;
+                message =
+                    format!("Subscribed the item, but could not save its Library policy: {error}");
+            } else {
+                self.workshop.subscriptions_loaded = false;
+                self.workshop.subscriptions_revision =
+                    self.workshop.subscriptions_revision.saturating_add(1);
+                message =
+                    format!("{message} Automatic updates are off; the item remains subscribed.");
+            }
+        }
         self.clear_active_operation();
         self.revision.0 = self.revision.0.saturating_add(1);
         self.operation_events

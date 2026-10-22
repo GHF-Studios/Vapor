@@ -539,7 +539,13 @@ impl ClientSession {
         &mut self,
         requested_ids: Vec<String>,
     ) -> Result<usize, String> {
-        let roots = packagepack_roots(self.catalog.entries(), &requested_ids);
+        let installed_root_ids =
+            vapor_client_domain::installed_packagepack_roots(&self.durable_state.compositions);
+        let roots = packagepack_roots_with_installed(
+            self.catalog.entries(),
+            &requested_ids,
+            &installed_root_ids,
+        );
         let owners = packagepack_dependency_owners(self.catalog.entries(), &roots);
         let previous = self.durable_state.library_policies.clone();
         let owner_edges = owners.iter().cloned().collect::<BTreeSet<_>>();
@@ -631,12 +637,10 @@ impl ClientSession {
         for root in &roots {
             let content_id = ContentReference::parse(root.clone(), None)
                 .and_then(|reference| reference.vapor_id().map_err(|error| error.to_string()))?;
-            if vapor_client_protocol::dependent_composition_id(
+            if !vapor_client_domain::installed_composition_uses_content(
                 &self.durable_state.compositions,
                 &content_id,
-            )
-            .is_none()
-                && application::collect_library_item(&self.bootstrap.application_executable, root)?
+            ) && application::collect_library_item(&self.bootstrap.application_executable, root)?
             {
                 removed_roots += 1;
             }
@@ -725,12 +729,31 @@ impl ClientSession {
                     subscribe: false,
                 } = &completion.action
                 {
-                    match self.release_unsubscribed_packagepacks(ids) {
-                        Ok(Some(message)) => append_summary(&mut summary, &message),
-                        Ok(None) => {}
-                        Err(error) => {
-                            succeeded = false;
-                            failure = Some(error);
+                    let ownership_ready = if !self.bootstrap.fixture_mode {
+                        let subscribed_ids = self
+                            .workshop
+                            .subscriptions
+                            .iter()
+                            .map(|item| item.published_file_id.clone())
+                            .collect::<Vec<_>>();
+                        match self.seed_auto_install_dependency_owners(subscribed_ids) {
+                            Ok(_) => true,
+                            Err(error) => {
+                                append_auto_install_warning(&mut summary, &error);
+                                false
+                            }
+                        }
+                    } else {
+                        true
+                    };
+                    if ownership_ready {
+                        match self.release_unsubscribed_packagepacks(ids) {
+                            Ok(Some(message)) => append_summary(&mut summary, &message),
+                            Ok(None) => {}
+                            Err(error) => {
+                                succeeded = false;
+                                failure = Some(error);
+                            }
                         }
                     }
                 }
@@ -1334,6 +1357,27 @@ fn packagepack_roots(
         .collect()
 }
 
+fn packagepack_roots_with_installed(
+    catalog: &[vapor_client_protocol::CatalogEntry],
+    subscribed_workshop_ids: &[String],
+    installed_roots: &[String],
+) -> Vec<String> {
+    let mut roots = packagepack_roots(catalog, subscribed_workshop_ids);
+    let installed = installed_roots
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    roots.extend(
+        catalog
+            .iter()
+            .filter(|entry| entry.kind == "packagepack" && installed.contains(entry.id.as_str()))
+            .map(|entry| entry.id.clone()),
+    );
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
 fn packagepack_dependency_owners(
     catalog: &[vapor_client_protocol::CatalogEntry],
     roots: &[String],
@@ -1823,7 +1867,7 @@ mod target_tests {
     use super::super::validate_runtime_target_matrix;
     use super::{
         append_auto_install_warning, auto_install_context_or_pause, packagepack_dependency_owners,
-        packagepack_roots, validate_workshop_source_identity,
+        packagepack_roots, packagepack_roots_with_installed, validate_workshop_source_identity,
     };
     use vapor_client_protocol::{WorkspaceSourceProject, WorkspaceWorkshopPolicy};
 
@@ -1972,6 +2016,54 @@ mod target_tests {
                 ),
                 ("studio/pack/main".to_owned(), "studio/game/main".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn installed_packagepacks_keep_dependency_ownership_after_unsubscribe() {
+        let dependency = vapor_client_protocol::CatalogDependency {
+            id: "studio/game/main".to_owned(),
+            version: Some("^0.5".to_owned()),
+            relationship: "dependency".to_owned(),
+            optional: false,
+            workshop_id: None,
+            reason: None,
+        };
+        let entry =
+            |id: &str,
+             kind: &str,
+             workshop_id: Option<&str>,
+             dependency_details: Vec<vapor_client_protocol::CatalogDependency>| {
+                vapor_client_protocol::CatalogEntry {
+                    id: id.to_owned(),
+                    name: None,
+                    version: Some("0.5.0".to_owned()),
+                    kind: kind.to_owned(),
+                    published_file_id: workshop_id.map(ToOwned::to_owned),
+                    dependencies: Vec::new(),
+                    dependency_details,
+                    conflicts: Vec::new(),
+                    locations: Vec::new(),
+                    role: vapor_client_protocol::CatalogItemRole::Other,
+                    actions: Vec::new(),
+                }
+            };
+        let catalog = vec![
+            entry(
+                "studio/pack/main",
+                "packagepack",
+                Some("100"),
+                vec![dependency],
+            ),
+            entry("studio/game/main", "game", Some("101"), Vec::new()),
+        ];
+
+        let roots =
+            packagepack_roots_with_installed(&catalog, &[], &["studio/pack/main".to_owned()]);
+        assert_eq!(roots, ["studio/pack/main"]);
+        assert_eq!(
+            packagepack_dependency_owners(&catalog, &roots),
+            [("studio/pack/main".to_owned(), "studio/game/main".to_owned())]
         );
     }
 

@@ -168,6 +168,77 @@ pub fn dependent_composition_id<'a>(
     })
 }
 
+/// Whether an installed Packagepack composition still owns one content item.
+///
+/// Uninstalled composition drafts and previews do not retain auto-installed
+/// Library entries. Installed and out-of-date compositions do, because their
+/// exact content graph is still a local playable installation.
+pub fn installed_composition_uses_content(
+    compositions: &CompositionDocument,
+    content_id: &VaporId,
+) -> bool {
+    compositions.compositions.iter().any(|composition| {
+        let (artifacts, graph) = match &composition.installation {
+            crate::InstallationState::Installed { artifacts, .. } => {
+                (artifacts.as_slice(), composition.resolved_graph.as_ref())
+            }
+            crate::InstallationState::OutOfDate {
+                actual_graph,
+                artifacts,
+                ..
+            } => (artifacts.as_slice(), Some(actual_graph)),
+            crate::InstallationState::NeedsRepair { artifacts, .. } => {
+                (artifacts.as_slice(), composition.resolved_graph.as_ref())
+            }
+            crate::InstallationState::Unknown
+            | crate::InstallationState::NotInstalled
+            | crate::InstallationState::Partial { .. } => return false,
+        };
+        artifacts
+            .iter()
+            .any(|artifact| artifact.id == content_id.as_str())
+            || graph.is_some_and(|graph| {
+                graph.root.id == content_id.as_str()
+                    || graph.effective_engine.id == content_id.as_str()
+                    || graph
+                        .effective_game
+                        .as_ref()
+                        .is_some_and(|game| game.id == content_id.as_str())
+                    || graph.nodes.iter().any(|node| {
+                        node.content.id == content_id.as_str()
+                            || node
+                                .dependencies
+                                .iter()
+                                .any(|dependency| dependency.content.id == content_id.as_str())
+                    })
+            })
+    })
+}
+
+/// Packagepack roots that still have an installed local composition.
+/// Drafts and previews do not own downloaded content; installed, out-of-date,
+/// and repairable compositions do.
+pub fn installed_packagepack_roots(compositions: &CompositionDocument) -> Vec<String> {
+    compositions
+        .compositions
+        .iter()
+        .filter(|composition| {
+            matches!(
+                composition.installation,
+                crate::InstallationState::Installed { .. }
+                    | crate::InstallationState::OutOfDate { .. }
+                    | crate::InstallationState::NeedsRepair { .. }
+            )
+        })
+        .filter_map(|composition| {
+            composition
+                .root_package
+                .as_ref()
+                .map(|root| root.id.clone())
+        })
+        .collect()
+}
+
 /// Select a version according to the item's Library policy and all active
 /// composition constraints.
 ///
@@ -300,12 +371,14 @@ fn policy_mut_or_insert(
 mod tests {
     use super::{
         add_auto_install_owner, can_auto_install_library_item, dependent_composition_id,
-        remove_auto_install_owner, set_library_auto_install,
+        installed_composition_uses_content, installed_packagepack_roots, remove_auto_install_owner,
+        set_library_auto_install,
     };
     use crate::{
-        Composition, CompositionDocument, ResolvedCompositionGraph, ResolvedDependencyIdentity,
-        ResolvedNodeIdentity,
+        Composition, CompositionDocument, InstallationState, InstalledArtifactRecord,
+        ResolvedCompositionGraph, ResolvedDependencyIdentity, ResolvedNodeIdentity,
     };
+    use std::path::PathBuf;
     use vapor_content::ContentReference;
 
     #[test]
@@ -398,5 +471,72 @@ mod tests {
             dependent_composition_id(&document, &engine),
             Some("default")
         );
+    }
+
+    #[test]
+    fn auto_install_dependency_is_owned_only_while_a_packagepack_is_installed() {
+        let dependency: vapor_content::VaporId = "studio:engine".parse().unwrap();
+        let mut composition = Composition::default_composition();
+        composition.root_package = Some(ContentReference::parse("studio:pack", None).unwrap());
+        composition.resolved_graph = Some(ResolvedCompositionGraph {
+            root: ContentReference::parse("studio:pack", Some("1.0.0".to_owned())).unwrap(),
+            effective_engine: ContentReference::parse("studio:engine", Some("1.0.0".to_owned()))
+                .unwrap(),
+            effective_game: None,
+            nodes: vec![ResolvedNodeIdentity {
+                content: ContentReference::parse("studio:pack", Some("1.0.0".to_owned())).unwrap(),
+                kind: "packagepack".to_owned(),
+                fingerprint: None,
+                source: None,
+                dependencies: vec![ResolvedDependencyIdentity {
+                    binding: "engine".to_owned(),
+                    content: ContentReference::parse("studio:engine", Some("1.0.0".to_owned()))
+                        .unwrap(),
+                    version_requirement: Some("^1".to_owned()),
+                }],
+            }],
+        });
+        let document = CompositionDocument {
+            schema_version: 1,
+            compositions: vec![composition.clone()],
+        };
+
+        assert!(!installed_composition_uses_content(&document, &dependency));
+
+        composition.installation = InstallationState::Installed {
+            artifacts: vec![InstalledArtifactRecord {
+                id: dependency.to_string(),
+                version: Some("1.0.0".to_owned()),
+                root: PathBuf::from("/installed/engine"),
+                fingerprint: "sha256:engine".to_owned(),
+            }],
+            graph_fingerprint: Some("sha256:graph".to_owned()),
+        };
+        let document = CompositionDocument {
+            schema_version: 1,
+            compositions: vec![composition],
+        };
+        assert!(installed_composition_uses_content(&document, &dependency));
+    }
+
+    #[test]
+    fn packagepack_root_ownership_ignores_uninstalled_composition_drafts() {
+        let mut composition = Composition::default_composition();
+        composition.root_package = Some(ContentReference::parse("studio:pack", None).unwrap());
+        let document = CompositionDocument {
+            schema_version: 1,
+            compositions: vec![composition.clone()],
+        };
+        assert!(installed_packagepack_roots(&document).is_empty());
+
+        composition.installation = InstallationState::Installed {
+            artifacts: Vec::new(),
+            graph_fingerprint: Some("sha256:graph".to_owned()),
+        };
+        let document = CompositionDocument {
+            schema_version: 1,
+            compositions: vec![composition],
+        };
+        assert_eq!(installed_packagepack_roots(&document), ["studio:pack"]);
     }
 }

@@ -161,18 +161,27 @@ fn merge_entry(
                 format_catalog_dependencies(&next_dependencies),
             ));
         }
-        let first_fingerprint = existing
-            .locations
-            .iter()
-            .find_map(|location| location.fingerprint.as_ref());
-        let incoming_fingerprint = incoming
-            .locations
-            .iter()
-            .find_map(|location| location.fingerprint.as_ref());
-        if let (Some(first), Some(next)) = (first_fingerprint, incoming_fingerprint)
-            && first != next
-        {
-            conflicts.push(("content fingerprint", first.clone(), next.clone()));
+        // Cache and installed trees are different realizations: packaging
+        // intentionally narrows runtime declarations and payloads to the host
+        // target. Compare fingerprints only between observations from the same
+        // provider class, where a mismatch really is a duplicate-copy conflict.
+        let fingerprint_conflict = existing.locations.iter().find_map(|first| {
+            let first_fingerprint = first.fingerprint.as_ref()?;
+            incoming
+                .locations
+                .iter()
+                .find(|next| {
+                    next.kind == first.kind
+                        && next
+                            .fingerprint
+                            .as_ref()
+                            .is_some_and(|next_fingerprint| next_fingerprint != first_fingerprint)
+                })
+                .and_then(|next| next.fingerprint.as_ref())
+                .map(|next_fingerprint| (first_fingerprint.clone(), next_fingerprint.clone()))
+        });
+        if let Some((first, next)) = fingerprint_conflict {
+            conflicts.push(("content fingerprint", first, next));
         }
         existing.conflicts.extend(conflicts.into_iter().map(
             |(field, first_value, conflicting_value)| CatalogConflict {
@@ -221,4 +230,72 @@ fn format_catalog_dependencies(dependencies: &[CatalogDependency]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CatalogContent, CatalogLocation, CatalogLocationKind, merge_catalog_entries};
+    use std::path::PathBuf;
+
+    fn observation(kind: CatalogLocationKind, fingerprint: &str) -> CatalogContent {
+        CatalogContent {
+            id: "studio/example/game".to_owned(),
+            name: Some("Example".to_owned()),
+            version: Some("0.5.0".to_owned()),
+            kind: "game".to_owned(),
+            published_file_id: Some("123".to_owned()),
+            dependencies: Vec::new(),
+            locations: vec![CatalogLocation {
+                kind,
+                root: PathBuf::from(format!("/{kind:?}")),
+                enabled: true,
+                fingerprint: Some(fingerprint.to_owned()),
+                install_source: None,
+            }],
+            conflicts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn target_specific_installation_fingerprint_does_not_conflict_with_full_cache() {
+        let merged = merge_catalog_entries([
+            observation(CatalogLocationKind::Cache, "sha256:all-targets"),
+            observation(CatalogLocationKind::Installed, "sha256:host-target"),
+        ]);
+
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].conflicts.is_empty());
+        assert_eq!(merged[0].locations.len(), 2);
+    }
+
+    #[test]
+    fn mismatched_fingerprints_for_same_provider_kind_remain_a_conflict() {
+        let merged = merge_catalog_entries([
+            observation(CatalogLocationKind::Cache, "sha256:first"),
+            observation(CatalogLocationKind::Cache, "sha256:second"),
+        ]);
+
+        assert_eq!(merged[0].conflicts.len(), 1);
+        assert_eq!(merged[0].conflicts[0].field, "content fingerprint");
+    }
+
+    #[test]
+    fn later_same_provider_copy_is_checked_even_if_first_copy_matches() {
+        let mut incoming = observation(CatalogLocationKind::Cache, "sha256:first");
+        incoming.locations.push(CatalogLocation {
+            kind: CatalogLocationKind::Cache,
+            root: PathBuf::from("/Cache/second"),
+            enabled: true,
+            fingerprint: Some("sha256:second".to_owned()),
+            install_source: None,
+        });
+
+        let merged = merge_catalog_entries([
+            observation(CatalogLocationKind::Cache, "sha256:first"),
+            incoming,
+        ]);
+
+        assert_eq!(merged[0].conflicts.len(), 1);
+        assert_eq!(merged[0].conflicts[0].field, "content fingerprint");
+    }
 }
