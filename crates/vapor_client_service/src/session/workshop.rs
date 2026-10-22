@@ -1438,10 +1438,10 @@ fn fixture_workshop_subscription(id: &str) -> vapor_client_application::Workshop
         preview_url: item.preview_url,
         updated_at_unix: item.updated_at_unix,
         tags: item.tags,
-        installed: false,
-        needs_update: false,
-        downloading: false,
-        download_progress: None,
+        steam_installed: false,
+        steam_needs_update: false,
+        steam_downloading: false,
+        steam_download_progress: None,
     }
 }
 
@@ -1484,10 +1484,10 @@ fn workshop_subscription_snapshot(
         preview_url: item.preview_url.clone(),
         updated_at_unix: item.updated_at_unix,
         tags: item.tags.clone(),
-        installed: item.installed,
-        needs_update: item.needs_update,
-        downloading: item.downloading,
-        download_progress: item.download_progress,
+        steam_installed: item.steam_installed,
+        steam_needs_update: item.steam_needs_update,
+        steam_downloading: item.steam_downloading,
+        steam_download_progress: item.steam_download_progress,
     }
 }
 
@@ -1593,10 +1593,10 @@ mod target_tests {
             preview_url: None,
             updated_at_unix: 1,
             tags: vec!["packagepack".to_owned(), "space".to_owned()],
-            installed: true,
-            needs_update: false,
-            downloading: false,
-            download_progress: None,
+            steam_installed: true,
+            steam_needs_update: false,
+            steam_downloading: false,
+            steam_download_progress: None,
         };
 
         let snapshot = super::workshop_subscription_snapshot(&subscription);

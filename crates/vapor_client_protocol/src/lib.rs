@@ -692,10 +692,10 @@ mod tests {
                     preview_url: None,
                     updated_at_unix: 1_797_000_000,
                     tags: vec!["game".into()],
-                    installed: false,
-                    needs_update: false,
-                    downloading: false,
-                    download_progress: None,
+                    steam_installed: false,
+                    steam_needs_update: false,
+                    steam_downloading: false,
+                    steam_download_progress: None,
                 }],
                 subscriptions_loaded: true,
                 subscriptions_revision: 2,
@@ -807,6 +807,31 @@ mod tests {
         )
         .expect("prior subscription snapshot remains readable without tags");
         assert!(subscription.tags.is_empty());
+
+        let encoded = serde_json::to_value(subscription).expect("subscription serializes");
+        let object = encoded.as_object().expect("snapshot is an object");
+        for key in [
+            "installed",
+            "needs_update",
+            "downloading",
+            "download_progress",
+        ] {
+            assert!(
+                object.contains_key(key),
+                "legacy wire key {key} remains stable"
+            );
+        }
+        for key in [
+            "steam_installed",
+            "steam_needs_update",
+            "steam_downloading",
+            "steam_download_progress",
+        ] {
+            assert!(
+                !object.contains_key(key),
+                "Rust ownership names stay internal: {key}"
+            );
+        }
     }
 
     #[test]

@@ -75,10 +75,11 @@ pub struct WorkshopSubscription {
     pub preview_url: Option<String>,
     pub updated_at_unix: u32,
     pub tags: Vec<String>,
-    pub installed: bool,
-    pub needs_update: bool,
-    pub downloading: bool,
-    pub download_progress: Option<(u64, u64)>,
+    /// Steam UGC state; this is not Vapor Library availability.
+    pub steam_installed: bool,
+    pub steam_needs_update: bool,
+    pub steam_downloading: bool,
+    pub steam_download_progress: Option<(u64, u64)>,
 }
 
 /// Download Workshop items and consume each local folder while Steam keeps it available.
@@ -379,7 +380,7 @@ pub fn subscribed_items(app_id: u32) -> Result<Vec<WorkshopSubscription>, String
         .map(|id| {
             let published_file_id = id.0.to_string();
             let item = details.remove(&published_file_id);
-            let (installed, needs_update, downloading, download_progress) =
+            let (steam_installed, steam_needs_update, steam_downloading, steam_download_progress) =
                 states.remove(&id).unwrap_or_default();
             let details = workshop_subscription_details(item);
             WorkshopSubscription {
@@ -389,10 +390,10 @@ pub fn subscribed_items(app_id: u32) -> Result<Vec<WorkshopSubscription>, String
                 preview_url: details.preview_url,
                 updated_at_unix: details.updated_at_unix,
                 tags: details.tags,
-                installed,
-                needs_update,
-                downloading,
-                download_progress,
+                steam_installed,
+                steam_needs_update,
+                steam_downloading,
+                steam_download_progress,
             }
         })
         .collect())

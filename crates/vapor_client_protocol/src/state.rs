@@ -319,10 +319,15 @@ pub struct WorkshopSubscriptionSnapshot {
     pub updated_at_unix: u32,
     #[serde(default)]
     pub tags: Vec<String>,
-    pub installed: bool,
-    pub needs_update: bool,
-    pub downloading: bool,
-    pub download_progress: Option<(u64, u64)>,
+    /// Steam UGC facts, distinct from Vapor Library acquisition state.
+    #[serde(rename = "installed")]
+    pub steam_installed: bool,
+    #[serde(rename = "needs_update")]
+    pub steam_needs_update: bool,
+    #[serde(rename = "downloading")]
+    pub steam_downloading: bool,
+    #[serde(rename = "download_progress")]
+    pub steam_download_progress: Option<(u64, u64)>,
 }
 
 /// Authoritative discovery state for source projects in the active workspace.
