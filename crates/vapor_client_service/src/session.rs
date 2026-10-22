@@ -2784,6 +2784,40 @@ mod tests {
             .map(|item| item.published_file_id.clone())
             .collect::<Vec<_>>();
         assert_eq!(ids, ["1001", "1002"]);
+        let after_subscribe = session.snapshot();
+        assert!(after_subscribe.catalog.iter().any(|item| {
+            item.id == "fixture.content.1002"
+                && item
+                    .locations
+                    .iter()
+                    .any(|location| location.kind == CatalogLocationKind::Cache && location.enabled)
+        }));
+
+        let unsubscribed = session.dispatch(request(
+            None,
+            ClientAction::Workshop(WorkshopAction::Unsubscribe {
+                item_ids: vec!["1002".into()],
+            }),
+        ));
+        assert_eq!(unsubscribed.kind, ClientResponseKind::OperationAccepted);
+        wait_for_operation(&mut session);
+        let after_unsubscribe = session.snapshot();
+        let ids = after_unsubscribe
+            .workshop
+            .subscriptions
+            .iter()
+            .map(|item| item.published_file_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["1001"]);
+        assert!(
+            after_unsubscribe.catalog.iter().any(|item| {
+                item.id == "fixture.content.1002"
+                    && item.locations.iter().any(|location| {
+                        location.kind == CatalogLocationKind::Cache && location.enabled
+                    })
+            }),
+            "unsubscribing must not erase the independent Library copy"
+        );
 
         let invalid = session.dispatch(request(
             None,
