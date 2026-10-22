@@ -75,17 +75,12 @@ fn run_scenario(executable: &Path, scenario_path: &Path) -> Result<(), String> {
         }
         let terminal_operation =
             if response.kind == vapor_client_protocol::ClientResponseKind::OperationAccepted {
-                let operation_id = response
-                    .snapshot
-                    .active_operation
-                    .as_ref()
-                    .map(|operation| operation.id.as_str())
-                    .ok_or_else(|| {
-                        format!(
-                            "step {} accepted an operation without an operation ID",
-                            index + 1
-                        )
-                    })?;
+                let operation_id = response.operation_id.as_deref().ok_or_else(|| {
+                    format!(
+                        "step {} accepted an operation without an operation ID",
+                        index + 1
+                    )
+                })?;
                 Some(await_terminal_operation(&mut client, operation_id)?)
             } else {
                 None

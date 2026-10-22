@@ -564,18 +564,18 @@ impl ClientSession {
                 store.save(&loaded.state)?;
             }
         }
-        if bootstrap.workspace_root.is_none() {
-            if let Some(root) = loaded.state.authoring_workspace_root.as_deref() {
-                let root = PathBuf::from(root);
-                if is_installed_application_root(&root) {
-                    // The installed app root is runtime content. A persisted
-                    // source selection must never turn it into an authoring
-                    // workspace just because every frontend shares this state.
-                    loaded.state.authoring_workspace_root = None;
-                    store.save(&loaded.state)?;
-                } else {
-                    bootstrap.workspace_root = Some(root);
-                }
+        if bootstrap.workspace_root.is_none()
+            && let Some(root) = loaded.state.authoring_workspace_root.as_deref()
+        {
+            let root = PathBuf::from(root);
+            if is_installed_application_root(&root) {
+                // The installed app root is runtime content. A persisted
+                // source selection must never turn it into an authoring
+                // workspace just because every frontend shares this state.
+                loaded.state.authoring_workspace_root = None;
+                store.save(&loaded.state)?;
+            } else {
+                bootstrap.workspace_root = Some(root);
             }
         }
         let superworkspace_setup_error = if bootstrap.fixture_mode {
@@ -750,6 +750,13 @@ impl ClientSession {
 
     pub fn dispatch(&mut self, request: ClientRequest) -> ClientResponse {
         self.poll_background_operation_messages();
+        let active_operation_ids_before = self
+            .operation_registry
+            .active_summaries()
+            .into_iter()
+            .map(|operation| operation.id)
+            .collect::<std::collections::HashSet<_>>();
+        let is_registered_source_list = is_registered_source_list_query(&request.action);
         let mut response_kind = ClientResponseKind::Applied;
         let mut error = None;
         let is_cancel_request = matches!(
@@ -952,6 +959,7 @@ impl ClientSession {
                                         request_id: request.request_id,
                                         revision: snapshot.revision,
                                         kind: response_kind,
+                                        operation_id: None,
                                         snapshot,
                                         error,
                                     };
@@ -1101,6 +1109,7 @@ impl ClientSession {
                                         request_id: request.request_id,
                                         revision: snapshot.revision,
                                         kind: response_kind,
+                                        operation_id: None,
                                         snapshot,
                                         error,
                                     };
@@ -1220,6 +1229,7 @@ impl ClientSession {
                             request_id: request.request_id,
                             revision: snapshot.revision,
                             kind: response_kind,
+                            operation_id: None,
                             snapshot,
                             error,
                         };
@@ -1553,11 +1563,37 @@ impl ClientSession {
             }
         }
         let snapshot = self.snapshot();
+        let operation_id = if response_kind == ClientResponseKind::OperationAccepted {
+            snapshot
+                .active_operations
+                .iter()
+                .find(|operation| !active_operation_ids_before.contains(&operation.id))
+                .or_else(|| {
+                    is_registered_source_list.then(|| {
+                        snapshot.active_operations.iter().find(|operation| {
+                            operation.action == "authoring.list-registered-sources"
+                        })
+                    })?
+                })
+                .map(|operation| operation.id.clone())
+        } else {
+            None
+        };
+        if response_kind == ClientResponseKind::OperationAccepted && operation_id.is_none() {
+            response_kind = ClientResponseKind::Rejected;
+            error = Some(ServiceError {
+                code: ServiceErrorCode::InternalFailure,
+                message: "The service accepted an operation without retaining its identity."
+                    .to_owned(),
+                retryable: true,
+            });
+        }
         ClientResponse {
             protocol_version: vapor_client_protocol::PROTOCOL_VERSION,
             request_id: request.request_id,
             revision: snapshot.revision,
             kind: response_kind,
+            operation_id,
             snapshot,
             error,
         }
@@ -2248,6 +2284,45 @@ mod tests {
     }
 
     #[test]
+    fn accepted_response_identifies_its_operation_when_an_unrelated_one_is_primary() {
+        let mut session = session();
+        session.bootstrap.fixture_mode = false;
+        session
+            .operation_registry
+            .start(
+                running_operation("library-refresh", "catalog.refresh"),
+                [OperationResourceKey::CatalogRefresh],
+                None,
+                false,
+            )
+            .expect("register unrelated in-flight Library operation");
+
+        let response = session.dispatch(request(
+            None,
+            ClientAction::Authoring(AuthoringAction::ListRegisteredSources),
+        ));
+        let authoring = response
+            .snapshot
+            .active_operations
+            .iter()
+            .find(|operation| operation.action == "authoring.list-registered-sources")
+            .expect("source-list operation is active");
+
+        assert_eq!(
+            response.snapshot.active_operation.as_ref().unwrap().id,
+            "library-refresh"
+        );
+        assert_eq!(
+            response.operation_id.as_deref(),
+            Some(authoring.id.as_str())
+        );
+        assert_eq!(
+            serde_json::to_value(&response).expect("serialize response")["operation_id"],
+            authoring.id
+        );
+    }
+
+    #[test]
     fn manifest_seed_initializes_only_the_legacy_empty_selection() {
         let mut state = ClientPersistentState::default();
         assert!(seed_legacy_empty_selection(
@@ -2413,9 +2488,13 @@ mod tests {
 
         let state_directory = fixture_temp_workspace("installed-app-state");
         let store = ClientStateStore::new(state_directory.clone());
-        let mut saved_state = ClientPersistentState::default();
-        saved_state.authoring_workspace_root = Some(app_root.display().to_string());
-        store.save(&saved_state).expect("save stale authoring selection");
+        let saved_state = ClientPersistentState {
+            authoring_workspace_root: Some(app_root.display().to_string()),
+            ..ClientPersistentState::default()
+        };
+        store
+            .save(&saved_state)
+            .expect("save stale authoring selection");
 
         let host_context = ClientHostContext {
             application_executable: bin.join("vapor-installer"),
@@ -2531,6 +2610,7 @@ mod tests {
 
         assert_eq!(response.kind, ClientResponseKind::OperationAccepted);
         assert_eq!(response.revision, ClientRevision(5));
+        assert_eq!(response.operation_id.as_deref(), Some("source-list-1"));
         assert_eq!(
             response.snapshot.active_operation.unwrap().id,
             "source-list-1"

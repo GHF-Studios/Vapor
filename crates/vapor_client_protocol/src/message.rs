@@ -1,7 +1,7 @@
 use crate::{ClientAction, ClientEvent, ClientRevision, ClientSnapshot, LegacyStorageSeed};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 30;
+pub const PROTOCOL_VERSION: u16 = 31;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -21,6 +21,10 @@ pub struct ClientResponse {
     pub request_id: RequestId,
     pub revision: ClientRevision,
     pub kind: ClientResponseKind,
+    /// Identity of the operation accepted for this request. This is distinct
+    /// from the snapshot's primary operation, which may belong to unrelated work.
+    #[serde(default)]
+    pub operation_id: Option<String>,
     pub snapshot: ClientSnapshot,
     pub error: Option<ServiceError>,
 }

@@ -159,11 +159,11 @@ impl ManagedToolchain {
             .root
             .join(INSTALLATION_METADATA_DIR)
             .join(TOOLCHAIN_METADATA_FILE);
-        let pin = read_installation_toolchain_metadata(installation)?.ok_or_else(|| {
+        let pin = read_installation_toolchain_metadata(installation)?.ok_or(
             ToolchainError::MissingInstallationMetadata {
                 path: metadata_path,
-            }
-        })?;
+            },
+        )?;
         Self::for_installation(installation, installation.root.clone(), pin)
     }
 

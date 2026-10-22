@@ -82,10 +82,9 @@ pub(super) fn start(
             workspace.display()
         )
     })?;
-    let toolchain = vapor_core::ManagedToolchain::for_workspace(&source)
-        .map_err(|error| {
-            format!("could not prepare the selected workspace's Rust toolchain: {error}")
-        })?;
+    let toolchain = vapor_core::ManagedToolchain::for_workspace(&source).map_err(|error| {
+        format!("could not prepare the selected workspace's Rust toolchain: {error}")
+    })?;
     if !toolchain.rust_analyzer_path.is_file() {
         return Err(format!(
             "Vapor's pinned Rust Analyzer is unavailable at {}; repair or promote this installation's developer tools.",

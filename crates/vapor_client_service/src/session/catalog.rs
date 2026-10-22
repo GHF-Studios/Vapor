@@ -319,8 +319,10 @@ fn discover_workspace_content(
     if fixture_mode {
         return fixture_workspace_content(root);
     }
-    let mut snapshot = WorkspaceContentSnapshot::default();
-    snapshot.workspace_validation_error = vapor_client_application::validate_workspace(root).err();
+    let mut snapshot = WorkspaceContentSnapshot {
+        workspace_validation_error: vapor_client_application::validate_workspace(root).err(),
+        ..WorkspaceContentSnapshot::default()
+    };
     if let Some(context) = context {
         context.set_phase(vapor_client_application::OperationPhase::Resolving);
         context.report_progress(vapor_client_application::Progress {

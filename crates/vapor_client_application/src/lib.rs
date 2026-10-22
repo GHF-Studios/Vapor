@@ -193,26 +193,6 @@ fn installation_role_snapshot_for(
     }
 }
 
-#[cfg(test)]
-mod installation_role_snapshot_tests {
-    use super::installation_role_snapshot_for;
-
-    #[test]
-    fn readiness_failure_does_not_erase_the_installed_role() {
-        let snapshot = installation_role_snapshot_for(
-            "ecosystem-developer",
-            Err("packaged toolchain pin is missing".to_owned()),
-        );
-
-        assert_eq!(snapshot.role, "ecosystem-developer");
-        assert!(!snapshot.rust_ready);
-        assert_eq!(
-            snapshot.error.as_deref(),
-            Some("packaged toolchain pin is missing")
-        );
-    }
-}
-
 /// Promote the active Vapor installation to an ordinary local role.
 pub fn promote_installation_role(target: &str) -> Result<String, String> {
     use std::str::FromStr as _;
@@ -274,3 +254,23 @@ pub use workspace_files::{
     read_workspace_file_with_fingerprint, workspace_file_fingerprint, write_workspace_file,
     write_workspace_file_if_fingerprint,
 };
+
+#[cfg(test)]
+mod installation_role_snapshot_tests {
+    use super::installation_role_snapshot_for;
+
+    #[test]
+    fn readiness_failure_does_not_erase_the_installed_role() {
+        let snapshot = installation_role_snapshot_for(
+            "ecosystem-developer",
+            Err("packaged toolchain pin is missing".to_owned()),
+        );
+
+        assert_eq!(snapshot.role, "ecosystem-developer");
+        assert!(!snapshot.rust_ready);
+        assert_eq!(
+            snapshot.error.as_deref(),
+            Some("packaged toolchain pin is missing")
+        );
+    }
+}

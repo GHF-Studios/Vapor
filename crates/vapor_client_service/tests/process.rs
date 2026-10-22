@@ -161,11 +161,16 @@ fn workspace_file_results_follow_the_terminal_service_event() {
     let response = client
         .recv_timeout(Duration::from_secs(2))
         .expect("receive accepted workspace operation");
-    assert!(matches!(
-        response,
+    let accepted_operation_id = match response {
         ProtocolFrame::Response(response)
-            if response.kind == ClientResponseKind::OperationAccepted
-    ));
+            if response.kind == ClientResponseKind::OperationAccepted =>
+        {
+            response
+                .operation_id
+                .expect("accepted workspace request identifies its own operation")
+        }
+        other => panic!("expected accepted workspace operation, got {other:?}"),
+    };
 
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut saw_success = false;
@@ -176,7 +181,8 @@ fn workspace_file_results_follow_the_terminal_service_event() {
             .expect("receive workspace operation update");
         match frame {
             ProtocolFrame::Event(ClientEvent::OperationChanged(event))
-                if event.action == "workspace.list-files"
+                if event.id == accepted_operation_id
+                    && event.action == "workspace.list-files"
                     && event.status == vapor_client_protocol::OperationStatus::Succeeded =>
             {
                 saw_success = true;

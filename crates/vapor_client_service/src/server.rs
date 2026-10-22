@@ -291,6 +291,7 @@ fn serve_local(
                         request_id: request.request_id,
                         revision: session.snapshot().revision,
                         kind: vapor_client_protocol::ClientResponseKind::Rejected,
+                        operation_id: None,
                         snapshot: session.snapshot(),
                         error: Some(ServiceError {
                             code: ServiceErrorCode::UnsupportedProtocol,
@@ -601,6 +602,7 @@ fn dispatch_language_server_action(
         request_id: request.request_id,
         revision: snapshot.revision,
         kind,
+        operation_id: None,
         snapshot,
         error,
     }
@@ -1006,6 +1008,7 @@ fn process_frame(
                     request_id: request.request_id,
                     revision: session.snapshot().revision,
                     kind: vapor_client_protocol::ClientResponseKind::Rejected,
+                    operation_id: None,
                     snapshot: session.snapshot(),
                     error: Some(ServiceError {
                         code: ServiceErrorCode::UnsupportedProtocol,
