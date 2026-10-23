@@ -5,6 +5,7 @@ use std::{
     path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+use vapor_client_domain::CanonicalRustModuleKind;
 
 const MAX_TEXT_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -312,22 +313,9 @@ pub fn create_canonical_rust_module(
     root: &Path,
     parent_relative: &Path,
     expected_parent_fingerprint: &str,
-    module_name: &str,
+    module_kind: CanonicalRustModuleKind,
 ) -> Result<CanonicalRustModuleCreated, String> {
-    const CANONICAL_MODULES: &[&str] = &[
-        "components",
-        "constants",
-        "events",
-        "functions",
-        "resources",
-        "run_conditions",
-        "statics",
-        "systems",
-        "types",
-    ];
-    if !CANONICAL_MODULES.contains(&module_name) {
-        return Err("Choose one of Vapor's canonical Rust module names.".to_owned());
-    }
+    let module_name = module_kind.name();
     let root = fs::canonicalize(root).map_err(|error| format!("{}: {error}", root.display()))?;
     let parent_path = safe_workspace_file(&root, parent_relative)?;
     if parent_path
@@ -397,18 +385,7 @@ pub fn create_canonical_rust_module(
         updated_parent.push('\n');
     }
     updated_parent.push_str(&format!("pub mod {module_name};\n"));
-    let module_documentation = match module_name {
-        "components" => "//! Components and component-owned data.\n",
-        "constants" => "//! Shared compile-time values.\n",
-        "events" => "//! Events exchanged between systems.\n",
-        "functions" => "//! General-purpose functions.\n",
-        "resources" => "//! World resources.\n",
-        "run_conditions" => "//! Conditions that control system execution.\n",
-        "statics" => "//! Shared static values.\n",
-        "systems" => "//! Bevy systems and system sets.\n",
-        "types" => "//! Domain types that do not fit a narrower module.\n",
-        _ => unreachable!("canonical module names were checked above"),
-    };
+    let module_documentation = module_kind.documentation();
     create_new_workspace_file_with_contents(&root, &module_relative, module_documentation)?;
     let parent_relative = parent_path
         .strip_prefix(&root)
@@ -613,8 +590,13 @@ mod tests {
         fs::write(workspace.0.join(parent), original).expect("write crate root");
         let expected = workspace_file_fingerprint(original);
 
-        let created = create_canonical_rust_module(&workspace.0, parent, &expected, "components")
-            .expect("create canonical module");
+        let created = create_canonical_rust_module(
+            &workspace.0,
+            parent,
+            &expected,
+            CanonicalRustModuleKind::Components,
+        )
+        .expect("create canonical module");
 
         assert_eq!(created.module_path, Path::new("crate/src/components.rs"));
         assert!(workspace.0.join(&created.module_path).is_file());
@@ -645,7 +627,7 @@ mod tests {
             &workspace.0,
             parent,
             &workspace_file_fingerprint(source),
-            "components",
+            CanonicalRustModuleKind::Components,
         )
         .expect_err("duplicate module declaration must be rejected");
         assert!(duplicate.contains("already declares"));
@@ -656,7 +638,7 @@ mod tests {
             &workspace.0,
             parent,
             &workspace_file_fingerprint(source),
-            "types",
+            CanonicalRustModuleKind::Types,
         )
         .expect_err("stale parent must be rejected");
         assert!(stale.contains("changed on disk"));
@@ -679,7 +661,7 @@ mod tests {
             &workspace.0,
             parent,
             &workspace_file_fingerprint(source),
-            "systems",
+            CanonicalRustModuleKind::Systems,
         )
         .expect("create nested canonical module");
         assert_eq!(created.module_path, Path::new("crate/src/game/systems.rs"));
@@ -689,10 +671,15 @@ mod tests {
                 .starts_with("//! Bevy systems")
         );
 
-        let invalid =
-            create_canonical_rust_module(&workspace.0, parent, &created.parent_fingerprint, "mod")
-                .expect_err("noncanonical names are rejected");
-        assert!(invalid.contains("canonical Rust module names"));
-        assert!(!workspace.0.join("crate/src/game/mod.rs").exists());
+        fs::write(workspace.0.join(parent), "pub fn (\n").expect("write invalid Rust source");
+        let invalid = create_canonical_rust_module(
+            &workspace.0,
+            parent,
+            &workspace_file_fingerprint("pub fn (\n"),
+            CanonicalRustModuleKind::Components,
+        )
+        .expect_err("syntax errors in the parent are rejected");
+        assert!(invalid.contains("Fix syntax errors"));
+        assert!(!workspace.0.join("crate/src/game/components.rs").exists());
     }
 }

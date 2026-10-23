@@ -254,7 +254,7 @@ mod tests {
             ClientAction::Workspace(WorkspaceAction::CreateCanonicalRustModule {
                 parent_path: "crates/demo/src/lib.rs".into(),
                 expected_parent_fingerprint: "fnv1a64:123:4".into(),
-                module_name: "components".into(),
+                module_kind: vapor_client_domain::CanonicalRustModuleKind::Components,
             }),
             ClientAction::Authoring(AuthoringAction::LoadComposition {
                 project_id: "moon".into(),
@@ -424,6 +424,27 @@ mod tests {
         for action in actions {
             assert_round_trip(action);
         }
+    }
+
+    #[test]
+    fn canonical_rust_module_action_uses_the_shared_typed_vocabulary() {
+        let action = ClientAction::Workspace(WorkspaceAction::CreateCanonicalRustModule {
+            parent_path: "crates/demo/src/lib.rs".into(),
+            expected_parent_fingerprint: "fnv1a64:123:4".into(),
+            module_kind: vapor_client_domain::CanonicalRustModuleKind::RunConditions,
+        });
+        let encoded = serde_json::to_value(action).expect("serialize module creation action");
+        assert_eq!(encoded["action"]["module_kind"], "run_conditions");
+        let unknown_kind = serde_json::json!({
+            "family": "workspace",
+            "action": {
+                "action": "create-canonical-rust-module",
+                "parent_path": "crates/demo/src/lib.rs",
+                "expected_parent_fingerprint": "fnv1a64:123:4",
+                "module_kind": "arbitrary"
+            }
+        });
+        assert!(serde_json::from_value::<ClientAction>(unknown_kind).is_err());
     }
 
     #[test]

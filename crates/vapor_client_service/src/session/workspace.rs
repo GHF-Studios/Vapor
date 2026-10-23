@@ -121,22 +121,20 @@ impl ClientSession {
             WorkspaceAction::CreateCanonicalRustModule {
                 parent_path,
                 expected_parent_fingerprint,
-                module_name,
+                module_kind,
             } => {
                 if expected_parent_fingerprint.trim().is_empty()
                     || expected_parent_fingerprint.len() > 128
-                    || module_name.trim() != module_name
-                    || module_name.len() > 32
                 {
                     return Err(invalid_workspace_request(
-                        "Choose a valid parent revision and canonical Rust module name.",
+                        "Choose a valid parent revision before creating a canonical Rust module.",
                     ));
                 }
                 WorkspaceOperationKind::CreateCanonicalRustModule(Box::new(
                     WorkspaceRustModuleCreate {
                         parent_path: validate_workspace_relative_path(&parent_path)?,
                         expected_parent_fingerprint,
-                        module_name,
+                        module_kind,
                     },
                 ))
             }
@@ -756,7 +754,7 @@ fn execute_workspace_operation(
                 root,
                 &create.parent_path,
                 &create.expected_parent_fingerprint,
-                &create.module_name,
+                create.module_kind,
             )
             .map(WorkspaceOperationResult::CanonicalRustModuleCreated)
         }

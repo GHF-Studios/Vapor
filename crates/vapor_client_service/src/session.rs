@@ -26,6 +26,7 @@ use std::{
 };
 use vapor_client::ClientHostConfig;
 use vapor_client_application as application;
+use vapor_client_domain::CanonicalRustModuleKind;
 use vapor_client_protocol::{
     ActionProfile, ApplicationReleaseSnapshot, AuthoringAction, AuthoringCompositionLink,
     AuthoringResult, AuthoringResultKind, AvailableSuperworkspaceRepositorySnapshot, CatalogAction,
@@ -451,7 +452,7 @@ struct WorkspaceFileSave {
 struct WorkspaceRustModuleCreate {
     parent_path: PathBuf,
     expected_parent_fingerprint: String,
-    module_name: String,
+    module_kind: CanonicalRustModuleKind,
 }
 
 enum WorkspaceOperationResult {
@@ -4326,7 +4327,7 @@ mod tests {
             ClientAction::Workspace(WorkspaceAction::CreateCanonicalRustModule {
                 parent_path: "crate/src/lib.rs".into(),
                 expected_parent_fingerprint: source_fingerprint,
-                module_name: "components".into(),
+                module_kind: CanonicalRustModuleKind::Components,
             }),
         ));
         assert_eq!(response.kind, ClientResponseKind::OperationAccepted);

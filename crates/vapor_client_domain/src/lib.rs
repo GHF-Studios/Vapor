@@ -4,6 +4,7 @@
 //! content semantics and below frontends, transport, and provider effects.
 
 mod actions;
+mod canonical_rust;
 mod catalog;
 mod composition;
 mod console_command;
@@ -18,6 +19,7 @@ pub use actions::{
     LanguageServerAction, PublishingAction, SessionAction, WorkshopAction, WorkshopMetadataDraft,
     WorkspaceAction, WorkspaceProjectSelection, WorkspaceToolOperation,
 };
+pub use canonical_rust::CanonicalRustModuleKind;
 pub use catalog::{
     CatalogConflict, CatalogContent, CatalogDependency, CatalogLocation, CatalogLocationKind,
     merge_catalog_entries,

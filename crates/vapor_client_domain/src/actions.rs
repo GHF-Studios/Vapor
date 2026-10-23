@@ -1,6 +1,6 @@
 use crate::{
-    ActionProfile, AuthorityRequirement, ContentKind, LocalCapability, ProfileAnalysisOptions,
-    WorkflowTier,
+    ActionProfile, AuthorityRequirement, CanonicalRustModuleKind, ContentKind, LocalCapability,
+    ProfileAnalysisOptions, WorkflowTier,
 };
 pub use crate::{CompositionAction, LibraryAction};
 use serde::{Deserialize, Serialize};
@@ -141,7 +141,7 @@ pub enum WorkspaceAction {
     CreateCanonicalRustModule {
         parent_path: String,
         expected_parent_fingerprint: String,
-        module_name: String,
+        module_kind: CanonicalRustModuleKind,
     },
 }
 
