@@ -908,6 +908,30 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_context_round_trips_and_legacy_records_default_to_unscoped() {
+        let legacy = r#"{"origin":"cargo","severity":"error","code":null,"message":"failed","rendered":null,"primary":null,"related":[],"raw_payload":"{}"}"#;
+        let mut diagnostic: vapor_console_core::StructuredDiagnostic =
+            serde_json::from_str(legacy).expect("read legacy diagnostic");
+        assert_eq!(diagnostic.context, vapor_console_core::DiagnosticContext::default());
+
+        diagnostic.context = vapor_console_core::DiagnosticContext {
+            domain: Some("rust".to_owned()),
+            scope: vapor_console_core::DiagnosticScope::Document,
+            workspace: Some("/work/game".to_owned()),
+            document_version: Some(12),
+            semantic_path: Some("game::Ship::velocity".to_owned()),
+            operation_id: Some("op-17".to_owned()),
+        };
+        let decoded: vapor_console_core::StructuredDiagnostic = serde_json::from_str(
+            &serde_json::to_string(&diagnostic).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded, diagnostic);
+        assert_eq!(decoded.origin, vapor_console_core::DiagnosticOrigin::Cargo);
+        assert_eq!(decoded.severity, vapor_console_core::DiagnosticSeverity::Error);
+    }
+
+    #[test]
     fn old_catalog_dependency_labels_remain_readable_with_additive_dependency_facts() {
         let entry: CatalogEntry = serde_json::from_str(
             r#"{"id":"studio/game/main","name":"Game","version":"0.5.0","kind":"game","published_file_id":"123","dependencies":["required · studio/engine/main"],"conflicts":[],"locations":[]}"#,

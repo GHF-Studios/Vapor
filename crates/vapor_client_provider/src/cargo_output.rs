@@ -1,6 +1,9 @@
 //! Parsing of machine-readable Cargo compiler output.
 
-use vapor_core::{DiagnosticOrigin, DiagnosticSeverity, DiagnosticSpan, StructuredDiagnostic};
+use vapor_core::{
+    DiagnosticContext, DiagnosticOrigin, DiagnosticScope, DiagnosticSeverity, DiagnosticSpan,
+    StructuredDiagnostic,
+};
 
 const MAX_RETAINED_CARGO_PAYLOAD_BYTES: usize = 64 * 1024;
 
@@ -82,6 +85,11 @@ pub fn parse_cargo_output_line(line: &str) -> CargoOutputLine {
         .and_then(|code| code.get("code"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
+    let scope = if primary.is_some() {
+        DiagnosticScope::Document
+    } else {
+        DiagnosticScope::Operation
+    };
     CargoOutputLine {
         display_text,
         diagnostic: Some(StructuredDiagnostic {
@@ -92,7 +100,13 @@ pub fn parse_cargo_output_line(line: &str) -> CargoOutputLine {
             rendered,
             primary,
             related,
+
             raw_payload: truncate_utf8(line, MAX_RETAINED_CARGO_PAYLOAD_BYTES),
+            context: DiagnosticContext {
+                domain: Some("rust".to_owned()),
+                scope,
+                ..Default::default()
+            },
         }),
         raw_payload: None,
     }

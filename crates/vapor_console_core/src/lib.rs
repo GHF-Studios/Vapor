@@ -5,7 +5,10 @@
 
 mod diagnostic;
 
-pub use diagnostic::{DiagnosticOrigin, DiagnosticSeverity, DiagnosticSpan, StructuredDiagnostic};
+pub use diagnostic::{
+    DiagnosticContext, DiagnosticOrigin, DiagnosticScope, DiagnosticSeverity, DiagnosticSpan,
+    StructuredDiagnostic,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -235,6 +238,8 @@ pub struct ConsoleFilter {
     pub source: Option<String>,
     pub origin: Option<String>,
     pub composition: Option<String>,
+    pub domain: Option<String>,
+    pub scope: Option<String>,
     pub search: String,
 }
 
@@ -261,6 +266,20 @@ impl ConsoleFilter {
         if self.composition.as_deref().is_some_and(|composition| {
             !record.fields.iter().any(|field| {
                 field.key == "composition" && field.value.eq_ignore_ascii_case(composition)
+            })
+        }) {
+            return false;
+        }
+        if self.domain.as_deref().is_some_and(|domain| {
+            !record.fields.iter().any(|field| {
+                field.key == "domain" && field.value.eq_ignore_ascii_case(domain)
+            })
+        }) {
+            return false;
+        }
+        if self.scope.as_deref().is_some_and(|scope| {
+            !record.fields.iter().any(|field| {
+                field.key == "scope" && field.value.eq_ignore_ascii_case(scope)
             })
         }) {
             return false;
@@ -609,13 +628,17 @@ mod tests {
             .target("ship")
             .field("sector", "luna")
             .field("origin", "studio")
-            .field("composition", "loo-cast");
+            .field("composition", "loo-cast")
+            .field("domain", "rust")
+            .field("scope", "document");
         assert!(
             ConsoleFilter {
                 levels: vec![ConsoleLevel::Warn],
                 source: Some("GAME".to_owned()),
                 origin: Some("STUDIO".to_owned()),
                 composition: Some("LOO-CAST".to_owned()),
+                domain: None,
+                scope: None,
                 search: "luna".to_owned(),
             }
             .matches(&record)
@@ -641,6 +664,14 @@ mod tests {
             }
             .matches(&record)
         );
+        assert!(ConsoleFilter {
+            domain: Some("RUST".to_owned()),
+            ..Default::default()
+        }.matches(&record));
+        assert!(!ConsoleFilter {
+            scope: Some("workspace".to_owned()),
+            ..Default::default()
+        }.matches(&record));
     }
 
     #[test]

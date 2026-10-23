@@ -42,7 +42,11 @@ pub fn parse_publish_diagnostics(message: &Value) -> Option<LanguageServerDiagno
         .and_then(|version| i32::try_from(version).ok());
     let mut diagnostics = Vec::with_capacity(raw_diagnostics.len().min(MAX_DIAGNOSTICS_PER_UPDATE));
     for raw in raw_diagnostics.iter().take(MAX_DIAGNOSTICS_PER_UPDATE) {
-        if let Some(diagnostic) = parse_diagnostic(raw, uri) {
+        if let Some(diagnostic) = parse_diagnostic(
+            raw,
+            uri,
+            version.and_then(|version| u64::try_from(version).ok()),
+        ) {
             diagnostics.push(diagnostic);
         }
     }
@@ -55,7 +59,11 @@ pub fn parse_publish_diagnostics(message: &Value) -> Option<LanguageServerDiagno
     })
 }
 
-fn parse_diagnostic(diagnostic: &Value, uri: &str) -> Option<StructuredDiagnostic> {
+fn parse_diagnostic(
+    diagnostic: &Value,
+    uri: &str,
+    document_version: Option<u64>,
+) -> Option<StructuredDiagnostic> {
     let message = diagnostic.get("message")?.as_str()?;
     let primary = parse_span(uri, diagnostic.get("range")?, None, true);
     let primary = primary?;
@@ -106,7 +114,14 @@ fn parse_diagnostic(diagnostic: &Value, uri: &str) -> Option<StructuredDiagnosti
             .map(|rendered| truncate(rendered, MAX_DIAGNOSTIC_TEXT_BYTES)),
         primary: Some(primary),
         related,
+
         raw_payload: truncate(&raw_payload, MAX_DIAGNOSTIC_RAW_BYTES),
+        context: vapor_console_core::DiagnosticContext {
+            domain: Some("rust".to_owned()),
+            scope: vapor_console_core::DiagnosticScope::Document,
+            document_version,
+            ..Default::default()
+        },
     })
 }
 
