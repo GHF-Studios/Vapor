@@ -479,7 +479,7 @@ fn run_step(
             let parsed = if stream == OperationOutputStream::Stdout
                 && !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
             {
-                super::cargo_output::parse_cargo_output_line(&line)
+                super::cargo_output::parse_cargo_output_line(line)
             } else {
                 super::cargo_output::CargoOutputLine {
                     display_text: line.to_owned(),
@@ -487,16 +487,21 @@ fn run_step(
                     raw_payload: None,
                 }
             };
-            report_output(stream, &parsed.display_text, parsed.diagnostic, parsed.raw_payload);
+            report_output(
+                stream,
+                &parsed.display_text,
+                parsed.diagnostic,
+                parsed.raw_payload,
+            );
         },
     )
-        .map_err(|error| {
-            format!(
-                "failed to run {} for '{}': {error}",
-                step_label(step, target),
-                project.name()
-            )
-        })?;
+    .map_err(|error| {
+        format!(
+            "failed to run {} for '{}': {error}",
+            step_label(step, target),
+            project.name()
+        )
+    })?;
     if status.success() {
         Ok(())
     } else {
@@ -699,7 +704,13 @@ mod tests {
     fn build_does_not_select_release_or_cross_target_outputs_on_host() {
         assert_eq!(
             cargo_args(CargoStep::Build, None),
-            ["build", "--workspace", "--locked", "--message-format", "json"]
+            [
+                "build",
+                "--workspace",
+                "--locked",
+                "--message-format",
+                "json"
+            ]
         );
     }
 
@@ -722,7 +733,14 @@ mod tests {
     fn release_build_uses_cargo_release_profile() {
         assert_eq!(
             cargo_args(CargoStep::BuildRelease, None),
-            ["build", "--workspace", "--locked", "--release", "--message-format", "json"]
+            [
+                "build",
+                "--workspace",
+                "--locked",
+                "--release",
+                "--message-format",
+                "json"
+            ]
         );
     }
 

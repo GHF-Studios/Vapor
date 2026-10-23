@@ -204,16 +204,16 @@ impl OperationContext {
             output.text.truncate(end);
             output.text.push_str(suffix);
         }
-        if let Some(raw_payload) = &mut output.raw_payload {
-            if raw_payload.len() > MAX_OPERATION_OUTPUT_BYTES {
-                let suffix = " … [truncated]";
-                let mut end = MAX_OPERATION_OUTPUT_BYTES.saturating_sub(suffix.len());
-                while !raw_payload.is_char_boundary(end) {
-                    end -= 1;
-                }
-                raw_payload.truncate(end);
-                raw_payload.push_str(suffix);
+        if let Some(raw_payload) = &mut output.raw_payload
+            && raw_payload.len() > MAX_OPERATION_OUTPUT_BYTES
+        {
+            let suffix = " … [truncated]";
+            let mut end = MAX_OPERATION_OUTPUT_BYTES.saturating_sub(suffix.len());
+            while !raw_payload.is_char_boundary(end) {
+                end -= 1;
             }
+            raw_payload.truncate(end);
+            raw_payload.push_str(suffix);
         }
         self.emit_with_output(OperationStatus::Running, Some(output));
     }
@@ -451,7 +451,10 @@ mod tests {
         });
 
         let events = events.lock().unwrap();
-        let output = events.iter().find_map(|event| event.output.as_ref()).unwrap();
+        let output = events
+            .iter()
+            .find_map(|event| event.output.as_ref())
+            .unwrap();
         let raw = output.raw_payload.as_ref().unwrap();
         assert!(raw.len() <= MAX_OPERATION_OUTPUT_BYTES);
         assert!(raw.is_char_boundary(raw.len()));

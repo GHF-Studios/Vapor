@@ -46,10 +46,10 @@ pub use library::{
     select_library_version_for_compositions, set_library_auto_install,
 };
 pub use state::{CLIENT_STATE_SCHEMA_VERSION, ClientStateDocument};
+pub use vapor_content::authored_manifest::AuthoredContentManifest;
 pub use vapor_content::{
     ContentKind, ContentReference, dependency_choice_group,
     dependency_choice_group_for_relationship, dependency_kind_allowed, dependency_relationship,
     required_dependency_choice_groups,
 };
-pub use vapor_content::authored_manifest::AuthoredContentManifest;
 pub use workflow::{ActionProfile, AuthorityRequirement, LocalCapability, WorkflowTier};

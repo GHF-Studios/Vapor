@@ -8,6 +8,17 @@ use std::{
 
 const MAX_TEXT_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Files updated when creating a convention-owned Rust module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalRustModuleCreated {
+    pub module_path: PathBuf,
+    pub module_contents: String,
+    pub module_fingerprint: String,
+    pub parent_path: PathBuf,
+    pub parent_contents: String,
+    pub parent_fingerprint: String,
+}
+
 /// Lists regular files below a workspace, excluding generated and VCS trees.
 pub fn discover_workspace_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let root = fs::canonicalize(root).map_err(|error| format!("{}: {error}", root.display()))?;
@@ -193,6 +204,14 @@ pub fn write_workspace_file(
 
 /// Creates a new workspace file without following symlinks or overwriting content.
 pub fn create_new_workspace_file(root: &Path, relative: &Path) -> Result<PathBuf, String> {
+    create_new_workspace_file_with_contents(root, relative, "")
+}
+
+fn create_new_workspace_file_with_contents(
+    root: &Path,
+    relative: &Path,
+    contents: &str,
+) -> Result<PathBuf, String> {
     if relative.as_os_str().is_empty()
         || relative
             .components()
@@ -257,7 +276,7 @@ pub fn create_new_workspace_file(root: &Path, relative: &Path) -> Result<PathBuf
         return Err("file path must include a filename".to_owned());
     };
     let target = parent.join(name);
-    let file = fs::OpenOptions::new()
+    let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&target)
@@ -268,8 +287,152 @@ pub fn create_new_workspace_file(root: &Path, relative: &Path) -> Result<PathBuf
                 relative.display()
             )
         })?;
-    drop(file);
+    use std::io::Write;
+    if let Err(error) = file
+        .write_all(contents.as_bytes())
+        .and_then(|()| file.sync_all())
+    {
+        drop(file);
+        let _ = fs::remove_file(&target);
+        cleanup_created_directories(&created_directories);
+        return Err(format!(
+            "could not initialize {}: {error}",
+            relative.display()
+        ));
+    }
     Ok(relative.to_path_buf())
+}
+
+/// Creates one canonical Rust module and registers it from its existing parent.
+///
+/// The new module is created first, then the parent is saved with optimistic
+/// concurrency protection. A failed parent update removes the new module, so
+/// callers never receive success for a half-applied module operation.
+pub fn create_canonical_rust_module(
+    root: &Path,
+    parent_relative: &Path,
+    expected_parent_fingerprint: &str,
+    module_name: &str,
+) -> Result<CanonicalRustModuleCreated, String> {
+    const CANONICAL_MODULES: &[&str] = &[
+        "components",
+        "constants",
+        "events",
+        "functions",
+        "resources",
+        "run_conditions",
+        "statics",
+        "systems",
+        "types",
+    ];
+    if !CANONICAL_MODULES.contains(&module_name) {
+        return Err("Choose one of Vapor's canonical Rust module names.".to_owned());
+    }
+    let root = fs::canonicalize(root).map_err(|error| format!("{}: {error}", root.display()))?;
+    let parent_path = safe_workspace_file(&root, parent_relative)?;
+    if parent_path
+        .extension()
+        .is_none_or(|extension| extension != "rs")
+    {
+        return Err("A Rust module must be created from a Rust source file.".to_owned());
+    }
+    let crate_source = parent_path
+        .ancestors()
+        .find(|ancestor| ancestor.join("Cargo.toml").is_file())
+        .and_then(|crate_root| parent_path.strip_prefix(crate_root).ok())
+        .is_some_and(|relative| {
+            relative
+                .components()
+                .next()
+                .is_some_and(|component| component.as_os_str() == "src")
+        });
+    if !crate_source {
+        return Err(
+            "Canonical modules can only be created under a Cargo crate's `src` directory."
+                .to_owned(),
+        );
+    }
+    let parent_contents = fs::read_to_string(&parent_path)
+        .map_err(|error| format!("{}: {error}", parent_relative.display()))?;
+    if workspace_file_fingerprint(&parent_contents) != expected_parent_fingerprint {
+        return Err(format!(
+            "{} changed on disk after it was opened; reload it before creating a module",
+            parent_relative.display()
+        ));
+    }
+    let parsed = syn::parse_file(&parent_contents).map_err(|_| {
+        "Fix syntax errors in the parent module before creating a child.".to_owned()
+    })?;
+    if parsed
+        .items
+        .iter()
+        .any(|item| matches!(item, syn::Item::Mod(item) if item.ident == module_name))
+    {
+        return Err(format!(
+            "The parent module already declares `{module_name}`."
+        ));
+    }
+    let parent_name = parent_path.file_name().and_then(|name| name.to_str());
+    let module_directory = match parent_name {
+        Some("lib.rs" | "main.rs" | "mod.rs") => parent_path
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "The parent module has no containing directory.".to_owned())?,
+        Some(_) => parent_path
+            .parent()
+            .ok_or_else(|| "The parent module has no containing directory.".to_owned())?
+            .join(parent_path.file_stem().unwrap_or_default()),
+        None => return Err("The parent module filename must be valid UTF-8.".to_owned()),
+    };
+    let module_absolute = module_directory.join(format!("{module_name}.rs"));
+    let module_relative = module_absolute
+        .strip_prefix(&root)
+        .map_err(|_| "The new module would be outside the active workspace.".to_owned())?
+        .to_path_buf();
+    let mut updated_parent = parent_contents.clone();
+    if !updated_parent.is_empty() && !updated_parent.ends_with('\n') {
+        updated_parent.push('\n');
+    }
+    if !updated_parent.is_empty() && !updated_parent.ends_with("\n\n") {
+        updated_parent.push('\n');
+    }
+    updated_parent.push_str(&format!("pub mod {module_name};\n"));
+    let module_documentation = match module_name {
+        "components" => "//! Components and component-owned data.\n",
+        "constants" => "//! Shared compile-time values.\n",
+        "events" => "//! Events exchanged between systems.\n",
+        "functions" => "//! General-purpose functions.\n",
+        "resources" => "//! World resources.\n",
+        "run_conditions" => "//! Conditions that control system execution.\n",
+        "statics" => "//! Shared static values.\n",
+        "systems" => "//! Bevy systems and system sets.\n",
+        "types" => "//! Domain types that do not fit a narrower module.\n",
+        _ => unreachable!("canonical module names were checked above"),
+    };
+    create_new_workspace_file_with_contents(&root, &module_relative, module_documentation)?;
+    let parent_relative = parent_path
+        .strip_prefix(&root)
+        .map_err(|_| "The parent module is outside the active workspace.".to_owned())?;
+    let parent_fingerprint = match write_workspace_file_if_fingerprint(
+        &root,
+        parent_relative,
+        expected_parent_fingerprint,
+        &updated_parent,
+    ) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            let _ = fs::remove_file(&module_absolute);
+            return Err(error);
+        }
+    };
+    Ok(CanonicalRustModuleCreated {
+        module_path: module_relative,
+        module_contents: module_documentation.to_owned(),
+        module_fingerprint: workspace_file_fingerprint(module_documentation),
+        parent_path: parent_relative.to_path_buf(),
+        parent_contents: updated_parent,
+        parent_fingerprint,
+    })
 }
 
 fn safe_workspace_file(root: &Path, relative: &Path) -> Result<PathBuf, String> {
@@ -434,5 +597,102 @@ mod tests {
             discover_workspace_files(&workspace.0).expect("list workspace"),
             vec![PathBuf::from("nested/new.txt")]
         );
+    }
+
+    #[test]
+    fn creates_canonical_rust_module_and_updates_parent_with_fingerprint_guard() {
+        let workspace = TestWorkspace::new();
+        fs::create_dir_all(workspace.0.join("crate/src")).expect("create crate source");
+        fs::write(
+            workspace.0.join("crate/Cargo.toml"),
+            "[package]\nname='sample'\n",
+        )
+        .expect("write manifest");
+        let parent = Path::new("crate/src/lib.rs");
+        let original = "#![allow(dead_code)]\n\npub fn ready() {}\n";
+        fs::write(workspace.0.join(parent), original).expect("write crate root");
+        let expected = workspace_file_fingerprint(original);
+
+        let created = create_canonical_rust_module(&workspace.0, parent, &expected, "components")
+            .expect("create canonical module");
+
+        assert_eq!(created.module_path, Path::new("crate/src/components.rs"));
+        assert!(workspace.0.join(&created.module_path).is_file());
+        assert_eq!(
+            fs::read_to_string(workspace.0.join(parent)).unwrap(),
+            "#![allow(dead_code)]\n\npub fn ready() {}\n\npub mod components;\n"
+        );
+        assert_eq!(
+            created.parent_fingerprint,
+            workspace_file_fingerprint(&created.parent_contents)
+        );
+    }
+
+    #[test]
+    fn canonical_module_creation_rejects_duplicate_or_stale_parent_without_writing() {
+        let workspace = TestWorkspace::new();
+        fs::create_dir_all(workspace.0.join("crate/src")).expect("create crate source");
+        fs::write(
+            workspace.0.join("crate/Cargo.toml"),
+            "[package]\nname='sample'\n",
+        )
+        .expect("write manifest");
+        let parent = Path::new("crate/src/lib.rs");
+        let source = "pub mod components;\n";
+        fs::write(workspace.0.join(parent), source).expect("write crate root");
+
+        let duplicate = create_canonical_rust_module(
+            &workspace.0,
+            parent,
+            &workspace_file_fingerprint(source),
+            "components",
+        )
+        .expect_err("duplicate module declaration must be rejected");
+        assert!(duplicate.contains("already declares"));
+        assert!(!workspace.0.join("crate/src/components.rs").exists());
+
+        fs::write(workspace.0.join(parent), "pub mod changed;\n").expect("external edit");
+        let stale = create_canonical_rust_module(
+            &workspace.0,
+            parent,
+            &workspace_file_fingerprint(source),
+            "types",
+        )
+        .expect_err("stale parent must be rejected");
+        assert!(stale.contains("changed on disk"));
+        assert!(!workspace.0.join("crate/src/types.rs").exists());
+    }
+
+    #[test]
+    fn canonical_module_creation_uses_rust_nested_module_paths_and_rejects_bad_sources() {
+        let workspace = TestWorkspace::new();
+        fs::create_dir_all(workspace.0.join("crate/src")).expect("create crate source");
+        fs::write(
+            workspace.0.join("crate/Cargo.toml"),
+            "[package]\nname='sample'\n",
+        )
+        .expect("write manifest");
+        let parent = Path::new("crate/src/game.rs");
+        let source = "pub fn tick() {}\n";
+        fs::write(workspace.0.join(parent), source).expect("write parent module");
+        let created = create_canonical_rust_module(
+            &workspace.0,
+            parent,
+            &workspace_file_fingerprint(source),
+            "systems",
+        )
+        .expect("create nested canonical module");
+        assert_eq!(created.module_path, Path::new("crate/src/game/systems.rs"));
+        assert!(
+            fs::read_to_string(workspace.0.join(&created.module_path))
+                .unwrap()
+                .starts_with("//! Bevy systems")
+        );
+
+        let invalid =
+            create_canonical_rust_module(&workspace.0, parent, &created.parent_fingerprint, "mod")
+                .expect_err("noncanonical names are rejected");
+        assert!(invalid.contains("canonical Rust module names"));
+        assert!(!workspace.0.join("crate/src/game/mod.rs").exists());
     }
 }

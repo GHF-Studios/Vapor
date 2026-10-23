@@ -3960,6 +3960,7 @@ version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
+ "syn 2.0.118",
  "vapor_client_domain",
  "vapor_client_protocol",
  "vapor_client_provider",

@@ -118,6 +118,28 @@ impl ClientSession {
                 }
                 WorkspaceOperationKind::CreateFile(validate_workspace_relative_path(&path)?)
             }
+            WorkspaceAction::CreateCanonicalRustModule {
+                parent_path,
+                expected_parent_fingerprint,
+                module_name,
+            } => {
+                if expected_parent_fingerprint.trim().is_empty()
+                    || expected_parent_fingerprint.len() > 128
+                    || module_name.trim() != module_name
+                    || module_name.len() > 32
+                {
+                    return Err(invalid_workspace_request(
+                        "Choose a valid parent revision and canonical Rust module name.",
+                    ));
+                }
+                WorkspaceOperationKind::CreateCanonicalRustModule(Box::new(
+                    WorkspaceRustModuleCreate {
+                        parent_path: validate_workspace_relative_path(&parent_path)?,
+                        expected_parent_fingerprint,
+                        module_name,
+                    },
+                ))
+            }
             WorkspaceAction::Validate => WorkspaceOperationKind::Validate,
             WorkspaceAction::BuildDocumentation => WorkspaceOperationKind::BuildDocumentation,
             WorkspaceAction::PublishDocumentation => WorkspaceOperationKind::PublishDocumentation,
@@ -219,6 +241,7 @@ impl ClientSession {
                     | WorkspaceOperationKind::OpenFile(_)
                     | WorkspaceOperationKind::SaveFile(_)
                     | WorkspaceOperationKind::CreateFile(_)
+                    | WorkspaceOperationKind::CreateCanonicalRustModule(_)
                     | WorkspaceOperationKind::RunTool(..)
                     | WorkspaceOperationKind::Clean
             )
@@ -364,6 +387,20 @@ impl ClientSession {
                     path: path.clone(),
                 });
                 format!("Created {path}.")
+            }
+            Ok(WorkspaceOperationResult::CanonicalRustModuleCreated(created)) => {
+                operation_succeeded = true;
+                let module_path = created.module_path.to_string_lossy().into_owned();
+                workspace_file_result = Some(WorkspaceFileResult::CanonicalRustModuleCreated {
+                    operation_id: completion.id.clone(),
+                    module_path: module_path.clone(),
+                    module_contents: created.module_contents,
+                    module_fingerprint: created.module_fingerprint,
+                    parent_path: created.parent_path.to_string_lossy().into_owned(),
+                    parent_contents: created.parent_contents,
+                    parent_fingerprint: created.parent_fingerprint,
+                });
+                format!("Created canonical Rust module {module_path}.")
             }
             Ok(WorkspaceOperationResult::CompletedWithSummary(summary)) => {
                 operation_succeeded = true;
@@ -570,6 +607,9 @@ fn workspace_operation_action_id(kind: &WorkspaceOperationKind) -> &'static str 
         WorkspaceOperationKind::OpenFile(_) => "workspace.open-file",
         WorkspaceOperationKind::SaveFile(_) => "workspace.save-file",
         WorkspaceOperationKind::CreateFile(_) => "workspace.create-file",
+        WorkspaceOperationKind::CreateCanonicalRustModule(_) => {
+            "workspace.create-canonical-rust-module"
+        }
         WorkspaceOperationKind::Validate => "workspace.validate",
         WorkspaceOperationKind::BuildDocumentation => "workspace.build-documentation",
         WorkspaceOperationKind::PublishDocumentation => "workspace.publish-documentation",
@@ -600,9 +640,9 @@ fn workspace_operation_phase(kind: &WorkspaceOperationKind) -> OperationPhase {
         WorkspaceOperationKind::ListFiles | WorkspaceOperationKind::OpenFile(_) => {
             OperationPhase::Resolving
         }
-        WorkspaceOperationKind::SaveFile(_) | WorkspaceOperationKind::CreateFile(_) => {
-            OperationPhase::Building
-        }
+        WorkspaceOperationKind::SaveFile(_)
+        | WorkspaceOperationKind::CreateFile(_)
+        | WorkspaceOperationKind::CreateCanonicalRustModule(_) => OperationPhase::Building,
         WorkspaceOperationKind::RunTool(..)
         | WorkspaceOperationKind::BuildDocumentation
         | WorkspaceOperationKind::Clean => OperationPhase::Building,
@@ -637,6 +677,7 @@ fn execute_workspace_operation(
                 | WorkspaceOperationKind::OpenFile(_)
                 | WorkspaceOperationKind::SaveFile(_)
                 | WorkspaceOperationKind::CreateFile(_)
+                | WorkspaceOperationKind::CreateCanonicalRustModule(_)
         )
     {
         return Err("This operation is unavailable in fixture mode.".to_owned());
@@ -709,6 +750,15 @@ fn execute_workspace_operation(
         WorkspaceOperationKind::CreateFile(path) => {
             vapor_client_application::create_new_workspace_file(root, &path)
                 .map(WorkspaceOperationResult::Created)
+        }
+        WorkspaceOperationKind::CreateCanonicalRustModule(create) => {
+            vapor_client_application::create_canonical_rust_module(
+                root,
+                &create.parent_path,
+                &create.expected_parent_fingerprint,
+                &create.module_name,
+            )
+            .map(WorkspaceOperationResult::CanonicalRustModuleCreated)
         }
         WorkspaceOperationKind::Validate => {
             vapor_client_application::validate_workspace_source(executable, root)
@@ -837,6 +887,10 @@ fn workspace_result_outcome(
             Ok(format!("Saved {}.", path.display()))
         }
         Ok(WorkspaceOperationResult::Created(path)) => Ok(format!("Created {}.", path.display())),
+        Ok(WorkspaceOperationResult::CanonicalRustModuleCreated(created)) => Ok(format!(
+            "Created canonical Rust module {}.",
+            created.module_path.display()
+        )),
         Ok(WorkspaceOperationResult::Completed) => Ok("Workspace operation completed.".to_owned()),
         Ok(WorkspaceOperationResult::CompletedWithSummary(summary)) => Ok(summary.clone()),
         Ok(WorkspaceOperationResult::Remembered(paths)) => Ok(format!(

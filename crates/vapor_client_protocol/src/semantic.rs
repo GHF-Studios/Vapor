@@ -17,7 +17,12 @@ pub struct SemanticObjectId {
 
 impl SemanticObjectId {
     pub fn new(domain: impl Into<String>, document: impl Into<PathBuf>, path: Vec<String>) -> Self {
-        Self { domain: domain.into(), document: document.into(), path, discriminator: None }
+        Self {
+            domain: domain.into(),
+            document: document.into(),
+            path,
+            discriminator: None,
+        }
     }
 
     pub fn with_discriminator(
@@ -38,17 +43,19 @@ impl SemanticObjectId {
         if self.domain == "rust" {
             return self.path.join("::");
         }
-        self.path.iter().fold(String::new(), |mut qualified, segment| {
-            if segment.starts_with('[') {
-                qualified.push_str(segment);
-            } else {
-                if !qualified.is_empty() {
-                    qualified.push('.');
+        self.path
+            .iter()
+            .fold(String::new(), |mut qualified, segment| {
+                if segment.starts_with('[') {
+                    qualified.push_str(segment);
+                } else {
+                    if !qualified.is_empty() {
+                        qualified.push('.');
+                    }
+                    qualified.push_str(segment);
                 }
-                qualified.push_str(segment);
-            }
-            qualified
-        })
+                qualified
+            })
     }
 }
 
@@ -173,7 +180,10 @@ pub struct SemanticObject {
 
 impl SemanticObject {
     pub fn reference(&self, document_version: u64) -> SemanticObjectRef {
-        SemanticObjectRef { id: self.id.clone(), document_version }
+        SemanticObjectRef {
+            id: self.id.clone(),
+            document_version,
+        }
     }
 }
 
@@ -200,7 +210,8 @@ mod tests {
         };
 
         let encoded = serde_json::to_string(&object).expect("encode semantic contract");
-        let decoded: SemanticObject = serde_json::from_str(&encoded).expect("decode semantic contract");
+        let decoded: SemanticObject =
+            serde_json::from_str(&encoded).expect("decode semantic contract");
 
         assert_eq!(decoded, object);
         assert_eq!(decoded.kind.label(), "Component");

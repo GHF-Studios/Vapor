@@ -7,10 +7,10 @@
 mod action;
 mod catalog;
 mod composition;
-mod message;
-mod state;
 pub mod language_server;
+mod message;
 pub mod semantic;
+mod state;
 
 pub use catalog::{CatalogQuery, CatalogSearchSnapshot, CatalogStatus};
 pub use language_server::{LanguageServerDiagnostics, parse_publish_diagnostics};
@@ -251,6 +251,11 @@ mod tests {
                 path: "new.toml".into(),
                 contents: String::new(),
             }),
+            ClientAction::Workspace(WorkspaceAction::CreateCanonicalRustModule {
+                parent_path: "crates/demo/src/lib.rs".into(),
+                expected_parent_fingerprint: "fnv1a64:123:4".into(),
+                module_name: "components".into(),
+            }),
             ClientAction::Authoring(AuthoringAction::LoadComposition {
                 project_id: "moon".into(),
             }),
@@ -413,7 +418,7 @@ mod tests {
         ];
         assert_eq!(
             actions.len(),
-            96,
+            97,
             "update this catalog when adding/removing action variants"
         );
         for action in actions {
@@ -432,10 +437,11 @@ mod tests {
         let diagnostics = parse_publish_diagnostics(&serde_json::json!({
             "method":"textDocument/publishDiagnostics",
             "params":{"uri":"file:///test.rs","diagnostics":[]}
-        })).unwrap();
-        assert_round_trip(ProtocolFrame::Event(ClientEvent::LanguageServerDiagnostics(
-            Box::new(diagnostics),
-        )));
+        }))
+        .unwrap();
+        assert_round_trip(ProtocolFrame::Event(
+            ClientEvent::LanguageServerDiagnostics(Box::new(diagnostics)),
+        ));
         assert_round_trip(ProtocolFrame::Event(ClientEvent::LanguageServerStatus {
             status: LanguageServerStatus::Failed,
             message: Some("managed Rust Analyzer is missing".into()),
@@ -507,6 +513,17 @@ mod tests {
                 path: "Vapor.toml".into(),
                 contents: "[workspace]".into(),
                 fingerprint: "fnv1a64:abc:11".into(),
+            },
+        )));
+        assert_round_trip(ClientEvent::WorkspaceFileResult(Box::new(
+            WorkspaceFileResult::CanonicalRustModuleCreated {
+                operation_id: "operation-2".into(),
+                module_path: "crates/demo/src/components.rs".into(),
+                module_contents: "//! Components.\n".into(),
+                module_fingerprint: "fnv1a64:abc:16".into(),
+                parent_path: "crates/demo/src/lib.rs".into(),
+                parent_contents: "pub mod components;\n".into(),
+                parent_fingerprint: "fnv1a64:def:22".into(),
             },
         )));
         assert_round_trip(ClientEvent::WorkspaceFileResult(Box::new(
@@ -791,20 +808,22 @@ mod tests {
 
     #[test]
     fn operation_output_round_trips_as_a_typed_event() {
-        assert_round_trip(ClientEvent::OperationOutput(OperationOutputEvent {
-            id: "operation-7".to_owned(),
-            origin: ClientOrigin::Launcher,
-            composition_id: Some("composition-42".to_owned()),
-            stream: OperationOutputStream::Stderr,
-            timestamp_unix_ms: 42,
-            level: ConsoleLevel::Warn,
-            source: "workspace".to_owned(),
-            action: "workspace.build".to_owned(),
-            process: Some("cargo".to_owned()),
-            diagnostic: None,
-            raw_payload: Some(r#"{"reason":"compiler-artifact"}"#.to_owned()),
-            text: "warning: example".to_owned(),
-        }));
+        assert_round_trip(ClientEvent::OperationOutput(Box::new(
+            OperationOutputEvent {
+                id: "operation-7".to_owned(),
+                origin: ClientOrigin::Launcher,
+                composition_id: Some("composition-42".to_owned()),
+                stream: OperationOutputStream::Stderr,
+                timestamp_unix_ms: 42,
+                level: ConsoleLevel::Warn,
+                source: "workspace".to_owned(),
+                action: "workspace.build".to_owned(),
+                process: Some("cargo".to_owned()),
+                diagnostic: None,
+                raw_payload: Some(r#"{"reason":"compiler-artifact"}"#.to_owned()),
+                text: "warning: example".to_owned(),
+            },
+        )));
     }
 
     #[test]
@@ -912,7 +931,10 @@ mod tests {
         let legacy = r#"{"origin":"cargo","severity":"error","code":null,"message":"failed","rendered":null,"primary":null,"related":[],"raw_payload":"{}"}"#;
         let mut diagnostic: vapor_console_core::StructuredDiagnostic =
             serde_json::from_str(legacy).expect("read legacy diagnostic");
-        assert_eq!(diagnostic.context, vapor_console_core::DiagnosticContext::default());
+        assert_eq!(
+            diagnostic.context,
+            vapor_console_core::DiagnosticContext::default()
+        );
 
         diagnostic.context = vapor_console_core::DiagnosticContext {
             domain: Some("rust".to_owned()),
@@ -922,13 +944,14 @@ mod tests {
             semantic_path: Some("game::Ship::velocity".to_owned()),
             operation_id: Some("op-17".to_owned()),
         };
-        let decoded: vapor_console_core::StructuredDiagnostic = serde_json::from_str(
-            &serde_json::to_string(&diagnostic).unwrap(),
-        )
-        .unwrap();
+        let decoded: vapor_console_core::StructuredDiagnostic =
+            serde_json::from_str(&serde_json::to_string(&diagnostic).unwrap()).unwrap();
         assert_eq!(decoded, diagnostic);
         assert_eq!(decoded.origin, vapor_console_core::DiagnosticOrigin::Cargo);
-        assert_eq!(decoded.severity, vapor_console_core::DiagnosticSeverity::Error);
+        assert_eq!(
+            decoded.severity,
+            vapor_console_core::DiagnosticSeverity::Error
+        );
     }
 
     #[test]

@@ -1,4 +1,7 @@
-use std::{convert::TryFrom, io::{self, Write}};
+use std::{
+    convert::TryFrom,
+    io::{self, Write},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -73,8 +76,12 @@ fn parse_diagnostic(
     let mut related = Vec::new();
     if let Some(items) = related_information {
         for information in items.iter().take(MAX_RELATED_LOCATIONS) {
-            let Some(location) = information.get("location") else { continue };
-            let Some(related_uri) = location.get("uri").and_then(Value::as_str) else { continue };
+            let Some(location) = information.get("location") else {
+                continue;
+            };
+            let Some(related_uri) = location.get("uri").and_then(Value::as_str) else {
+                continue;
+            };
             if related_uri.len() > MAX_LOCATION_URI_BYTES {
                 continue;
             }
@@ -82,7 +89,9 @@ fn parse_diagnostic(
                 .get("message")
                 .and_then(Value::as_str)
                 .map(|label| truncate(label, MAX_LOCATION_LABEL_BYTES));
-            let Some(range) = location.get("range") else { continue };
+            let Some(range) = location.get("range") else {
+                continue;
+            };
             if let Some(span) = parse_span(related_uri, range, label, false) {
                 related.push(span);
             }
@@ -99,7 +108,11 @@ fn parse_diagnostic(
         if code.is_null() {
             None
         } else {
-            Some(code.as_str().map(str::to_owned).unwrap_or_else(|| code.to_string()))
+            Some(
+                code.as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| code.to_string()),
+            )
         }
     });
     let raw_payload = serialize_bounded_json(diagnostic, MAX_DIAGNOSTIC_RAW_BYTES);
@@ -166,12 +179,18 @@ impl Write for BoundedJsonBuffer {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         let remaining = self.max_bytes.saturating_sub(self.bytes.len());
         if remaining == 0 {
-            return Err(io::Error::new(io::ErrorKind::WriteZero, "diagnostic payload limit reached"));
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "diagnostic payload limit reached",
+            ));
         }
         let length = buffer.len().min(remaining);
         self.bytes.extend_from_slice(&buffer[..length]);
         if length < buffer.len() {
-            Err(io::Error::new(io::ErrorKind::WriteZero, "diagnostic payload limit reached"))
+            Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "diagnostic payload limit reached",
+            ))
         } else {
             Ok(length)
         }
@@ -182,7 +201,12 @@ impl Write for BoundedJsonBuffer {
     }
 }
 
-fn parse_span(uri: &str, range: &Value, label: Option<String>, primary: bool) -> Option<DiagnosticSpan> {
+fn parse_span(
+    uri: &str,
+    range: &Value,
+    label: Option<String>,
+    primary: bool,
+) -> Option<DiagnosticSpan> {
     let start = range.get("start")?;
     let end = range.get("end")?;
     let coordinate = |position: &Value, field: &str| {
@@ -250,7 +274,10 @@ mod tests {
         let primary = diagnostic.primary.as_ref().unwrap();
         assert_eq!((primary.start_line, primary.start_column), (3, 5));
         assert_eq!(diagnostic.related[0].file, "file:///work/src/types.rs");
-        assert_eq!(diagnostic.related[0].label.as_deref(), Some("canonical module"));
+        assert_eq!(
+            diagnostic.related[0].label.as_deref(),
+            Some("canonical module")
+        );
     }
 
     #[test]
@@ -271,14 +298,21 @@ mod tests {
         assert_eq!(batch.omitted_diagnostics, 300 - MAX_DIAGNOSTICS_PER_UPDATE);
         let diagnostic = &batch.diagnostics[0];
         assert!(diagnostic.message.len() <= MAX_DIAGNOSTIC_TEXT_BYTES);
-        assert!(diagnostic.message.is_char_boundary(diagnostic.message.len()));
+        assert!(
+            diagnostic
+                .message
+                .is_char_boundary(diagnostic.message.len())
+        );
         assert!(diagnostic.message.ends_with("[truncated]"));
         assert!(diagnostic.raw_payload.len() <= MAX_DIAGNOSTIC_RAW_BYTES);
     }
 
     #[test]
     fn only_publish_diagnostics_notifications_are_normalized() {
-        assert!(parse_publish_diagnostics(&serde_json::json!({"method":"textDocument/didOpen"})).is_none());
+        assert!(
+            parse_publish_diagnostics(&serde_json::json!({"method":"textDocument/didOpen"}))
+                .is_none()
+        );
     }
 
     #[test]

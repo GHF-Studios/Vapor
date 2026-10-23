@@ -271,16 +271,18 @@ impl ConsoleFilter {
             return false;
         }
         if self.domain.as_deref().is_some_and(|domain| {
-            !record.fields.iter().any(|field| {
-                field.key == "domain" && field.value.eq_ignore_ascii_case(domain)
-            })
+            !record
+                .fields
+                .iter()
+                .any(|field| field.key == "domain" && field.value.eq_ignore_ascii_case(domain))
         }) {
             return false;
         }
         if self.scope.as_deref().is_some_and(|scope| {
-            !record.fields.iter().any(|field| {
-                field.key == "scope" && field.value.eq_ignore_ascii_case(scope)
-            })
+            !record
+                .fields
+                .iter()
+                .any(|field| field.key == "scope" && field.value.eq_ignore_ascii_case(scope))
         }) {
             return false;
         }
@@ -617,8 +619,14 @@ mod tests {
         history.push(ConsoleRecord::new(2, ConsoleLevel::Info, "test", "second"));
         history.push(ConsoleRecord::new(3, ConsoleLevel::Info, "test", "third"));
 
-        assert_eq!(history.record_at(0).map(|record| record.message.as_str()), Some("second"));
-        assert_eq!(history.record_at(1).map(|record| record.message.as_str()), Some("third"));
+        assert_eq!(
+            history.record_at(0).map(|record| record.message.as_str()),
+            Some("second")
+        );
+        assert_eq!(
+            history.record_at(1).map(|record| record.message.as_str()),
+            Some("third")
+        );
         assert!(history.record_at(2).is_none());
     }
 
@@ -664,14 +672,20 @@ mod tests {
             }
             .matches(&record)
         );
-        assert!(ConsoleFilter {
-            domain: Some("RUST".to_owned()),
-            ..Default::default()
-        }.matches(&record));
-        assert!(!ConsoleFilter {
-            scope: Some("workspace".to_owned()),
-            ..Default::default()
-        }.matches(&record));
+        assert!(
+            ConsoleFilter {
+                domain: Some("RUST".to_owned()),
+                ..Default::default()
+            }
+            .matches(&record)
+        );
+        assert!(
+            !ConsoleFilter {
+                scope: Some("workspace".to_owned()),
+                ..Default::default()
+            }
+            .matches(&record)
+        );
     }
 
     #[test]

@@ -36,7 +36,12 @@ pub fn run_cancellable(
     is_cancelled: impl FnMut() -> bool,
     report_output: impl FnMut(OperationOutputStream, &str),
 ) -> Result<ExitStatus, String> {
-    run_cancellable_with_line_limit(command, is_cancelled, MAX_OPERATION_OUTPUT_LINE_BYTES, report_output)
+    run_cancellable_with_line_limit(
+        command,
+        is_cancelled,
+        MAX_OPERATION_OUTPUT_LINE_BYTES,
+        report_output,
+    )
 }
 
 /// Run a managed child to completion while allowing a bounded machine-readable line size.
@@ -63,7 +68,11 @@ pub fn run_cancellable_with_line_limit(
         return Err("managed child output line limit must be positive".to_owned());
     }
     run_cancellable_with_started_and_line_limit(
-        command, is_cancelled, |_| Ok(()), max_line_bytes, report_output,
+        command,
+        is_cancelled,
+        |_| Ok(()),
+        max_line_bytes,
+        report_output,
     )
 }
 
@@ -119,10 +128,20 @@ fn run_cancellable_with_started_and_line_limit(
     let (sender, receiver) = mpsc::sync_channel(128);
     let stdout_sender = sender.clone();
     let stdout_reader = thread::spawn(move || {
-        forward_output(stdout, OperationOutputStream::Stdout, stdout_sender, max_line_bytes)
+        forward_output(
+            stdout,
+            OperationOutputStream::Stdout,
+            stdout_sender,
+            max_line_bytes,
+        )
     });
     let stderr_reader = thread::spawn(move || {
-        forward_output(stderr, OperationOutputStream::Stderr, sender, max_line_bytes)
+        forward_output(
+            stderr,
+            OperationOutputStream::Stderr,
+            sender,
+            max_line_bytes,
+        )
     });
     let mut cancellation_sent = false;
     loop {
@@ -234,7 +253,9 @@ fn forward_output(
     let mut bytes = Vec::new();
     let mut carry = Vec::new();
     loop {
-        let Some(_continued) = read_bounded_line(&mut reader, &mut bytes, &mut carry, max_line_bytes)? else {
+        let Some(_continued) =
+            read_bounded_line(&mut reader, &mut bytes, &mut carry, max_line_bytes)?
+        else {
             return Ok(());
         };
         let text = String::from_utf8_lossy(&bytes);
@@ -369,9 +390,14 @@ mod tests {
         let mut continued = true;
         let mut chunks = Vec::new();
         while continued {
-            continued = read_bounded_line(&mut reader, &mut line, &mut carry, MAX_OPERATION_OUTPUT_LINE_BYTES)
-                .unwrap()
-                .unwrap();
+            continued = read_bounded_line(
+                &mut reader,
+                &mut line,
+                &mut carry,
+                MAX_OPERATION_OUTPUT_LINE_BYTES,
+            )
+            .unwrap()
+            .unwrap();
             assert!(line.len() <= MAX_OPERATION_OUTPUT_LINE_BYTES);
             chunks.push(line.clone());
         }
@@ -380,15 +406,25 @@ mod tests {
             format!("{}tail", "x".repeat(MAX_OPERATION_OUTPUT_LINE_BYTES * 2))
         );
         assert!(
-            !read_bounded_line(&mut reader, &mut line, &mut carry, MAX_OPERATION_OUTPUT_LINE_BYTES)
-                .unwrap()
-                .unwrap()
+            !read_bounded_line(
+                &mut reader,
+                &mut line,
+                &mut carry,
+                MAX_OPERATION_OUTPUT_LINE_BYTES
+            )
+            .unwrap()
+            .unwrap()
         );
         assert_eq!(line, b"next line");
         assert!(
-            read_bounded_line(&mut reader, &mut line, &mut carry, MAX_OPERATION_OUTPUT_LINE_BYTES)
-                .unwrap()
-                .is_none()
+            read_bounded_line(
+                &mut reader,
+                &mut line,
+                &mut carry,
+                MAX_OPERATION_OUTPUT_LINE_BYTES
+            )
+            .unwrap()
+            .is_none()
         );
     }
 

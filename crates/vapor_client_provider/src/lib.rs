@@ -7,12 +7,12 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
+mod cargo_output;
 /// App-local cross-compilation tool inspection and Cargo environment setup.
 pub mod cross_toolchain;
 /// Commands using the Rust toolchain bundled with the selected Vapor app.
 pub mod managed_cargo;
 mod process_output;
-mod cargo_output;
 mod source;
 mod target;
 pub mod workspace_build;

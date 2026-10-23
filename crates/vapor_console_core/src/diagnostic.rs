@@ -117,9 +117,21 @@ mod tests {
 
     #[test]
     fn severity_maps_to_shared_console_levels() {
-        assert_eq!(DiagnosticSeverity::Error.console_level(), super::super::ConsoleLevel::Error);
-        assert_eq!(DiagnosticSeverity::Warning.console_level(), super::super::ConsoleLevel::Warn);
-        assert_eq!(DiagnosticSeverity::Information.console_level(), super::super::ConsoleLevel::Info);
-        assert_eq!(DiagnosticSeverity::Hint.console_level(), super::super::ConsoleLevel::Debug);
+        assert_eq!(
+            DiagnosticSeverity::Error.console_level(),
+            super::super::ConsoleLevel::Error
+        );
+        assert_eq!(
+            DiagnosticSeverity::Warning.console_level(),
+            super::super::ConsoleLevel::Warn
+        );
+        assert_eq!(
+            DiagnosticSeverity::Information.console_level(),
+            super::super::ConsoleLevel::Info
+        );
+        assert_eq!(
+            DiagnosticSeverity::Hint.console_level(),
+            super::super::ConsoleLevel::Debug
+        );
     }
 }

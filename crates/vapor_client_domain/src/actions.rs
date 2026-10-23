@@ -137,6 +137,12 @@ pub enum WorkspaceAction {
         path: String,
         contents: String,
     },
+    /// Create a canonical Rust module and add its declaration to the current parent.
+    CreateCanonicalRustModule {
+        parent_path: String,
+        expected_parent_fingerprint: String,
+        module_name: String,
+    },
 }
 
 /// Managed development action for an opened workspace.
@@ -578,6 +584,9 @@ impl ClientAction {
                 WorkspaceAction::OpenFile { .. } => "workspace.open-file",
                 WorkspaceAction::SaveFile { .. } => "workspace.save-file",
                 WorkspaceAction::CreateFile { .. } => "workspace.create-file",
+                WorkspaceAction::CreateCanonicalRustModule { .. } => {
+                    "workspace.create-canonical-rust-module"
+                }
             },
             Self::LanguageServer(action) => match action {
                 LanguageServerAction::Start { .. } => "language-server.start",

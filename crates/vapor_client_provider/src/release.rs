@@ -215,8 +215,7 @@ fn run_step(
         .join(output_profile)
         .join(project.name());
     let mut command = toolchain.command();
-    command
-        .args(step.cargo_args(target));
+    command.args(step.cargo_args(target));
     if !matches!(step, BuildStep::Fmt) {
         command.args(["--message-format", "json"]);
     }
@@ -242,18 +241,25 @@ fn run_step(
         &mut command,
         MAX_CARGO_JSON_LINE_BYTES,
         |stream, line| {
-            let parsed = if stream == OperationOutputStream::Stdout && !matches!(step, BuildStep::Fmt) {
-                super::cargo_output::parse_cargo_output_line(line)
-            } else {
-                super::cargo_output::CargoOutputLine {
-                    display_text: line.to_owned(),
-                    diagnostic: None,
-                    raw_payload: None,
-                }
-            };
-            report_output(stream, &parsed.display_text, parsed.diagnostic, parsed.raw_payload);
+            let parsed =
+                if stream == OperationOutputStream::Stdout && !matches!(step, BuildStep::Fmt) {
+                    super::cargo_output::parse_cargo_output_line(line)
+                } else {
+                    super::cargo_output::CargoOutputLine {
+                        display_text: line.to_owned(),
+                        diagnostic: None,
+                        raw_payload: None,
+                    }
+                };
+            report_output(
+                stream,
+                &parsed.display_text,
+                parsed.diagnostic,
+                parsed.raw_payload,
+            );
         },
-    ).map_err(|error| {
+    )
+    .map_err(|error| {
         format!(
             "failed to run {} for '{}': {error}",
             step.label(target),

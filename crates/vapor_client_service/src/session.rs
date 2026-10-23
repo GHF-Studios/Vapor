@@ -103,7 +103,7 @@ fn queue_operation_output(events: &mut VecDeque<ClientEvent>, output: OperationO
         .saturating_add(1)
         .saturating_sub(MAX_BUFFERED_OPERATION_OUTPUT_EVENTS);
     if to_evict == 0 {
-        events.push_back(ClientEvent::OperationOutput(output));
+        events.push_back(ClientEvent::OperationOutput(Box::new(output)));
         return;
     }
     if !has_omission_notice {
@@ -127,7 +127,7 @@ fn queue_operation_output(events: &mut VecDeque<ClientEvent>, output: OperationO
             .unwrap_or(events.len());
         events.insert(
             notice_index,
-            ClientEvent::OperationOutput(OperationOutputEvent {
+            ClientEvent::OperationOutput(Box::new(OperationOutputEvent {
                 id: output.id.clone(),
                 origin: output.origin,
                 composition_id: output.composition_id.clone(),
@@ -140,10 +140,10 @@ fn queue_operation_output(events: &mut VecDeque<ClientEvent>, output: OperationO
                 diagnostic: None,
                 raw_payload: None,
                 text: OPERATION_OUTPUT_OMISSION_NOTICE.to_owned(),
-            }),
+            })),
         );
     }
-    events.push_back(ClientEvent::OperationOutput(output));
+    events.push_back(ClientEvent::OperationOutput(Box::new(output)));
 }
 
 fn unix_time_millis() -> u64 {
@@ -193,7 +193,7 @@ pub struct ClientSession {
 }
 
 enum BackgroundOperationMessage {
-    Lifecycle(application::CoreOperationEvent),
+    Lifecycle(Box<application::CoreOperationEvent>),
     Panicked { id: String, message: String },
     Complete(Box<CompositionOperationCompletion>),
     CompleteWorkshop(Box<WorkshopOperationCompletion>),
@@ -414,6 +414,7 @@ enum WorkspaceOperationKind {
     OpenFile(PathBuf),
     SaveFile(Box<WorkspaceFileSave>),
     CreateFile(PathBuf),
+    CreateCanonicalRustModule(Box<WorkspaceRustModuleCreate>),
     Validate,
     BuildDocumentation,
     PublishDocumentation,
@@ -446,6 +447,13 @@ struct WorkspaceFileSave {
     contents: String,
 }
 
+#[derive(Clone)]
+struct WorkspaceRustModuleCreate {
+    parent_path: PathBuf,
+    expected_parent_fingerprint: String,
+    module_name: String,
+}
+
 enum WorkspaceOperationResult {
     SourceRepositories(Vec<AvailableSuperworkspaceRepositorySnapshot>),
     AcquiredSourceRepositories(Vec<String>),
@@ -453,6 +461,7 @@ enum WorkspaceOperationResult {
     Opened(Box<WorkspaceFileOpen>),
     Saved { path: PathBuf, fingerprint: String },
     Created(PathBuf),
+    CanonicalRustModuleCreated(vapor_client_application::CanonicalRustModuleCreated),
     Completed,
     CompletedWithSummary(String),
     Remembered(Vec<PathBuf>),
@@ -726,7 +735,10 @@ impl ClientSession {
                         | "authoring.open-source"
                         | "authoring.forget-source"
                         | "authoring.close-source"
-                ) => OperationResourceKey::SourceRegistry,
+                ) =>
+            {
+                OperationResourceKey::SourceRegistry
+            }
             "studio-authoring" if spec.action == "authoring.discover-content-projects" => {
                 OperationResourceKey::WorkspaceScan(workspace)
             }
@@ -1036,6 +1048,7 @@ impl ClientSession {
                     | WorkspaceAction::OpenFile { .. }
                     | WorkspaceAction::SaveFile { .. }
                     | WorkspaceAction::CreateFile { .. }
+                    | WorkspaceAction::CreateCanonicalRustModule { .. }
                     | WorkspaceAction::Validate
                     | WorkspaceAction::BuildDocumentation
                     | WorkspaceAction::PublishDocumentation
@@ -1707,7 +1720,8 @@ impl ClientSession {
                         application::OperationStatus::Running
                             | application::OperationStatus::Cancelled
                     ) {
-                        let _ = lifecycle_sender.send(BackgroundOperationMessage::Lifecycle(event));
+                        let _ = lifecycle_sender
+                            .send(BackgroundOperationMessage::Lifecycle(Box::new(event)));
                     }
                 });
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2579,14 +2593,14 @@ mod tests {
             assert!(
                 session
                     .operation_sender
-                    .try_send(BackgroundOperationMessage::Lifecycle(event()))
+                    .try_send(BackgroundOperationMessage::Lifecycle(Box::new(event())))
                     .is_ok()
             );
         }
         assert!(matches!(
             session
                 .operation_sender
-                .try_send(BackgroundOperationMessage::Lifecycle(event())),
+                .try_send(BackgroundOperationMessage::Lifecycle(Box::new(event()))),
             Err(mpsc::TrySendError::Full(_))
         ));
         assert_eq!(
@@ -2773,7 +2787,10 @@ mod tests {
         ));
 
         assert_eq!(response.kind, ClientResponseKind::OperationAccepted);
-        assert_ne!(response.operation_id.as_deref(), Some("workspace-discovery"));
+        assert_ne!(
+            response.operation_id.as_deref(),
+            Some("workspace-discovery")
+        );
         assert!(response.error.is_none());
     }
 
@@ -4293,6 +4310,44 @@ mod tests {
                     if path == "nested/new.toml")
         )));
         assert!(root.join("nested/new.toml").is_file());
+
+        std::fs::create_dir_all(root.join("crate/src")).expect("create Rust source tree");
+        std::fs::write(
+            root.join("crate/Cargo.toml"),
+            "[package]\nname = 'fixture-crate'\nversion = '0.1.0'\n",
+        )
+        .expect("write crate manifest");
+        std::fs::write(root.join("crate/src/lib.rs"), "pub fn ready() {}\n")
+            .expect("write crate root");
+        let source_fingerprint =
+            vapor_client_application::workspace_file_fingerprint("pub fn ready() {}\n");
+        let response = session.dispatch(request(
+            None,
+            ClientAction::Workspace(WorkspaceAction::CreateCanonicalRustModule {
+                parent_path: "crate/src/lib.rs".into(),
+                expected_parent_fingerprint: source_fingerprint,
+                module_name: "components".into(),
+            }),
+        ));
+        assert_eq!(response.kind, ClientResponseKind::OperationAccepted);
+        let events = wait_for_operation(&mut session);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ClientEvent::WorkspaceFileResult(result)
+                if matches!(result.as_ref(), WorkspaceFileResult::CanonicalRustModuleCreated {
+                    module_path,
+                    parent_contents,
+                    ..
+                } if module_path == "crate/src/components.rs"
+                    && parent_contents.ends_with("pub mod components;\n"))
+        )));
+        assert!(root.join("crate/src/components.rs").is_file());
+        assert!(
+            std::fs::read_to_string(root.join("crate/src/lib.rs"))
+                .expect("read updated crate root")
+                .contains("pub mod components;")
+        );
+
         std::fs::remove_dir_all(root).expect("remove fixture workspace");
     }
 

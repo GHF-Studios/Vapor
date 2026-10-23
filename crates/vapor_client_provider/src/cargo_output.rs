@@ -24,17 +24,30 @@ pub fn parse_cargo_output_line(line: &str) -> CargoOutputLine {
     let reason = value.get("reason").and_then(serde_json::Value::as_str);
     if reason != Some("compiler-message") {
         return match reason {
-                Some("compiler-artifact") => {
-                let target = value.get("target").and_then(|target| target.get("name")).and_then(serde_json::Value::as_str);
-                let kind = value.get("target").and_then(|target| target.get("kind")).and_then(serde_json::Value::as_array).and_then(|kinds| kinds.first()).and_then(serde_json::Value::as_str);
+            Some("compiler-artifact") => {
+                let target = value
+                    .get("target")
+                    .and_then(|target| target.get("name"))
+                    .and_then(serde_json::Value::as_str);
+                let kind = value
+                    .get("target")
+                    .and_then(|target| target.get("kind"))
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|kinds| kinds.first())
+                    .and_then(serde_json::Value::as_str);
                 match (target, kind) {
-                    (Some(target), Some(kind)) => summarized_line(&format!("Built {kind} {target}"), line),
+                    (Some(target), Some(kind)) => {
+                        summarized_line(&format!("Built {kind} {target}"), line)
+                    }
                     (Some(target), None) => summarized_line(&format!("Built {target}"), line),
                     _ => summarized_line("Cargo built a target", line),
                 }
             }
             Some("build-script-executed") => {
-                let package = value.get("package_id").and_then(serde_json::Value::as_str).unwrap_or("package");
+                let package = value
+                    .get("package_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("package");
                 summarized_line(&format!("Ran build script for {package}"), line)
             }
             Some("build-finished") => {
@@ -119,8 +132,14 @@ fn parse_span(span: &serde_json::Value) -> Option<DiagnosticSpan> {
         start_column: bounded_u32(span.get("column_start")?.as_u64()?),
         end_line: bounded_u32(span.get("line_end")?.as_u64()?),
         end_column: bounded_u32(span.get("column_end")?.as_u64()?),
-        primary: span.get("is_primary").and_then(serde_json::Value::as_bool).unwrap_or(false),
-        label: span.get("label").and_then(serde_json::Value::as_str).map(str::to_owned),
+        primary: span
+            .get("is_primary")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        label: span
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
     })
 }
 
@@ -129,7 +148,11 @@ fn bounded_u32(value: u64) -> u32 {
 }
 
 fn raw_line(line: &str) -> CargoOutputLine {
-    CargoOutputLine { display_text: line.to_owned(), diagnostic: None, raw_payload: None }
+    CargoOutputLine {
+        display_text: line.to_owned(),
+        diagnostic: None,
+        raw_payload: None,
+    }
 }
 
 fn summarized_line(display_text: &str, raw: &str) -> CargoOutputLine {
@@ -141,9 +164,13 @@ fn summarized_line(display_text: &str, raw: &str) -> CargoOutputLine {
 }
 
 fn truncate_utf8(value: &str, max_bytes: usize) -> String {
-    if value.len() <= max_bytes { return value.to_owned(); }
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
     let mut end = max_bytes;
-    while !value.is_char_boundary(end) { end -= 1; }
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
     let mut retained = value[..end].to_owned();
     retained.push('…');
     retained
@@ -151,7 +178,7 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_cargo_output_line, MAX_RETAINED_CARGO_PAYLOAD_BYTES};
+    use super::{MAX_RETAINED_CARGO_PAYLOAD_BYTES, parse_cargo_output_line};
     use vapor_core::{DiagnosticOrigin, DiagnosticSeverity};
 
     #[test]
@@ -171,7 +198,8 @@ mod tests {
 
     #[test]
     fn cargo_machine_events_are_summarized_instead_of_leaking_json() {
-        let artifact = r#"{"reason":"compiler-artifact","target":{"name":"vapor_core","kind":["lib"]}}"#;
+        let artifact =
+            r#"{"reason":"compiler-artifact","target":{"name":"vapor_core","kind":["lib"]}}"#;
         let output = parse_cargo_output_line(artifact);
         assert_eq!(output.display_text, "Built lib vapor_core");
         assert!(output.diagnostic.is_none());
@@ -180,12 +208,18 @@ mod tests {
 
         let finished = parse_cargo_output_line(r#"{"reason":"build-finished","success":true}"#);
         assert_eq!(finished.display_text, "Cargo finished successfully");
-        assert_eq!(finished.raw_payload.as_deref(), Some(r#"{"reason":"build-finished","success":true}"#));
+        assert_eq!(
+            finished.raw_payload.as_deref(),
+            Some(r#"{"reason":"build-finished","success":true}"#)
+        );
     }
 
     #[test]
     fn cargo_non_diagnostic_and_unstructured_output_remains_verbatim() {
-        for line in ["ordinary build-script output", r#"{"reason":"custom-event","value":1}"#] {
+        for line in [
+            "ordinary build-script output",
+            r#"{"reason":"custom-event","value":1}"#,
+        ] {
             let output = parse_cargo_output_line(line);
             assert_eq!(output.display_text, line);
             assert!(output.diagnostic.is_none());
@@ -195,7 +229,9 @@ mod tests {
     #[test]
     fn retained_cargo_payload_is_bounded_at_utf8_boundaries() {
         let message = "x".repeat(MAX_RETAINED_CARGO_PAYLOAD_BYTES + 100);
-        let line = format!("{{\"reason\":\"compiler-message\",\"message\":{{\"message\":\"{message}\",\"level\":\"warning\"}}}}");
+        let line = format!(
+            "{{\"reason\":\"compiler-message\",\"message\":{{\"message\":\"{message}\",\"level\":\"warning\"}}}}"
+        );
         let output = parse_cargo_output_line(&line);
         let raw = &output.diagnostic.unwrap().raw_payload;
         assert!(raw.len() <= MAX_RETAINED_CARGO_PAYLOAD_BYTES + '…'.len_utf8());
