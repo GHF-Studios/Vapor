@@ -243,7 +243,7 @@ pub fn search_workshop(
     let mut query = ugc
         .query_all(
             query_type,
-            UGCType::Items,
+            UGCType::ItemsReadyToUse,
             AppIDs::ConsumerAppId(AppId(app_id)),
             page,
         )

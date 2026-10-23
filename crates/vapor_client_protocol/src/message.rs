@@ -1,7 +1,7 @@
 use crate::{ClientAction, ClientEvent, ClientRevision, ClientSnapshot, LegacyStorageSeed};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 31;
+pub const PROTOCOL_VERSION: u16 = 33;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -11,8 +11,37 @@ pub struct RequestId(pub String);
 pub struct ClientRequest {
     pub protocol_version: u16,
     pub request_id: RequestId,
+    /// Product surface that initiated the request; used for operation logs.
+    #[serde(default)]
+    pub origin: ClientOrigin,
     pub expected_revision: Option<ClientRevision>,
     pub action: ClientAction,
+}
+
+/// Stable frontend identity attached to service requests and their output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClientOrigin {
+    Launcher,
+    Studio,
+    Ide,
+    Installer,
+    Cli,
+    #[default]
+    Unknown,
+}
+
+impl ClientOrigin {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Launcher => "launcher",
+            Self::Studio => "studio",
+            Self::Ide => "ide",
+            Self::Installer => "installer",
+            Self::Cli => "cli",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

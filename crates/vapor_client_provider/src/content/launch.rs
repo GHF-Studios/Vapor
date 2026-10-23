@@ -256,6 +256,16 @@ pub fn run_packagepack_launch(
     launch_request: &str,
     arguments: &[String],
 ) -> Result<(), String> {
+    run_packagepack_launch_with_output(plan, launch_request, arguments, |_, _| {})
+}
+
+/// Run a resolved composition while forwarding bounded child output to its host.
+pub fn run_packagepack_launch_with_output(
+    plan: &PackagepackLaunchPlan,
+    launch_request: &str,
+    arguments: &[String],
+    report_output: impl FnMut(vapor_core::OperationOutputStream, &str),
+) -> Result<(), String> {
     let mut command = match plan.presentation {
         RuntimePresentation::Window => {
             vapor_core::managed_process::background_command(&plan.binary)
@@ -307,8 +317,7 @@ pub fn run_packagepack_launch(
         .env("VAPOR_RUNTIME_TARGET", &plan.runtime_target)
         .env("VAPOR_GAME_ID", &plan.game_id)
         .env("VAPOR_GAME_ROOT", &plan.game_root);
-    let status = command
-        .status()
+    let status = vapor_core::managed_process::run(&mut command, report_output)
         .map_err(|error| format!("failed to launch '{}': {error}", plan.binary.display()))?;
     if status.success() {
         Ok(())

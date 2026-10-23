@@ -36,15 +36,59 @@ pub fn run_cancellable(
     is_cancelled: impl FnMut() -> bool,
     report_output: impl FnMut(OperationOutputStream, &str),
 ) -> Result<ExitStatus, String> {
-    run_cancellable_with_started(command, is_cancelled, |_| Ok(()), report_output)
+    run_cancellable_with_line_limit(command, is_cancelled, MAX_OPERATION_OUTPUT_LINE_BYTES, report_output)
+}
+
+/// Run a managed child to completion while allowing a bounded machine-readable line size.
+pub fn run_with_line_limit(
+    command: &mut Command,
+    max_line_bytes: usize,
+    report_output: impl FnMut(OperationOutputStream, &str),
+) -> Result<ExitStatus, String> {
+    run_cancellable_with_line_limit(command, || false, max_line_bytes, report_output)
+}
+
+/// Run a managed child with a caller-selected bounded line size.
+///
+/// Structured machine-readable tools can emit one JSON record larger than the
+/// ordinary 8 KiB console line limit. This variant keeps that exceptional
+/// allowance explicit at the process call site.
+pub fn run_cancellable_with_line_limit(
+    command: &mut Command,
+    is_cancelled: impl FnMut() -> bool,
+    max_line_bytes: usize,
+    report_output: impl FnMut(OperationOutputStream, &str),
+) -> Result<ExitStatus, String> {
+    if max_line_bytes == 0 {
+        return Err("managed child output line limit must be positive".to_owned());
+    }
+    run_cancellable_with_started_and_line_limit(
+        command, is_cancelled, |_| Ok(()), max_line_bytes, report_output,
+    )
 }
 
 /// Run a managed child and notify the owner as soon as its process identity exists.
 /// If setup fails, terminate the complete child tree before returning.
 pub fn run_cancellable_with_started(
     command: &mut Command,
+    is_cancelled: impl FnMut() -> bool,
+    on_started: impl FnOnce(u32) -> Result<(), String>,
+    report_output: impl FnMut(OperationOutputStream, &str),
+) -> Result<ExitStatus, String> {
+    run_cancellable_with_started_and_line_limit(
+        command,
+        is_cancelled,
+        on_started,
+        MAX_OPERATION_OUTPUT_LINE_BYTES,
+        report_output,
+    )
+}
+
+fn run_cancellable_with_started_and_line_limit(
+    command: &mut Command,
     mut is_cancelled: impl FnMut() -> bool,
     on_started: impl FnOnce(u32) -> Result<(), String>,
+    max_line_bytes: usize,
     mut report_output: impl FnMut(OperationOutputStream, &str),
 ) -> Result<ExitStatus, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -74,10 +118,12 @@ pub fn run_cancellable_with_started(
     })?;
     let (sender, receiver) = mpsc::sync_channel(128);
     let stdout_sender = sender.clone();
-    let stdout_reader =
-        thread::spawn(move || forward_output(stdout, OperationOutputStream::Stdout, stdout_sender));
-    let stderr_reader =
-        thread::spawn(move || forward_output(stderr, OperationOutputStream::Stderr, sender));
+    let stdout_reader = thread::spawn(move || {
+        forward_output(stdout, OperationOutputStream::Stdout, stdout_sender, max_line_bytes)
+    });
+    let stderr_reader = thread::spawn(move || {
+        forward_output(stderr, OperationOutputStream::Stderr, sender, max_line_bytes)
+    });
     let mut cancellation_sent = false;
     loop {
         if !cancellation_sent && is_cancelled() {
@@ -182,12 +228,13 @@ fn forward_output(
     reader: impl Read,
     stream: OperationOutputStream,
     sender: mpsc::SyncSender<(OperationOutputStream, String)>,
+    max_line_bytes: usize,
 ) -> Result<(), String> {
     let mut reader = BufReader::new(reader);
     let mut bytes = Vec::new();
     let mut carry = Vec::new();
     loop {
-        let Some(_continued) = read_bounded_line(&mut reader, &mut bytes, &mut carry)? else {
+        let Some(_continued) = read_bounded_line(&mut reader, &mut bytes, &mut carry, max_line_bytes)? else {
             return Ok(());
         };
         let text = String::from_utf8_lossy(&bytes);
@@ -201,6 +248,7 @@ fn read_bounded_line(
     reader: &mut impl BufRead,
     line: &mut Vec<u8>,
     carry: &mut Vec<u8>,
+    max_line_bytes: usize,
 ) -> Result<Option<bool>, String> {
     line.clear();
     line.append(carry);
@@ -214,7 +262,7 @@ fn read_bounded_line(
 
         let newline = available.iter().position(|byte| *byte == b'\n');
         let content_length = newline.unwrap_or(available.len());
-        let remaining = MAX_OPERATION_OUTPUT_LINE_BYTES.saturating_sub(line.len());
+        let remaining = max_line_bytes.saturating_sub(line.len());
         if newline.is_some() && content_length <= remaining {
             line.extend_from_slice(&available[..content_length]);
             reader.consume(content_length + 1);
@@ -245,7 +293,7 @@ fn read_bounded_line(
         }
         line.extend_from_slice(&available[..retained_length]);
         reader.consume(retained_length);
-        if retained_length < content_length || line.len() >= MAX_OPERATION_OUTPUT_LINE_BYTES {
+        if retained_length < content_length || line.len() >= max_line_bytes {
             preserve_utf8_tail(line, carry);
             return Ok(Some(true));
         }
@@ -292,6 +340,7 @@ mod tests {
             Cursor::new(source.as_bytes().to_vec()),
             OperationOutputStream::Stdout,
             sender,
+            MAX_OPERATION_OUTPUT_LINE_BYTES,
         )
         .unwrap();
         let chunks = receiver
@@ -320,7 +369,7 @@ mod tests {
         let mut continued = true;
         let mut chunks = Vec::new();
         while continued {
-            continued = read_bounded_line(&mut reader, &mut line, &mut carry)
+            continued = read_bounded_line(&mut reader, &mut line, &mut carry, MAX_OPERATION_OUTPUT_LINE_BYTES)
                 .unwrap()
                 .unwrap();
             assert!(line.len() <= MAX_OPERATION_OUTPUT_LINE_BYTES);
@@ -331,13 +380,13 @@ mod tests {
             format!("{}tail", "x".repeat(MAX_OPERATION_OUTPUT_LINE_BYTES * 2))
         );
         assert!(
-            !read_bounded_line(&mut reader, &mut line, &mut carry)
+            !read_bounded_line(&mut reader, &mut line, &mut carry, MAX_OPERATION_OUTPUT_LINE_BYTES)
                 .unwrap()
                 .unwrap()
         );
         assert_eq!(line, b"next line");
         assert!(
-            read_bounded_line(&mut reader, &mut line, &mut carry)
+            read_bounded_line(&mut reader, &mut line, &mut carry, MAX_OPERATION_OUTPUT_LINE_BYTES)
                 .unwrap()
                 .is_none()
         );
@@ -350,6 +399,7 @@ mod tests {
             Cursor::new(b"stdout line\n".to_vec()),
             OperationOutputStream::Stdout,
             sender,
+            MAX_OPERATION_OUTPUT_LINE_BYTES,
         )
         .unwrap();
         let event = receiver.recv().unwrap();
@@ -362,6 +412,10 @@ mod tests {
         let Some(mode) = std::env::var_os("VAPOR_PROCESS_OUTPUT_TEST_CHILD") else {
             return;
         };
+        if std::env::var_os("VAPOR_PROCESS_OUTPUT_LONG_LINE").is_some() {
+            println!("{}", "j".repeat(32 * 1024));
+            return;
+        }
         for index in 0..128 {
             println!("stdout marker {index}");
             eprintln!("stderr marker {index}");
@@ -408,6 +462,38 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(5),
             "cancellation should stop descendants that inherited the output pipes"
         );
+    }
+
+    #[test]
+    fn caller_selected_limit_preserves_large_machine_readable_records() {
+        let executable = std::env::current_exe().expect("test executable path");
+        let mut command = Command::new(&executable);
+        command
+            .arg("--exact")
+            .arg("managed_process::tests::child_process_output_fixture")
+            .arg("--nocapture")
+            .env("VAPOR_PROCESS_OUTPUT_TEST_CHILD", "success")
+            .env("VAPOR_PROCESS_OUTPUT_LONG_LINE", "1");
+        let mut output = Vec::new();
+        let status = super::run_cancellable_with_line_limit(
+            &mut command,
+            || false,
+            64 * 1024,
+            |stream, text| output.push((stream, text.to_owned())),
+        )
+        .expect("spawn the child test process");
+
+        assert!(status.success());
+        // The test harness emits its own progress lines even with `--exact`;
+        // assert on the machine-readable fixture record rather than assuming
+        // the child's entire stdout contains only that record.
+        let stdout = output
+            .iter()
+            .filter(|(stream, _)| *stream == OperationOutputStream::Stdout)
+            .map(|(_, text)| text.as_str())
+            .collect::<String>();
+        let record = "j".repeat(32 * 1024);
+        assert_eq!(stdout.matches(&record).count(), 1);
     }
 
     #[test]

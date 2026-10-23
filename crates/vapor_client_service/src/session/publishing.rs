@@ -258,7 +258,7 @@ impl ClientSession {
                         context.set_phase(application::OperationPhase::Building);
                         let progress_context = context.clone();
                         let output_context = context.clone();
-                        application::build_application_release_with_events(
+                        application::build_application_release_with_structured_events(
                             &executable,
                             &workspace_root,
                             &runtime_targets,
@@ -270,11 +270,18 @@ impl ClientSession {
                                     message: Some(message.to_owned()),
                                 });
                             },
-                            move |stream, text| {
+                            move |stream, text, diagnostic, raw_payload| {
+                                let level = diagnostic
+                                    .as_ref()
+                                    .map_or(vapor_core::ConsoleLevel::Info, |diagnostic| {
+                                        diagnostic.severity.console_level()
+                                    });
                                 output_context.report_output(application::OperationOutput {
                                     stream,
-                                    level: vapor_core::ConsoleLevel::Info,
+                                    level,
                                     process: Some("cargo".to_owned()),
+                                    diagnostic,
+                                    raw_payload,
                                     text: text.to_owned(),
                                 });
                             },

@@ -122,7 +122,7 @@ pub use operation::{
     OperationOutput, OperationOutputStream, OperationPhase, OperationRequest, OperationService,
     OperationStatus, Progress,
 };
-pub use vapor_console_core::ConsoleLevel;
+pub use vapor_console_core::{ConsoleLevel, DiagnosticOrigin, DiagnosticSeverity, DiagnosticSpan, StructuredDiagnostic};
 
 pub use registry::{RegisteredEcosystem, RegisteredRepository, RegistryClient, RegistryError};
 

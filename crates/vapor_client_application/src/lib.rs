@@ -30,8 +30,9 @@ pub use content::{
     InstalledComposition, WorkshopAcquisition, WorkshopAcquisitionBatch, collect_library_item,
     default_packagepack_selector, download_workshop_item, download_workshop_items,
     download_workshop_items_with_constraints, install_composition, package_authored_content,
-    preview_composition, repair_composition, run_installed_composition, run_library_operation,
-    run_source_composition, update_composition, verify_installation,
+    preview_composition, repair_composition, run_installed_composition,
+    run_installed_composition_with_context, run_library_operation, run_source_composition,
+    run_source_composition_with_context, update_composition, verify_installation,
 };
 pub use deployment::{deploy_application_with_context, package_application_with_context};
 pub use documentation::build_documentation_with_context;
@@ -46,7 +47,8 @@ pub use publishing::{
     ApplicationReleaseResult, ApplicationReleaseReview, BuildMode, BuildReport,
     MAX_WORKSHOP_REVIEW_BATCH, WorkshopBatchReview, WorkshopPackagePreview, WorkshopPublication,
     build_and_package_authored_content_with_context, build_application_release,
-    build_application_release_with_events, build_authored_workspace,
+    build_application_release_with_events, build_application_release_with_structured_events,
+    build_authored_workspace,
     clean_workspace_build_cache_with_context, publish_reviewed_application_release,
     publish_reviewed_workshop_batch, publish_reviewed_workshop_content,
     resolve_workspace_runtime_targets, run_workspace_tool, run_workspace_tool_with_context,

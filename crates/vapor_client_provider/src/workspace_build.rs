@@ -10,7 +10,9 @@ use crate::{
 };
 use std::{fs, path::Path};
 use vapor_client_domain::WorkspaceProjectSelection;
-use vapor_core::OperationOutputStream;
+use vapor_core::{OperationOutputStream, StructuredDiagnostic};
+
+const MAX_CARGO_JSON_LINE_BYTES: usize = 256 * 1024;
 
 /// Build policy for an authored workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,8 +120,34 @@ pub fn run_selected_with_events_cancellable(
     selection: &WorkspaceProjectSelection,
     runtime_targets: &[String],
     report_progress: impl FnMut(usize, usize, &str),
-    mut is_cancelled: impl FnMut() -> bool,
+    is_cancelled: impl FnMut() -> bool,
     mut report_output: impl FnMut(OperationOutputStream, &str),
+) -> Result<BuildReport, String> {
+    run_selected_with_structured_events_cancellable(
+        paths,
+        mode,
+        selection,
+        runtime_targets,
+        report_progress,
+        is_cancelled,
+        |stream, text, _, _| report_output(stream, text),
+    )
+}
+
+/// Run managed workspace tools and forward Cargo diagnostics as structured records.
+pub fn run_selected_with_structured_events_cancellable(
+    paths: &EnvironmentPaths,
+    mode: BuildMode,
+    selection: &WorkspaceProjectSelection,
+    runtime_targets: &[String],
+    report_progress: impl FnMut(usize, usize, &str),
+    mut is_cancelled: impl FnMut() -> bool,
+    mut report_output: impl FnMut(
+        OperationOutputStream,
+        &str,
+        Option<StructuredDiagnostic>,
+        Option<String>,
+    ),
 ) -> Result<BuildReport, String> {
     validate_targets(runtime_targets)?;
     if is_cancelled() {
@@ -360,6 +388,9 @@ fn cargo_args(step: CargoStep, target: Option<&str>) -> Vec<String> {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
+    if !matches!(step, CargoStep::Format | CargoStep::FmtCheck) {
+        args.extend(["--message-format".to_owned(), "json".to_owned()]);
+    }
     if !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
         && let Some(target) = target
         && target != host_runtime_target()
@@ -395,7 +426,12 @@ fn run_step(
     step: CargoStep,
     target: Option<&str>,
     is_cancelled: &mut impl FnMut() -> bool,
-    report_output: &mut impl FnMut(OperationOutputStream, &str),
+    report_output: &mut impl FnMut(
+        OperationOutputStream,
+        &str,
+        Option<StructuredDiagnostic>,
+        Option<String>,
+    ),
 ) -> Result<(), String> {
     let source_manifest = paths.source().root().join(project.manifest());
     let working_directory = source_manifest.parent().ok_or_else(|| {
@@ -435,7 +471,25 @@ fn run_step(
         command.env("RUSTDOCFLAGS", "-D warnings");
     }
     eprintln!("==> {}: {}", project.name(), step_label(step, target));
-    let status = process_output::run_cancellable(&mut command, is_cancelled, report_output)
+    let status = process_output::run_cancellable_with_line_limit(
+        &mut command,
+        is_cancelled,
+        MAX_CARGO_JSON_LINE_BYTES,
+        |stream, line| {
+            let parsed = if stream == OperationOutputStream::Stdout
+                && !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
+            {
+                super::cargo_output::parse_cargo_output_line(&line)
+            } else {
+                super::cargo_output::CargoOutputLine {
+                    display_text: line.to_owned(),
+                    diagnostic: None,
+                    raw_payload: None,
+                }
+            };
+            report_output(stream, &parsed.display_text, parsed.diagnostic, parsed.raw_payload);
+        },
+    )
         .map_err(|error| {
             format!(
                 "failed to run {} for '{}': {error}",
@@ -624,6 +678,8 @@ mod tests {
                 "--workspace",
                 "--all-targets",
                 "--locked",
+                "--message-format",
+                "json",
                 "--manifest-path",
                 "Cargo.toml",
                 "--",
@@ -643,7 +699,7 @@ mod tests {
     fn build_does_not_select_release_or_cross_target_outputs_on_host() {
         assert_eq!(
             cargo_args(CargoStep::Build, None),
-            ["build", "--workspace", "--locked"]
+            ["build", "--workspace", "--locked", "--message-format", "json"]
         );
     }
 
@@ -666,7 +722,7 @@ mod tests {
     fn release_build_uses_cargo_release_profile() {
         assert_eq!(
             cargo_args(CargoStep::BuildRelease, None),
-            ["build", "--workspace", "--locked", "--release"]
+            ["build", "--workspace", "--locked", "--release", "--message-format", "json"]
         );
     }
 
@@ -680,6 +736,8 @@ mod tests {
                 "--all-targets",
                 "--locked",
                 "--no-run",
+                "--message-format",
+                "json",
                 "--target",
                 "x86_64-pc-windows-gnullvm"
             ]

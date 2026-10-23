@@ -558,6 +558,11 @@ pub enum OperationOutputStream {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationOutputEvent {
     pub id: String,
+    #[serde(default)]
+    pub origin: super::ClientOrigin,
+    /// Composition associated with this operation, when it has one.
+    #[serde(default)]
+    pub composition_id: Option<String>,
     pub stream: OperationOutputStream,
     #[serde(default)]
     pub timestamp_unix_ms: u64,
@@ -569,6 +574,11 @@ pub struct OperationOutputEvent {
     pub action: String,
     #[serde(default)]
     pub process: Option<String>,
+    #[serde(default)]
+    pub diagnostic: Option<vapor_console_core::StructuredDiagnostic>,
+    /// Original machine-readable process record behind a summarized line.
+    #[serde(default)]
+    pub raw_payload: Option<String>,
     pub text: String,
 }
 
@@ -767,6 +777,7 @@ pub enum ClientEvent {
     OperationOutput(OperationOutputEvent),
     WorkspaceFileResult(Box<WorkspaceFileResult>),
     LanguageServerMessage(serde_json::Value),
+    LanguageServerDiagnostics(Box<crate::LanguageServerDiagnostics>),
     LanguageServerStatus {
         status: LanguageServerStatus,
         message: Option<String>,

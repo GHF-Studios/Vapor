@@ -760,6 +760,43 @@ pub fn run_installed_composition(
     expected_graph: Option<&crate::ResolvedCompositionGraph>,
     arguments: &[String],
 ) -> Result<CompositionRunResult, String> {
+    run_installed_composition_inner(
+        application_executable,
+        workspace_root,
+        selector,
+        expected_graph,
+        arguments,
+        None,
+    )
+}
+
+/// Launch one installed composition and forward its process output into the operation log.
+pub fn run_installed_composition_with_context(
+    application_executable: &Path,
+    workspace_root: Option<&Path>,
+    selector: &str,
+    expected_graph: Option<&crate::ResolvedCompositionGraph>,
+    arguments: &[String],
+    context: &vapor_core::OperationContext,
+) -> Result<CompositionRunResult, String> {
+    run_installed_composition_inner(
+        application_executable,
+        workspace_root,
+        selector,
+        expected_graph,
+        arguments,
+        Some(context),
+    )
+}
+
+fn run_installed_composition_inner(
+    application_executable: &Path,
+    workspace_root: Option<&Path>,
+    selector: &str,
+    expected_graph: Option<&crate::ResolvedCompositionGraph>,
+    arguments: &[String],
+    context: Option<&vapor_core::OperationContext>,
+) -> Result<CompositionRunResult, String> {
     let installation = InstallationPaths::from_application_executable(application_executable)?;
     let installed = content::has_installed_artifact(&installation, selector)?;
     let composition = if installed {
@@ -791,8 +828,23 @@ pub fn run_installed_composition(
         .is_none_or(|expected| crate::resolved_graph_matches(expected, &composition.graph));
     let launch_error = if composition_graph_matches {
         content::prepare_packagepack_launch(&installation, selector)
-            .and_then(|plan| {
-                content::run_packagepack_launch(&plan, "studio-composition", arguments)
+            .and_then(|plan| match context {
+                Some(context) => content::run_packagepack_launch_with_output(
+                    &plan,
+                    "studio-composition",
+                    arguments,
+                    |stream, text| {
+                        context.report_output(vapor_core::OperationOutput {
+                            stream,
+                            level: vapor_core::ConsoleLevel::Info,
+                            process: Some("launched-composition".to_owned()),
+                            diagnostic: None,
+                            raw_payload: None,
+                            text: text.to_owned(),
+                        });
+                    },
+                ),
+                None => content::run_packagepack_launch(&plan, "studio-composition", arguments),
             })
             .err()
     } else {
@@ -822,6 +874,25 @@ pub fn run_source_composition(
         selector,
         Some(&composition.graph),
         arguments,
+    )
+}
+
+/// Build/install source changes, launch that exact graph, and forward process output.
+pub fn run_source_composition_with_context(
+    application_executable: &Path,
+    workspace_root: &Path,
+    selector: &str,
+    arguments: &[String],
+    context: &vapor_core::OperationContext,
+) -> Result<CompositionRunResult, String> {
+    let composition = install_composition(application_executable, Some(workspace_root), selector)?;
+    run_installed_composition_with_context(
+        application_executable,
+        Some(workspace_root),
+        selector,
+        Some(&composition.graph),
+        arguments,
+        context,
     )
 }
 

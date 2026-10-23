@@ -9,8 +9,11 @@ mod catalog;
 mod composition;
 mod message;
 mod state;
+pub mod language_server;
+pub mod semantic;
 
 pub use catalog::{CatalogQuery, CatalogSearchSnapshot, CatalogStatus};
+pub use language_server::{LanguageServerDiagnostics, parse_publish_diagnostics};
 
 pub use action::{
     AuthoringAction, CatalogAction, ClientAction, CompositionAction, CompositionDependency,
@@ -33,8 +36,8 @@ pub use vapor_console_core::ConsoleLevel;
 pub use vapor_telemetry::{TelemetryEvent, TelemetryPayload};
 
 pub use message::{
-    ClientRequest, ClientResponse, ClientResponseKind, PROTOCOL_VERSION, ProtocolFrame, RequestId,
-    ServiceError, ServiceErrorCode,
+    ClientOrigin, ClientRequest, ClientResponse, ClientResponseKind, PROTOCOL_VERSION,
+    ProtocolFrame, RequestId, ServiceError, ServiceErrorCode,
 };
 pub use state::{
     ActionProfileSnapshot, ApplicationReleaseSnapshot, AuthoringCompositionLink, AuthoringResult,
@@ -426,6 +429,13 @@ mod tests {
         assert_round_trip(ProtocolFrame::Event(ClientEvent::LanguageServerMessage(
             serde_json::json!({"jsonrpc": "2.0", "id": 3, "result": {"contents": "ok"}}),
         )));
+        let diagnostics = parse_publish_diagnostics(&serde_json::json!({
+            "method":"textDocument/publishDiagnostics",
+            "params":{"uri":"file:///test.rs","diagnostics":[]}
+        })).unwrap();
+        assert_round_trip(ProtocolFrame::Event(ClientEvent::LanguageServerDiagnostics(
+            Box::new(diagnostics),
+        )));
         assert_round_trip(ProtocolFrame::Event(ClientEvent::LanguageServerStatus {
             status: LanguageServerStatus::Failed,
             message: Some("managed Rust Analyzer is missing".into()),
@@ -448,6 +458,7 @@ mod tests {
         assert_round_trip(ClientRequest {
             protocol_version: PROTOCOL_VERSION,
             request_id: RequestId("request-1".into()),
+            origin: ClientOrigin::Ide,
             expected_revision: Some(ClientRevision(3)),
             action: ClientAction::Catalog(CatalogAction::Refresh),
         });
@@ -782,14 +793,30 @@ mod tests {
     fn operation_output_round_trips_as_a_typed_event() {
         assert_round_trip(ClientEvent::OperationOutput(OperationOutputEvent {
             id: "operation-7".to_owned(),
+            origin: ClientOrigin::Launcher,
+            composition_id: Some("composition-42".to_owned()),
             stream: OperationOutputStream::Stderr,
             timestamp_unix_ms: 42,
             level: ConsoleLevel::Warn,
             source: "workspace".to_owned(),
             action: "workspace.build".to_owned(),
             process: Some("cargo".to_owned()),
+            diagnostic: None,
+            raw_payload: Some(r#"{"reason":"compiler-artifact"}"#.to_owned()),
             text: "warning: example".to_owned(),
         }));
+    }
+
+    #[test]
+    fn older_operation_output_payloads_default_missing_optional_details() {
+        let output: OperationOutputEvent = serde_json::from_str(
+            r#"{"id":"operation-old","stream":"stdout","text":"legacy output"}"#,
+        )
+        .expect("older operation output remains readable");
+        assert_eq!(output.id, "operation-old");
+        assert_eq!(output.text, "legacy output");
+        assert!(output.diagnostic.is_none());
+        assert!(output.raw_payload.is_none());
     }
 
     #[test]

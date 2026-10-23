@@ -230,6 +230,8 @@ pub fn run_workspace_configuration_with_context(
                 stream,
                 level: crate::ConsoleLevel::Info,
                 process: None,
+                diagnostic: None,
+                raw_payload: None,
                 text: text.to_owned(),
             });
         },

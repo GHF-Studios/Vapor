@@ -129,12 +129,16 @@ fn queue_operation_output(events: &mut VecDeque<ClientEvent>, output: OperationO
             notice_index,
             ClientEvent::OperationOutput(OperationOutputEvent {
                 id: output.id.clone(),
+                origin: output.origin,
+                composition_id: output.composition_id.clone(),
                 stream: vapor_client_protocol::OperationOutputStream::Stderr,
                 timestamp_unix_ms: unix_time_millis(),
                 level: vapor_client_protocol::ConsoleLevel::Warn,
                 source: output.source.clone(),
                 action: output.action.clone(),
                 process: output.process.clone(),
+                diagnostic: None,
+                raw_payload: None,
                 text: OPERATION_OUTPUT_OMISSION_NOTICE.to_owned(),
             }),
         );
@@ -169,6 +173,7 @@ pub struct ClientSession {
     state_store: Option<ClientStateStore>,
     host_context: Option<ClientHostContext>,
     operation_registry: OperationRegistry,
+    dispatch_origin: vapor_client_protocol::ClientOrigin,
     pending_catalog_refresh: bool,
     pending_workspace_discovery: bool,
     composition_preview: Option<vapor_client_protocol::CompositionPreviewSnapshot>,
@@ -642,6 +647,7 @@ impl ClientSession {
             state_store,
             host_context,
             operation_registry: OperationRegistry::default(),
+            dispatch_origin: vapor_client_protocol::ClientOrigin::Unknown,
             pending_catalog_refresh: false,
             pending_workspace_discovery: false,
             composition_preview: None,
@@ -712,9 +718,15 @@ impl ClientSession {
                     .or_else(|| self.active_composition_id.clone())
                     .unwrap_or_else(|| "selected".to_owned()),
             ),
-            "studio-authoring" if spec.action == "authoring.list-registered-sources" => {
-                OperationResourceKey::WorkspaceScan(workspace)
-            }
+            "studio-authoring"
+                if matches!(
+                    spec.action,
+                    "authoring.list-registered-sources"
+                        | "authoring.remember-source"
+                        | "authoring.open-source"
+                        | "authoring.forget-source"
+                        | "authoring.close-source"
+                ) => OperationResourceKey::SourceRegistry,
             "studio-authoring" if spec.action == "authoring.discover-content-projects" => {
                 OperationResourceKey::WorkspaceScan(workspace)
             }
@@ -763,6 +775,7 @@ impl ClientSession {
 
     pub fn dispatch(&mut self, request: ClientRequest) -> ClientResponse {
         self.poll_background_operation_messages();
+        self.dispatch_origin = request.origin;
         let active_operation_ids_before = self
             .operation_registry
             .active_summaries()
@@ -1653,7 +1666,13 @@ impl ClientSession {
             progress: None,
         };
         self.operation_registry
-            .start(summary, resources, Some(cancellation.clone()), cancellable)
+            .start(
+                summary,
+                resources,
+                Some(cancellation.clone()),
+                cancellable,
+                self.dispatch_origin,
+            )
             .map_err(|conflict| {
                 let message = match conflict {
                     OperationReservationError::Conflict { existing_operation_id } => format!(
@@ -1786,6 +1805,13 @@ impl ClientSession {
                 }
                 BackgroundOperationMessage::Lifecycle(event) => {
                     let id = event.id.0.to_string();
+                    let Some((origin, composition_id)) = self
+                        .operation_registry
+                        .get(&id)
+                        .map(|active| (active.origin, active.summary.composition_id.clone()))
+                    else {
+                        continue;
+                    };
                     let progress = event.progress.as_ref().and_then(|progress| {
                         progress
                             .total
@@ -1802,6 +1828,8 @@ impl ClientSession {
                             &mut self.operation_events,
                             vapor_client_protocol::OperationOutputEvent {
                                 id,
+                                origin,
+                                composition_id,
                                 stream: match output.stream {
                                     application::OperationOutputStream::Stdout => {
                                         vapor_client_protocol::OperationOutputStream::Stdout
@@ -1815,6 +1843,8 @@ impl ClientSession {
                                 source: event.domain,
                                 action: event.action,
                                 process: output.process,
+                                diagnostic: output.diagnostic,
+                                raw_payload: output.raw_payload,
                                 text: output.text,
                             },
                         );
@@ -2253,6 +2283,7 @@ mod tests {
                 [OperationResourceKey::CatalogRefresh],
                 None,
                 false,
+                vapor_client_protocol::ClientOrigin::Unknown,
             )
             .expect("catalog refresh should be reserved");
         registry
@@ -2261,6 +2292,7 @@ mod tests {
                 [OperationResourceKey::WorkspaceScan(workspace.clone())],
                 None,
                 false,
+                vapor_client_protocol::ClientOrigin::Unknown,
             )
             .expect("workspace scan should not conflict with catalog refresh");
         registry
@@ -2269,6 +2301,7 @@ mod tests {
                 [OperationResourceKey::Workspace(workspace.clone())],
                 None,
                 false,
+                vapor_client_protocol::ClientOrigin::Unknown,
             )
             .expect("read-only discovery and workspace build may proceed independently");
         registry
@@ -2277,6 +2310,7 @@ mod tests {
                 [OperationResourceKey::WorkspaceScan(other_workspace)],
                 None,
                 false,
+                vapor_client_protocol::ClientOrigin::Unknown,
             )
             .expect("different workspace scans should not conflict");
 
@@ -2285,6 +2319,7 @@ mod tests {
             [OperationResourceKey::WorkspaceScan(workspace.clone())],
             None,
             false,
+            vapor_client_protocol::ClientOrigin::Unknown,
         );
         assert!(matches!(
             conflict,
@@ -2295,12 +2330,50 @@ mod tests {
             [OperationResourceKey::WorkspaceEdit(workspace.clone())],
             None,
             false,
+            vapor_client_protocol::ClientOrigin::Unknown,
         );
         assert!(matches!(
             edit_conflict,
             Err(OperationReservationError::Conflict { .. })
         ));
         assert_eq!(registry.active_summaries().len(), 4);
+    }
+
+    #[test]
+    fn source_registry_operations_are_independent_from_workspace_scans() {
+        let mut registry = OperationRegistry::default();
+        registry
+            .start(
+                running_operation("source-list", "authoring.list-registered-sources"),
+                [OperationResourceKey::SourceRegistry],
+                None,
+                false,
+                vapor_client_protocol::ClientOrigin::Unknown,
+            )
+            .expect("source registry query should be reserved");
+        registry
+            .start(
+                running_operation("workspace-scan", "authoring.discover-content-projects"),
+                [OperationResourceKey::WorkspaceScan(PathBuf::from(
+                    "/fixture/workspace",
+                ))],
+                None,
+                false,
+                vapor_client_protocol::ClientOrigin::Unknown,
+            )
+            .expect("source registry queries should not block workspace discovery");
+
+        let registry_edit = registry.start(
+            running_operation("remember-source", "authoring.remember-source"),
+            [OperationResourceKey::SourceRegistry],
+            None,
+            false,
+            vapor_client_protocol::ClientOrigin::Unknown,
+        );
+        assert!(matches!(
+            registry_edit,
+            Err(OperationReservationError::Conflict { .. })
+        ));
     }
 
     #[test]
@@ -2314,13 +2387,16 @@ mod tests {
                 [OperationResourceKey::CatalogRefresh],
                 None,
                 false,
+                vapor_client_protocol::ClientOrigin::Launcher,
             )
             .expect("register unrelated in-flight Library operation");
 
-        let response = session.dispatch(request(
+        let mut request = request(
             None,
             ClientAction::Authoring(AuthoringAction::ListRegisteredSources),
-        ));
+        );
+        request.origin = vapor_client_protocol::ClientOrigin::Studio;
+        let response = session.dispatch(request);
         let authoring = response
             .snapshot
             .active_operations
@@ -2339,6 +2415,14 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&response).expect("serialize response")["operation_id"],
             authoring.id
+        );
+        assert_eq!(
+            session
+                .operation_registry
+                .get(&authoring.id)
+                .expect("operation remains registered")
+                .origin,
+            vapor_client_protocol::ClientOrigin::Studio
         );
     }
 
@@ -2431,12 +2515,16 @@ mod tests {
                 &mut events,
                 OperationOutputEvent {
                     id: "operation-1".to_owned(),
+                    origin: vapor_client_protocol::ClientOrigin::Studio,
+                    composition_id: None,
                     stream: vapor_client_protocol::OperationOutputStream::Stdout,
                     timestamp_unix_ms: 1,
                     level: vapor_client_protocol::ConsoleLevel::Info,
                     source: "workspace".to_owned(),
                     action: "workspace.build".to_owned(),
                     process: Some("cargo".to_owned()),
+                    diagnostic: None,
+                    raw_payload: None,
                     text: format!("line-{index}"),
                 },
             );
@@ -2480,6 +2568,8 @@ mod tests {
                 stream: application::OperationOutputStream::Stdout,
                 level: vapor_core::ConsoleLevel::Info,
                 process: None,
+                diagnostic: None,
+                raw_payload: None,
                 text: "compiler output".to_owned(),
             }),
             status: application::OperationStatus::Running,
@@ -2590,6 +2680,7 @@ mod tests {
         ClientRequest {
             protocol_version: vapor_client_protocol::PROTOCOL_VERSION,
             request_id: RequestId("test-request".to_owned()),
+            origin: vapor_client_protocol::ClientOrigin::Unknown,
             expected_revision: revision.map(ClientRevision),
             action,
         }
@@ -2615,7 +2706,13 @@ mod tests {
         let resource = OperationResourceKey::Exclusive(summary.id.clone());
         session
             .operation_registry
-            .start(summary, [resource], cancellation, cancellable)
+            .start(
+                summary,
+                [resource],
+                cancellation,
+                cancellable,
+                vapor_client_protocol::ClientOrigin::Unknown,
+            )
             .expect("register test operation");
     }
 
@@ -2642,6 +2739,41 @@ mod tests {
             response.snapshot.active_operation.unwrap().id,
             "source-list-1"
         );
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn saved_source_lookup_can_run_during_workspace_discovery() {
+        let mut session = session();
+        session.bootstrap.fixture_mode = false;
+        session.bootstrap.workspace_root = Some(PathBuf::from("/fixture/workspace"));
+        let discovery = BackgroundOperationSpec {
+            domain: "studio-authoring",
+            action: "authoring.discover-content-projects",
+            thread_prefix: "workspace-discovery",
+            failure_label: "workspace discovery",
+            composition_id: None,
+            phase: OperationPhase::Resolving,
+        };
+        let resources = session.operation_resources(&discovery);
+        session
+            .operation_registry
+            .start(
+                running_operation("workspace-discovery", discovery.action),
+                resources,
+                None,
+                false,
+                vapor_client_protocol::ClientOrigin::Studio,
+            )
+            .expect("reserve startup workspace discovery");
+
+        let response = session.dispatch(request(
+            None,
+            ClientAction::Authoring(AuthoringAction::ListRegisteredSources),
+        ));
+
+        assert_eq!(response.kind, ClientResponseKind::OperationAccepted);
+        assert_ne!(response.operation_id.as_deref(), Some("workspace-discovery"));
         assert!(response.error.is_none());
     }
 

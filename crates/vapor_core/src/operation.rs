@@ -82,6 +82,13 @@ pub struct OperationOutput {
     pub level: crate::ConsoleLevel,
     /// Executable or managed process that emitted the line, when known.
     pub process: Option<String>,
+    /// Parsed semantic diagnostic for compiler or language-server records.
+    #[serde(default)]
+    pub diagnostic: Option<vapor_console_core::StructuredDiagnostic>,
+    /// Original machine-readable process record when the display text is a
+    /// human-friendly projection (for example Cargo JSON output).
+    #[serde(default)]
+    pub raw_payload: Option<String>,
     pub text: String,
 }
 
@@ -196,6 +203,17 @@ impl OperationContext {
             }
             output.text.truncate(end);
             output.text.push_str(suffix);
+        }
+        if let Some(raw_payload) = &mut output.raw_payload {
+            if raw_payload.len() > MAX_OPERATION_OUTPUT_BYTES {
+                let suffix = " … [truncated]";
+                let mut end = MAX_OPERATION_OUTPUT_BYTES.saturating_sub(suffix.len());
+                while !raw_payload.is_char_boundary(end) {
+                    end -= 1;
+                }
+                raw_payload.truncate(end);
+                raw_payload.push_str(suffix);
+            }
         }
         self.emit_with_output(OperationStatus::Running, Some(output));
     }
@@ -354,6 +372,8 @@ mod tests {
                 stream: OperationOutputStream::Stderr,
                 level: crate::ConsoleLevel::Info,
                 process: None,
+                diagnostic: None,
+                raw_payload: None,
                 text: "\u{1b}[31mfailure detail\u{1b}[0m".to_owned(),
             });
             Ok::<_, String>(())
@@ -365,6 +385,8 @@ mod tests {
                     stream: OperationOutputStream::Stderr,
                     level: crate::ConsoleLevel::Info,
                     process: None,
+                    diagnostic: None,
+                    raw_payload: None,
                     text: "failure detail".to_owned(),
                 })
         }));
@@ -387,6 +409,8 @@ mod tests {
                 stream: OperationOutputStream::Stdout,
                 level: crate::ConsoleLevel::Info,
                 process: None,
+                diagnostic: None,
+                raw_payload: None,
                 text: format!("{}🌌", "x".repeat(MAX_OPERATION_OUTPUT_BYTES)),
             });
             Ok::<_, String>(())
@@ -400,5 +424,37 @@ mod tests {
         assert!(output.text.len() <= MAX_OPERATION_OUTPUT_BYTES);
         assert!(output.text.is_char_boundary(output.text.len()));
         assert!(output.text.ends_with("[truncated]"));
+    }
+
+    #[test]
+    fn operation_context_bounds_raw_payload_without_splitting_utf8() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&events);
+        let sink: OperationEventSink = Arc::new(move |event| {
+            observed.lock().unwrap().push(event);
+        });
+        let request = OperationRequest {
+            id: OperationId::fresh(),
+            domain: "workspace".to_owned(),
+            action: "build".to_owned(),
+        };
+        let _ = OperationService::run(request, sink, |context| {
+            context.report_output(OperationOutput {
+                stream: OperationOutputStream::Stdout,
+                level: crate::ConsoleLevel::Info,
+                process: Some("cargo".to_owned()),
+                diagnostic: None,
+                raw_payload: Some(format!("{}🌌", "x".repeat(MAX_OPERATION_OUTPUT_BYTES))),
+                text: "Built a target".to_owned(),
+            });
+            Ok::<_, String>(())
+        });
+
+        let events = events.lock().unwrap();
+        let output = events.iter().find_map(|event| event.output.as_ref()).unwrap();
+        let raw = output.raw_payload.as_ref().unwrap();
+        assert!(raw.len() <= MAX_OPERATION_OUTPUT_BYTES);
+        assert!(raw.is_char_boundary(raw.len()));
+        assert!(raw.ends_with("[truncated]"));
     }
 }

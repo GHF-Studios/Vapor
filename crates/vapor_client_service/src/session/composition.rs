@@ -115,6 +115,7 @@ impl ClientSession {
                     &composition,
                     kind,
                     operation_selector.as_deref(),
+                    &context,
                 )
             },
             composition_result_outcome,
@@ -532,6 +533,7 @@ fn execute_composition_operation(
     composition: &Composition,
     kind: CompositionOperationKind,
     selector_override: Option<&str>,
+    context: &application::OperationContext,
 ) -> CompositionOperationResult {
     let selector = selector_override
         .map(ToOwned::to_owned)
@@ -589,15 +591,16 @@ fn execute_composition_operation(
         CompositionOperationKind::Update => CompositionOperationResult::Update(
             vapor_client_application::update_composition(executable, workspace, &selector),
         ),
-        CompositionOperationKind::Launch => {
-            CompositionOperationResult::Launch(vapor_client_application::run_installed_composition(
+        CompositionOperationKind::Launch => CompositionOperationResult::Launch(
+            vapor_client_application::run_installed_composition_with_context(
                 executable,
                 workspace,
                 &selector,
                 composition.resolved_graph.as_ref(),
                 &composition.launch.arguments,
-            ))
-        }
+                context,
+            ),
+        ),
         CompositionOperationKind::RunSource => {
             let Some(workspace) = workspace else {
                 return CompositionOperationResult::RunSource(Err(
@@ -605,12 +608,15 @@ fn execute_composition_operation(
                         .to_owned(),
                 ));
             };
-            CompositionOperationResult::RunSource(vapor_client_application::run_source_composition(
-                executable,
-                workspace,
-                &selector,
-                &composition.launch.arguments,
-            ))
+            CompositionOperationResult::RunSource(
+                vapor_client_application::run_source_composition_with_context(
+                    executable,
+                    workspace,
+                    &selector,
+                    &composition.launch.arguments,
+                    context,
+                ),
+            )
         }
     }
 }

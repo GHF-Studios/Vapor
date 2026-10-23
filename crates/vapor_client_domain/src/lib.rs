@@ -51,4 +51,5 @@ pub use vapor_content::{
     dependency_choice_group_for_relationship, dependency_kind_allowed, dependency_relationship,
     required_dependency_choice_groups,
 };
+pub use vapor_content::authored_manifest::AuthoredContentManifest;
 pub use workflow::{ActionProfile, AuthorityRequirement, LocalCapability, WorkflowTier};

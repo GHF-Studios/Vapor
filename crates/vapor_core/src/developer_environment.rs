@@ -144,6 +144,8 @@ impl DeveloperEnvironment {
                             stream,
                             level: crate::ConsoleLevel::Info,
                             process: Some(process.to_owned()),
+                            diagnostic: None,
+                            raw_payload: None,
                             text: text.to_owned(),
                         });
                     }

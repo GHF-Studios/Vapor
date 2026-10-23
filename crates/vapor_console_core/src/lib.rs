@@ -3,6 +3,10 @@
 //! This crate deliberately has no process, terminal, GUI, game, or persistence
 //! access. Hosts adapt their own events and capabilities to these shared types.
 
+mod diagnostic;
+
+pub use diagnostic::{DiagnosticOrigin, DiagnosticSeverity, DiagnosticSpan, StructuredDiagnostic};
+
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -229,6 +233,8 @@ pub fn plain_terminal_text(input: &str) -> String {
 pub struct ConsoleFilter {
     pub levels: Vec<ConsoleLevel>,
     pub source: Option<String>,
+    pub origin: Option<String>,
+    pub composition: Option<String>,
     pub search: String,
 }
 
@@ -244,10 +250,29 @@ impl ConsoleFilter {
         {
             return false;
         }
+        if self.origin.as_deref().is_some_and(|origin| {
+            !record
+                .fields
+                .iter()
+                .any(|field| field.key == "origin" && field.value.eq_ignore_ascii_case(origin))
+        }) {
+            return false;
+        }
+        if self.composition.as_deref().is_some_and(|composition| {
+            !record.fields.iter().any(|field| {
+                field.key == "composition" && field.value.eq_ignore_ascii_case(composition)
+            })
+        }) {
+            return false;
+        }
         let query = self.search.trim().to_lowercase();
         query.is_empty()
             || record.message.to_lowercase().contains(&query)
             || record.source.0.to_lowercase().contains(&query)
+            || record
+                .fields
+                .iter()
+                .any(|field| field.key == "origin" && field.value.to_lowercase().contains(&query))
             || record
                 .target
                 .as_ref()
@@ -265,6 +290,7 @@ pub struct ConsoleHistory {
     capacity: usize,
     records: VecDeque<ConsoleRecord>,
     dropped: u64,
+    revision: u64,
 }
 
 impl ConsoleHistory {
@@ -273,6 +299,7 @@ impl ConsoleHistory {
             capacity: capacity.max(1),
             records: VecDeque::new(),
             dropped: 0,
+            revision: 0,
         }
     }
 
@@ -282,14 +309,26 @@ impl ConsoleHistory {
             self.dropped = self.dropped.saturating_add(1);
         }
         self.records.push_back(record);
+        self.revision = self.revision.saturating_add(1);
     }
 
     pub fn clear(&mut self) {
         self.records.clear();
+        self.revision = self.revision.saturating_add(1);
     }
 
     pub fn records(&self) -> impl DoubleEndedIterator<Item = &ConsoleRecord> {
         self.records.iter()
+    }
+
+    /// Read a record by its current FIFO position without materializing scrollback.
+    pub fn record_at(&self, index: usize) -> Option<&ConsoleRecord> {
+        self.records.get(index)
+    }
+
+    /// Monotonic change marker for view caches derived from the record sequence.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn filtered<'a>(
@@ -541,14 +580,42 @@ mod tests {
     }
 
     #[test]
+    fn console_history_revision_tracks_push_and_clear_for_view_caches() {
+        let mut history = ConsoleHistory::new(2);
+        let initial = history.revision();
+        history.push(ConsoleRecord::new(1, ConsoleLevel::Info, "test", "first"));
+        let after_push = history.revision();
+        assert!(after_push > initial);
+
+        history.clear();
+        assert!(history.revision() > after_push);
+    }
+
+    #[test]
+    fn console_history_exposes_fifo_indexed_records_for_virtual_views() {
+        let mut history = ConsoleHistory::new(2);
+        history.push(ConsoleRecord::new(1, ConsoleLevel::Info, "test", "first"));
+        history.push(ConsoleRecord::new(2, ConsoleLevel::Info, "test", "second"));
+        history.push(ConsoleRecord::new(3, ConsoleLevel::Info, "test", "third"));
+
+        assert_eq!(history.record_at(0).map(|record| record.message.as_str()), Some("second"));
+        assert_eq!(history.record_at(1).map(|record| record.message.as_str()), Some("third"));
+        assert!(history.record_at(2).is_none());
+    }
+
+    #[test]
     fn filters_match_structured_sources_fields_and_severity() {
         let record = ConsoleRecord::new(1, ConsoleLevel::Warn, "game", "contact lost")
             .target("ship")
-            .field("sector", "luna");
+            .field("sector", "luna")
+            .field("origin", "studio")
+            .field("composition", "loo-cast");
         assert!(
             ConsoleFilter {
                 levels: vec![ConsoleLevel::Warn],
                 source: Some("GAME".to_owned()),
+                origin: Some("STUDIO".to_owned()),
+                composition: Some("LOO-CAST".to_owned()),
                 search: "luna".to_owned(),
             }
             .matches(&record)
@@ -556,6 +623,20 @@ mod tests {
         assert!(
             !ConsoleFilter {
                 levels: vec![ConsoleLevel::Error],
+                ..Default::default()
+            }
+            .matches(&record)
+        );
+        assert!(
+            !ConsoleFilter {
+                origin: Some("launcher".to_owned()),
+                ..Default::default()
+            }
+            .matches(&record)
+        );
+        assert!(
+            !ConsoleFilter {
+                composition: Some("terminal-wheel".to_owned()),
                 ..Default::default()
             }
             .matches(&record)

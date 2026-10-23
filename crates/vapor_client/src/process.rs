@@ -20,8 +20,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use vapor_client_protocol::{
-    ClientAction, ClientEvent, ClientRequest, ClientRevision, ClientSnapshot, LegacyStorageSeed,
-    PROTOCOL_VERSION, ProtocolFrame, RequestId,
+    ClientAction, ClientEvent, ClientOrigin, ClientRequest, ClientRevision, ClientSnapshot,
+    LegacyStorageSeed, PROTOCOL_VERSION, ProtocolFrame, RequestId,
 };
 
 // The first production connection may need to initialize durable state and
@@ -94,6 +94,7 @@ pub struct Client {
     incoming: Receiver<Result<ProtocolFrame, ClientError>>,
     next_request: u64,
     request_prefix: String,
+    origin: ClientOrigin,
     latest_snapshot: ClientSnapshot,
     shared_service: Option<(PathBuf, ClientHostConfig)>,
 }
@@ -173,8 +174,10 @@ impl Client {
         let context = resolve_host_context(&bootstrap)?;
         let endpoint =
             local_socket::endpoint_name(context.app_root.as_deref(), &context.state_directory);
+        let origin = client_origin_for_executable(&bootstrap.application_executable);
         match Self::connect_existing(&endpoint, Some(bootstrap.legacy_storage.clone())) {
             Ok(mut client) => {
+                client.origin = origin;
                 client.shared_service = Some((service_path.to_path_buf(), bootstrap));
                 Ok(client)
             }
@@ -183,6 +186,7 @@ impl Client {
                 ensure_service(service_path, &bootstrap, &context, &endpoint)?;
                 let mut client =
                     Self::connect_existing(&endpoint, Some(bootstrap.legacy_storage.clone()))?;
+                client.origin = origin;
                 client.shared_service = Some((service_path.to_path_buf(), bootstrap));
                 Ok(client)
             }
@@ -370,6 +374,7 @@ impl Client {
             incoming,
             next_request: 1,
             request_prefix: format!("client-{}-{now}", std::process::id()),
+            origin: ClientOrigin::Unknown,
             latest_snapshot: empty_snapshot(),
             shared_service: None,
         }
@@ -389,6 +394,7 @@ impl Client {
         let frame = ProtocolFrame::Request(ClientRequest {
             protocol_version: PROTOCOL_VERSION,
             request_id: request_id.clone(),
+            origin: self.origin,
             expected_revision,
             action,
         });
@@ -497,6 +503,50 @@ impl Client {
             .as_mut()
             .ok_or(ClientError::ServiceExited(None))?;
         write_frame(writer, frame)
+    }
+}
+
+fn client_origin_for_executable(executable: &Path) -> ClientOrigin {
+    let name = executable
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if name.contains("launcher") {
+        ClientOrigin::Launcher
+    } else if name.contains("studio") {
+        ClientOrigin::Studio
+    } else if name.contains("ide") {
+        ClientOrigin::Ide
+    } else if name.contains("installer") {
+        ClientOrigin::Installer
+    } else if name == "vapor-gui" {
+        ClientOrigin::Launcher
+    } else if name == "vapor" || name.contains("cli") {
+        ClientOrigin::Cli
+    } else {
+        ClientOrigin::Unknown
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::client_origin_for_executable;
+    use std::path::Path;
+    use vapor_client_protocol::ClientOrigin;
+
+    #[test]
+    fn identifies_each_product_frontend_from_its_executable_name() {
+        for (path, expected) in [
+            ("/app/bin/vapor-launcher", ClientOrigin::Launcher),
+            ("/app/bin/vapor-studio", ClientOrigin::Studio),
+            ("/app/bin/vapor-ide", ClientOrigin::Ide),
+            ("/app/bin/vapor-installer-gui", ClientOrigin::Installer),
+            ("/app/bin/vapor", ClientOrigin::Cli),
+            ("C:/app/bin/VAPOR-STUDIO.EXE", ClientOrigin::Studio),
+        ] {
+            assert_eq!(client_origin_for_executable(Path::new(path)), expected);
+        }
     }
 }
 
@@ -875,7 +925,9 @@ mod tests {
     #[cfg(unix)]
     use super::{ensure_service_with_timeout, resolve_host_context};
     use std::path::Path;
-    use vapor_client_protocol::{ClientEvent, ClientRevision, PROTOCOL_VERSION, ProtocolFrame};
+    use vapor_client_protocol::{
+        ClientEvent, ClientOrigin, ClientRevision, PROTOCOL_VERSION, ProtocolFrame,
+    };
 
     fn bootstrap() -> ClientHostConfig {
         ClientHostConfig {
@@ -1168,6 +1220,7 @@ mod tests {
             incoming,
             next_request: 1,
             request_prefix: "disconnected-test".into(),
+            origin: ClientOrigin::Unknown,
             latest_snapshot: empty_snapshot(),
             shared_service: Some((
                 std::env::temp_dir().join("missing-vapor-client-service"),

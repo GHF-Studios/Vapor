@@ -4,13 +4,14 @@ use std::{
 };
 
 use vapor_client_application::OperationCancellation;
-use vapor_client_protocol::{OperationPhase, OperationStatus, OperationSummary};
+use vapor_client_protocol::{ClientOrigin, OperationPhase, OperationStatus, OperationSummary};
 
 const OPERATION_HISTORY_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum OperationResourceKey {
     CatalogRefresh,
+    SourceRegistry,
     WorkspaceScan(PathBuf),
     WorkspaceEdit(PathBuf),
     WorkshopAccount,
@@ -50,6 +51,7 @@ pub(super) enum OperationReservationError {
 #[derive(Debug)]
 pub(super) struct RegisteredOperation {
     pub(super) summary: OperationSummary,
+    pub(super) origin: ClientOrigin,
     cancellation: Option<OperationCancellation>,
     cancellable: bool,
     resources: Vec<OperationResourceKey>,
@@ -69,6 +71,7 @@ impl OperationRegistry {
         resources: impl IntoIterator<Item = OperationResourceKey>,
         cancellation: Option<OperationCancellation>,
         cancellable: bool,
+        origin: ClientOrigin,
     ) -> Result<(), OperationReservationError> {
         if self.active.contains_key(&summary.id) {
             return Err(OperationReservationError::DuplicateOperationId);
@@ -94,6 +97,7 @@ impl OperationRegistry {
             summary.id.clone(),
             RegisteredOperation {
                 summary,
+                origin,
                 cancellation,
                 cancellable,
                 resources,

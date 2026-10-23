@@ -23,7 +23,21 @@ pub fn read_frame(reader: &mut impl BufRead) -> Result<Option<ProtocolFrame>, St
     }
     serde_json::from_slice(&bytes)
         .map(Some)
-        .map_err(|error| format!("service emitted malformed protocol data: {error}"))
+        .map_err(|error| {
+            let first = bytes.iter().copied().find(|byte| !byte.is_ascii_whitespace());
+            let kind = match first {
+                Some(b'<') => "markup text",
+                Some(0x1b) => "terminal control output",
+                Some(b'{') | Some(b'[') => "malformed JSON",
+                Some(_) => "non-JSON text",
+                None => "empty data",
+            };
+            let first_byte = first.map_or_else(|| "none".to_owned(), |byte| format!("0x{byte:02x}"));
+            format!(
+                "service emitted malformed protocol data: {error} ({} bytes; {kind}; first non-whitespace byte {first_byte})",
+                bytes.len(),
+            )
+        })
 }
 
 pub fn encode_frame(frame: &ProtocolFrame) -> Result<Vec<u8>, String> {
@@ -57,6 +71,17 @@ mod tests {
         let error =
             read_frame(&mut Cursor::new(b"{broken json}\n")).expect_err("invalid JSON must fail");
         assert!(error.contains("malformed protocol data"));
+        assert!(error.contains("malformed JSON"));
+        assert!(error.contains("first non-whitespace byte 0x7b"));
+    }
+
+    #[test]
+    fn malformed_plain_text_is_classified_without_echoing_payload_contents() {
+        let error = read_frame(&mut Cursor::new(b"password=secret\n"))
+            .expect_err("plain text is not a protocol frame");
+        assert!(error.contains("non-JSON text"));
+        assert!(error.contains("0x70"));
+        assert!(!error.contains("secret"));
     }
 
     #[test]

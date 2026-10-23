@@ -222,7 +222,7 @@ pub fn run_workspace_tool_with_context(
 ) -> Result<(), String> {
     let mode = workspace_tool_build_mode(operation);
     let paths = workspace_tool_environment(application_executable, workspace_root)?;
-    vapor_client_provider::workspace_build::run_selected_with_events_cancellable(
+    vapor_client_provider::workspace_build::run_selected_with_structured_events_cancellable(
         &paths,
         mode,
         project_selection,
@@ -236,11 +236,18 @@ pub fn run_workspace_tool_with_context(
             });
         },
         || context.is_cancelled(),
-        |stream, text| {
+        |stream, text, diagnostic, raw_payload| {
+            let level = diagnostic
+                .as_ref()
+                .map_or(vapor_core::ConsoleLevel::Info, |diagnostic| {
+                    diagnostic.severity.console_level()
+                });
             context.report_output(vapor_core::OperationOutput {
                 stream,
-                level: vapor_core::ConsoleLevel::Info,
+                level,
                 process: Some("cargo".to_owned()),
+                diagnostic,
+                raw_payload,
                 text: text.to_owned(),
             });
         },
@@ -347,11 +354,33 @@ pub fn build_application_release_with_events(
     workspace_root: &Path,
     runtime_targets: &[String],
     report_progress: impl FnMut(usize, usize, &str),
-    report_output: impl FnMut(vapor_core::OperationOutputStream, &str),
+    mut report_output: impl FnMut(vapor_core::OperationOutputStream, &str),
+) -> Result<vapor_client_provider::release::ReleaseBuildReport, String> {
+    build_application_release_with_structured_events(
+        application_executable,
+        workspace_root,
+        runtime_targets,
+        report_progress,
+        |stream, text, _, _| report_output(stream, text),
+    )
+}
+
+/// Build an app release while preserving Cargo's structured diagnostics.
+pub fn build_application_release_with_structured_events(
+    application_executable: &Path,
+    workspace_root: &Path,
+    runtime_targets: &[String],
+    report_progress: impl FnMut(usize, usize, &str),
+    report_output: impl FnMut(
+        vapor_core::OperationOutputStream,
+        &str,
+        Option<vapor_core::StructuredDiagnostic>,
+        Option<String>,
+    ),
 ) -> Result<vapor_client_provider::release::ReleaseBuildReport, String> {
     let installation = InstallationPaths::from_application_executable(application_executable)?;
     let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
-    vapor_client_provider::release::build_application_release_with_events(
+    vapor_client_provider::release::build_application_release_with_structured_events(
         &paths,
         runtime_targets,
         report_progress,

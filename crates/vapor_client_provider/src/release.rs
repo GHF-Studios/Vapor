@@ -15,7 +15,9 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use vapor_core::OperationOutputStream;
+use vapor_core::{OperationOutputStream, StructuredDiagnostic};
+
+const MAX_CARGO_JSON_LINE_BYTES: usize = 256 * 1024;
 
 /// Summary of the Rust work completed before an application release is staged.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,8 +51,28 @@ pub fn build_application_release(
 pub fn build_application_release_with_events(
     paths: &EnvironmentPaths,
     runtime_targets: &[String],
-    mut report_progress: impl FnMut(usize, usize, &str),
+    report_progress: impl FnMut(usize, usize, &str),
     mut report_output: impl FnMut(OperationOutputStream, &str),
+) -> Result<ReleaseBuildReport, String> {
+    build_application_release_with_structured_events(
+        paths,
+        runtime_targets,
+        report_progress,
+        |stream, text, _, _| report_output(stream, text),
+    )
+}
+
+/// Build an application release and preserve Cargo diagnostics as structured events.
+pub fn build_application_release_with_structured_events(
+    paths: &EnvironmentPaths,
+    runtime_targets: &[String],
+    mut report_progress: impl FnMut(usize, usize, &str),
+    mut report_output: impl FnMut(
+        OperationOutputStream,
+        &str,
+        Option<StructuredDiagnostic>,
+        Option<String>,
+    ),
 ) -> Result<ReleaseBuildReport, String> {
     if runtime_targets.is_empty() {
         return Err("application release needs at least one runtime target".to_owned());
@@ -167,7 +189,12 @@ fn run_step(
     project: &CargoProject,
     target: &str,
     step: BuildStep,
-    report_output: &mut impl FnMut(OperationOutputStream, &str),
+    report_output: &mut impl FnMut(
+        OperationOutputStream,
+        &str,
+        Option<StructuredDiagnostic>,
+        Option<String>,
+    ),
 ) -> Result<(), String> {
     let installation = paths.installation();
     let source_manifest = paths.source().root().join(project.manifest());
@@ -189,7 +216,11 @@ fn run_step(
         .join(project.name());
     let mut command = toolchain.command();
     command
-        .args(step.cargo_args(target))
+        .args(step.cargo_args(target));
+    if !matches!(step, BuildStep::Fmt) {
+        command.args(["--message-format", "json"]);
+    }
+    command
         .arg("--manifest-path")
         .arg(&source_manifest)
         .current_dir(working_directory)
@@ -207,7 +238,22 @@ fn run_step(
         command.env("RUSTDOCFLAGS", "-D warnings");
     }
     eprintln!("==> {}: {}", project.name(), step.label(target));
-    let status = process_output::run(&mut command, report_output).map_err(|error| {
+    let status = process_output::run_with_line_limit(
+        &mut command,
+        MAX_CARGO_JSON_LINE_BYTES,
+        |stream, line| {
+            let parsed = if stream == OperationOutputStream::Stdout && !matches!(step, BuildStep::Fmt) {
+                super::cargo_output::parse_cargo_output_line(line)
+            } else {
+                super::cargo_output::CargoOutputLine {
+                    display_text: line.to_owned(),
+                    diagnostic: None,
+                    raw_payload: None,
+                }
+            };
+            report_output(stream, &parsed.display_text, parsed.diagnostic, parsed.raw_payload);
+        },
+    ).map_err(|error| {
         format!(
             "failed to run {} for '{}': {error}",
             step.label(target),

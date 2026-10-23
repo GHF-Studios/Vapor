@@ -428,12 +428,13 @@ fn serve_local(
                         .get(&client_id)
                         .is_some_and(|server| server.generation == generation)
                 {
+                    let event = language_server_client_event(message);
                     send_to_client(
                         &mut clients,
                         &mut authenticated,
                         &mut telemetry_subscribers,
                         client_id,
-                        ProtocolFrame::Event(ClientEvent::LanguageServerMessage(message)),
+                        ProtocolFrame::Event(event),
                     );
                 }
             }
@@ -528,6 +529,12 @@ fn should_stop_when_idle(
     idle_duration: Duration,
 ) -> bool {
     clients_disconnected && !has_active_operation && idle_duration >= SERVICE_IDLE_TIMEOUT
+}
+
+fn language_server_client_event(message: serde_json::Value) -> ClientEvent {
+    vapor_client_protocol::parse_publish_diagnostics(&message)
+        .map(|diagnostics| ClientEvent::LanguageServerDiagnostics(Box::new(diagnostics)))
+        .unwrap_or(ClientEvent::LanguageServerMessage(message))
 }
 
 fn dispatch_language_server_action(
@@ -1117,6 +1124,26 @@ mod tests {
     }
 
     #[test]
+    fn service_normalizes_publish_diagnostics_but_preserves_other_language_server_messages() {
+        let diagnostics = language_server_client_event(serde_json::json!({
+            "jsonrpc":"2.0",
+            "method":"textDocument/publishDiagnostics",
+            "params": {"uri":"file:///workspace/src/lib.rs", "diagnostics": []}
+        }));
+        assert!(matches!(
+            diagnostics,
+            ClientEvent::LanguageServerDiagnostics(batch)
+                if batch.uri == "file:///workspace/src/lib.rs"
+        ));
+
+        let response = serde_json::json!({"jsonrpc":"2.0", "id":12, "result": []});
+        assert_eq!(
+            language_server_client_event(response.clone()),
+            ClientEvent::LanguageServerMessage(response)
+        );
+    }
+
+    #[test]
     fn idle_service_exits_quickly_but_stays_for_clients_and_active_operations() {
         assert!(!should_stop_when_idle(true, false, Duration::from_secs(14)));
         assert!(should_stop_when_idle(true, false, Duration::from_secs(15)));
@@ -1146,6 +1173,7 @@ mod tests {
         let request = ProtocolFrame::Request(ClientRequest {
             protocol_version: PROTOCOL_VERSION,
             request_id: vapor_client_protocol::RequestId("test-1".into()),
+            origin: vapor_client_protocol::ClientOrigin::Studio,
             expected_revision: None,
             action: ClientAction::Catalog(CatalogAction::Refresh),
         });
@@ -1173,18 +1201,21 @@ mod tests {
         let previous = ProtocolFrame::Request(ClientRequest {
             protocol_version: PROTOCOL_VERSION - 1,
             request_id: vapor_client_protocol::RequestId("previous-client".into()),
+            origin: vapor_client_protocol::ClientOrigin::Unknown,
             expected_revision: None,
             action: ClientAction::Catalog(CatalogAction::Refresh),
         });
         let future = ProtocolFrame::Request(ClientRequest {
             protocol_version: PROTOCOL_VERSION + 1,
             request_id: vapor_client_protocol::RequestId("future-client".into()),
+            origin: vapor_client_protocol::ClientOrigin::Unknown,
             expected_revision: None,
             action: ClientAction::Catalog(CatalogAction::Refresh),
         });
         let valid = ProtocolFrame::Request(ClientRequest {
             protocol_version: PROTOCOL_VERSION,
             request_id: vapor_client_protocol::RequestId("current-client".into()),
+            origin: vapor_client_protocol::ClientOrigin::Unknown,
             expected_revision: None,
             action: ClientAction::Catalog(CatalogAction::Refresh),
         });

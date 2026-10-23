@@ -3995,6 +3995,7 @@ dependencies = [
  "reqwest",
  "semver",
  "serde",
+ "serde_json",
  "toml",
  "toml_edit 0.22.27",
  "vapor_client_domain",
