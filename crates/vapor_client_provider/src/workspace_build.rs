@@ -5,7 +5,7 @@ use crate::{
     discovery::EnvironmentPaths,
     managed_cargo::ApplicationCargo,
     process_output,
-    target::{host_runtime_target, validate_runtime_target},
+    target::{host_runtime_target, host_rust_target, validate_runtime_target},
     workspace::{CargoProject, WorkspaceManifest},
 };
 use std::{fs, path::Path};
@@ -46,7 +46,7 @@ pub struct BuildReport {
 ///
 /// Development artifacts remain in `output/dev`, release builds in
 /// `output/release`; no operation promotes binaries into the installed app
-/// root. Empty target lists preserve Cargo's host-default output layout.
+/// root. Empty target lists select the platform runtime target explicitly.
 ///
 /// # Errors
 ///
@@ -174,11 +174,11 @@ pub fn run_selected_with_structured_events_cancellable(
         ));
     }
     let targets = if runtime_targets.is_empty() {
-        vec![None]
+        vec![Some(host_runtime_target())]
     } else {
         runtime_targets
             .iter()
-            .map(|target| Some(target.as_str()))
+            .map(|target| Some(target.as_str().to_owned()))
             .collect()
     };
     let steps = match mode {
@@ -206,11 +206,12 @@ pub fn run_selected_with_structured_events_cancellable(
                 &cargo,
                 project,
                 step,
-                targets[target],
+                targets[target].as_deref(),
                 &mut is_cancelled,
                 &mut report_output,
             )?;
             let target = targets[target]
+                .as_deref()
                 .map(|target| format!(" for {target}"))
                 .unwrap_or_default();
             Ok(format!(
@@ -375,7 +376,7 @@ fn cargo_args(step: CargoStep, target: Option<&str>) -> Vec<String> {
         CargoStep::Check => vec!["check", "--workspace", "--all-targets", "--locked"],
         CargoStep::Test => {
             let mut args = vec!["test", "--workspace", "--all-targets", "--locked"];
-            if target.is_some_and(|target| target != host_runtime_target()) {
+            if target.is_some_and(|target| target != host_rust_target()) {
                 args.push("--no-run");
             }
             args
@@ -393,7 +394,6 @@ fn cargo_args(step: CargoStep, target: Option<&str>) -> Vec<String> {
     }
     if !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
         && let Some(target) = target
-        && target != host_runtime_target()
     {
         args.extend(["--target".to_owned(), target.to_owned()]);
     }
@@ -463,7 +463,6 @@ fn run_step(
     }
     if !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
         && let Some(target) = target
-        && target != host_runtime_target()
     {
         cross_toolchain::configure_linker_env(&mut command, installation, target)?;
     }
@@ -514,7 +513,7 @@ fn run_step(
 }
 
 fn is_foreign_target(target: Option<&str>) -> bool {
-    target.is_some_and(|target| target != host_runtime_target())
+    target.is_some_and(|target| target != host_rust_target())
 }
 
 fn step_label(step: CargoStep, target: Option<&str>) -> &'static str {
@@ -522,7 +521,7 @@ fn step_label(step: CargoStep, target: Option<&str>) -> &'static str {
         CargoStep::Format => "fmt",
         CargoStep::FmtCheck => "fmt --check",
         CargoStep::Check => "check",
-        CargoStep::Test if target.is_none_or(|target| target == host_runtime_target()) => "test",
+        CargoStep::Test if target.is_none_or(|target| target == host_rust_target()) => "test",
         CargoStep::Test => "test --no-run",
         CargoStep::Clippy => "clippy",
         CargoStep::Doc => "doc",
@@ -722,10 +721,12 @@ mod tests {
     }
 
     #[test]
-    fn cross_target_builds_disable_incremental_state_only_for_foreign_targets() {
-        let host = super::host_runtime_target();
-        assert!(!super::is_foreign_target(Some(&host)));
-        assert!(super::is_foreign_target(Some("x86_64-pc-windows-gnullvm")));
+    fn compiler_host_and_runtime_target_are_classified_separately() {
+        let rust_host = super::host_rust_target();
+        assert!(!super::is_foreign_target(Some(&rust_host)));
+        assert!(super::is_foreign_target(
+            Some(&super::host_runtime_target())
+        ));
         assert!(!super::is_foreign_target(None));
     }
 

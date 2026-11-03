@@ -578,18 +578,16 @@ fn bundled_cargo_candidates(root: &Path) -> Result<Vec<PathBuf>, String> {
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .collect::<Vec<_>>();
 
+    let host = crate::target::host_rust_target();
+    let host_suffix = format!("-{host}");
     if let Some(pin) = pin {
-        let prefix = format!("{}-", pin.identifier());
-        return Ok(toolchains
-            .into_iter()
-            .filter(|entry| {
-                let name = entry.file_name();
-                name == pin.identifier() || name.to_string_lossy().starts_with(&prefix)
-            })
-            .map(|entry| entry.path().join("bin").join(&executable))
-            .collect());
+        let toolchain = format!("{}-{host}", pin.identifier());
+        return Ok(vec![
+            toolchains_root.join(toolchain).join("bin").join(executable),
+        ]);
     }
 
+    toolchains.retain(|entry| entry.file_name().to_string_lossy().ends_with(&host_suffix));
     toolchains.sort_by(|left, right| {
         let left_name = left.file_name().to_string_lossy().into_owned();
         let right_name = right.file_name().to_string_lossy().into_owned();
@@ -632,8 +630,9 @@ mod tests {
                 .as_nanos()
         ));
         let toolchains = root.join("rustup-home/toolchains");
-        let pinned = toolchains.join("1.97.0-x86_64-unknown-linux-gnu/bin/cargo");
-        let ambient = toolchains.join("1.83.0-x86_64-unknown-linux-gnu/bin/cargo");
+        let host = crate::target::host_rust_target();
+        let pinned = toolchains.join(format!("1.97.0-{host}/bin/cargo"));
+        let ambient = toolchains.join(format!("1.83.0-{host}/bin/cargo"));
         fs::create_dir_all(pinned.parent().expect("pinned cargo parent"))
             .expect("create pinned toolchain");
         fs::create_dir_all(ambient.parent().expect("ambient cargo parent"))

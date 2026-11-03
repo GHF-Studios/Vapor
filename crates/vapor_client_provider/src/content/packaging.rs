@@ -358,7 +358,7 @@ impl RuntimeTarget {
                 validate_runtime_target(target)?;
                 Ok(Self {
                     triple: target.to_owned(),
-                    explicit: target != host_runtime_target(),
+                    explicit: true,
                 })
             }
             None => Ok(Self::host()),
@@ -384,7 +384,7 @@ impl RuntimeTarget {
     fn host() -> Self {
         Self {
             triple: host_runtime_target(),
-            explicit: false,
+            explicit: true,
         }
     }
 
@@ -731,12 +731,12 @@ mod target_tests {
     };
 
     #[test]
-    fn explicit_host_target_uses_default_build_output_layout() {
+    fn host_runtime_target_uses_target_specific_build_output_layout() {
         let host = crate::host_runtime_target();
         let target = RuntimeTarget::many(std::slice::from_ref(&host))
             .expect("valid host target")
             .remove(0);
-        assert!(!target.explicit);
+        assert!(target.explicit);
         assert_eq!(target.triple(), host);
     }
 

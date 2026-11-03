@@ -1,5 +1,23 @@
 //! Shared Rust runtime target vocabulary for packaging and distribution.
 
+/// Resolve the Rust compiler host triple for the installed toolchain.
+pub fn host_rust_target() -> String {
+    match (std::env::consts::ARCH, std::env::consts::OS) {
+        ("x86_64", "windows") => "x86_64-pc-windows-msvc".to_owned(),
+        ("aarch64", "windows") => "aarch64-pc-windows-msvc".to_owned(),
+        ("x86_64", "linux") => "x86_64-unknown-linux-gnu".to_owned(),
+        ("aarch64", "linux") => "aarch64-unknown-linux-gnu".to_owned(),
+        ("x86_64", "macos") => "x86_64-apple-darwin".to_owned(),
+        ("aarch64", "macos") => "aarch64-apple-darwin".to_owned(),
+        _ => format!(
+            "{}-{}-{}",
+            std::env::consts::ARCH,
+            std::env::consts::OS,
+            std::env::consts::FAMILY
+        ),
+    }
+}
+
 /// Resolve the host's Rust target triple used by runtime packaging.
 pub fn host_runtime_target() -> String {
     let arch = std::env::consts::ARCH;
@@ -36,11 +54,12 @@ pub fn validate_runtime_target(target: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{host_runtime_target, validate_runtime_target};
+    use super::{host_runtime_target, host_rust_target, validate_runtime_target};
 
     #[test]
     fn host_mapping_always_produces_an_accepted_target() {
         assert!(validate_runtime_target(&host_runtime_target()).is_ok());
+        assert!(validate_runtime_target(&host_rust_target()).is_ok());
     }
 
     #[test]

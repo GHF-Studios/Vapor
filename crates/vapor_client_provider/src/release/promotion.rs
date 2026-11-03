@@ -18,8 +18,8 @@ pub fn promote(paths: &EnvironmentPaths, manifest: &WorkspaceManifest) -> Result
 
 /// Promote configured artifacts for one or more runtime targets.
 ///
-/// An empty target list uses Cargo's host-default output layout. Explicit
-/// targets use the managed target-specific output layout.
+/// An empty target list selects the host runtime triple. All targets use the
+/// managed target-specific output layout.
 pub fn promote_for_targets(
     paths: &EnvironmentPaths,
     manifest: &WorkspaceManifest,
@@ -136,7 +136,7 @@ impl RuntimeTarget {
         if target_triples.is_empty() {
             return Ok(vec![Self {
                 triple: host_runtime_target(),
-                explicit: false,
+                explicit: true,
             }]);
         }
         let mut seen = std::collections::BTreeSet::new();
@@ -147,10 +147,9 @@ impl RuntimeTarget {
                 if !seen.insert(target.clone()) {
                     return Err(format!("duplicate runtime target: {target}"));
                 }
-                let explicit = target != &host_runtime_target();
                 Ok(Self {
                     triple: target.clone(),
-                    explicit,
+                    explicit: true,
                 })
             })
             .collect()
@@ -240,13 +239,13 @@ mod tests {
     }
 
     #[test]
-    fn explicit_host_target_uses_the_default_cargo_artifact_root() {
+    fn host_runtime_target_uses_the_target_specific_cargo_artifact_root() {
         let target = RuntimeTarget::many(&[crate::host_runtime_target()])
             .expect("host target")
             .remove(0);
         assert_eq!(
             target.build_output_root(Path::new("/vapor"), "vapor", "dev"),
-            Path::new("/vapor/output/dev/vapor/debug")
+            Path::new("/vapor/output/dev/vapor/x86_64-pc-windows-gnullvm/debug")
         );
     }
 }
