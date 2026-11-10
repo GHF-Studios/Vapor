@@ -10,7 +10,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{VAPOR_HOME_MANIFEST_FILE_NAME, VaporInstallation};
+use crate::VaporInstallation;
+
+const VAPOR_HOME_MANIFEST_FILE_NAME: &str = "Vapor-Home.toml";
+const APP_MANIFEST_FILE_NAME: &str = "App.vapor.toml";
 
 #[derive(Clone, Debug, Serialize)]
 /// Complete inventory of the marked Vapor home.
@@ -314,9 +317,11 @@ pub fn remove(
 fn validate_home(root: &Path) -> Result<PathBuf, String> {
     let home = fs::canonicalize(root)
         .map_err(|error| format!("cannot resolve Vapor home '{}': {error}", root.display()))?;
-    if !home.join(VAPOR_HOME_MANIFEST_FILE_NAME).is_file() {
+    if !home.join(VAPOR_HOME_MANIFEST_FILE_NAME).is_file()
+        && !home.join(APP_MANIFEST_FILE_NAME).is_file()
+    {
         return Err(format!(
-            "'{}' is not a marked Vapor home; refusing to scan or delete files there",
+            "'{}' is not a recognized Vapor installation; refusing to scan or delete files there",
             home.display()
         ));
     }
