@@ -51,7 +51,7 @@ impl DevelopmentSession {
         configuration: &str,
         profiling: bool,
     ) -> Result<Self, DevelopmentRunError> {
-        let root = toolchain.user_data_root.join(SESSION_ROOT);
+        let root = toolchain.data_root.join(SESSION_ROOT);
         fs::create_dir_all(&root).map_err(|source| DevelopmentRunError::Io {
             path: root.clone(),
             source,
@@ -140,7 +140,7 @@ pub fn active_development_session() -> Result<Option<ActiveDevelopmentSession>, 
 {
     let installation = VaporInstallation::discover().map_err(DevelopmentRunError::Installation)?;
     let path = installation
-        .user_data_root()
+        .data_root()
         .join(SESSION_ROOT)
         .join(ACTIVE_SESSION_FILE);
 
@@ -160,7 +160,7 @@ pub fn active_development_session() -> Result<Option<ActiveDevelopmentSession>, 
 /// Persistent Development Session history, newest first.
 pub fn development_sessions() -> Result<Vec<ActiveDevelopmentSession>, DevelopmentRunError> {
     let installation = VaporInstallation::discover().map_err(DevelopmentRunError::Installation)?;
-    let root = installation.user_data_root().join(SESSION_ROOT);
+    let root = installation.data_root().join(SESSION_ROOT);
 
     let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,

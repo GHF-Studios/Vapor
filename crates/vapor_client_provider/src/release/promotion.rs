@@ -18,8 +18,8 @@ pub fn promote(paths: &EnvironmentPaths, manifest: &WorkspaceManifest) -> Result
 
 /// Promote configured artifacts for one or more runtime targets.
 ///
-/// An empty target list uses Cargo's host-default output layout. Explicit
-/// targets use the managed target-specific output layout.
+/// An empty target list selects the host runtime triple. All targets use the
+/// managed target-specific output layout.
 pub fn promote_for_targets(
     paths: &EnvironmentPaths,
     manifest: &WorkspaceManifest,
@@ -136,7 +136,7 @@ impl RuntimeTarget {
         if target_triples.is_empty() {
             return Ok(vec![Self {
                 triple: host_runtime_target(),
-                explicit: false,
+                explicit: true,
             }]);
         }
         let mut seen = std::collections::BTreeSet::new();
@@ -147,10 +147,9 @@ impl RuntimeTarget {
                 if !seen.insert(target.clone()) {
                     return Err(format!("duplicate runtime target: {target}"));
                 }
-                let explicit = target != &host_runtime_target();
                 Ok(Self {
                     triple: target.clone(),
-                    explicit,
+                    explicit: true,
                 })
             })
             .collect()
@@ -162,12 +161,11 @@ impl RuntimeTarget {
 
     fn build_output_root(&self, installation: &Path, project: &str, profile: &str) -> PathBuf {
         let cargo_profile = if profile == "dev" { "debug" } else { profile };
-        let root = installation.join("output").join(profile).join(project);
-        if self.explicit {
-            root.join(self.triple()).join(cargo_profile)
-        } else {
-            root.join(cargo_profile)
-        }
+        let _ = project;
+        installation
+            .join("cache/build")
+            .join(self.triple())
+            .join(cargo_profile)
     }
 
     fn binary_file_name(&self, binary: &str) -> String {
@@ -231,22 +229,22 @@ mod tests {
         let installation = Path::new("/vapor");
         assert_eq!(
             target.build_output_root(installation, "vapor", "dev"),
-            Path::new("/vapor/output/dev/vapor/x86_64-unknown-linux-gnu/debug")
+            Path::new("/vapor/cache/build/x86_64-unknown-linux-gnu/debug")
         );
         assert_eq!(
             target.build_output_root(installation, "vapor", "release"),
-            Path::new("/vapor/output/release/vapor/x86_64-unknown-linux-gnu/release")
+            Path::new("/vapor/cache/build/x86_64-unknown-linux-gnu/release")
         );
     }
 
     #[test]
-    fn explicit_host_target_uses_the_default_cargo_artifact_root() {
+    fn host_runtime_target_uses_the_target_specific_cargo_artifact_root() {
         let target = RuntimeTarget::many(&[crate::host_runtime_target()])
             .expect("host target")
             .remove(0);
         assert_eq!(
             target.build_output_root(Path::new("/vapor"), "vapor", "dev"),
-            Path::new("/vapor/output/dev/vapor/debug")
+            Path::new("/vapor/cache/build/x86_64-pc-windows-gnullvm/debug")
         );
     }
 }

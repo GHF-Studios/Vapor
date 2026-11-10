@@ -358,7 +358,7 @@ impl RuntimeTarget {
                 validate_runtime_target(target)?;
                 Ok(Self {
                     triple: target.to_owned(),
-                    explicit: target != host_runtime_target(),
+                    explicit: true,
                 })
             }
             None => Ok(Self::host()),
@@ -384,7 +384,7 @@ impl RuntimeTarget {
     fn host() -> Self {
         Self {
             triple: host_runtime_target(),
-            explicit: false,
+            explicit: true,
         }
     }
 
@@ -465,12 +465,18 @@ fn content_build_output_root(
                 path.display()
             )
         })?;
-    let root = paths.installation().root().join("output/dev").join(name);
-    if runtime_target.explicit {
-        Ok(root.join(runtime_target.triple()).join("debug"))
+    let target = if runtime_target.explicit {
+        runtime_target.triple().to_owned()
     } else {
-        Ok(root.join("debug"))
-    }
+        crate::target::host_runtime_target()
+    };
+    let _ = name;
+    Ok(paths
+        .installation()
+        .root()
+        .join("cache/build")
+        .join(target)
+        .join("debug"))
 }
 
 fn find_built_binary(build_root: &Path, name: &str, target: &str) -> Result<PathBuf, String> {
@@ -731,12 +737,12 @@ mod target_tests {
     };
 
     #[test]
-    fn explicit_host_target_uses_default_build_output_layout() {
+    fn host_runtime_target_uses_target_specific_build_output_layout() {
         let host = crate::host_runtime_target();
         let target = RuntimeTarget::many(std::slice::from_ref(&host))
             .expect("valid host target")
             .remove(0);
-        assert!(!target.explicit);
+        assert!(target.explicit);
         assert_eq!(target.triple(), host);
     }
 

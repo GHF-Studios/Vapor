@@ -53,11 +53,18 @@ pub fn inspect(root: &Path) -> CrossToolchainStatus {
             ));
         }
     }
-    let linker = zig_linker_path(root, LINUX_GNU_TARGET);
-    if !is_executable(&linker) {
+    let archiver = llvm_ar(root);
+    if !is_executable(&archiver) {
         missing.push(format!(
-            "{LINUX_GNU_TARGET} linker wrapper (expected at {})",
-            linker.display()
+            "LLVM archiver for {LINUX_GNU_TARGET} (expected at {})",
+            archiver.display()
+        ));
+    }
+    let compiler = linux_cc_compiler(root);
+    if !is_executable(&compiler) {
+        missing.push(format!(
+            "Vapor Zig C compiler adapter for {LINUX_GNU_TARGET} (expected at {})",
+            compiler.display()
         ));
     }
     CrossToolchainStatus {
@@ -86,9 +93,16 @@ pub fn configure_linker_env(
             .env(cargo_compiler_env(target), &compiler)
             .env(cargo_archiver_env(target), archiver);
     } else if target == LINUX_GNU_TARGET && target != host_runtime_target() {
-        let linker = zig_linker_path(root, target);
-        require_target_tools(target, &[&zig_executable(root), &linker])?;
-        command.env(cargo_linker_env(target), linker);
+        let linker_and_compiler = linux_cc_compiler(root);
+        let archiver = llvm_ar(root);
+        require_target_tools(
+            target,
+            &[&zig_executable(root), &linker_and_compiler, &archiver],
+        )?;
+        command
+            .env(cargo_linker_env(target), &linker_and_compiler)
+            .env(cargo_compiler_env(target), &linker_and_compiler)
+            .env(cargo_archiver_env(target), archiver);
     }
     Ok(())
 }
@@ -168,9 +182,14 @@ fn llvm_mingw_clang(root: &Path) -> PathBuf {
     llvm_mingw_bin(root).join(executable("x86_64-w64-mingw32-clang"))
 }
 
-fn zig_linker_path(root: &Path, target: &str) -> PathBuf {
-    root.join("tools/cross/bin")
-        .join(format!("{target}-zig-cc{}", env::consts::EXE_SUFFIX))
+fn llvm_ar(root: &Path) -> PathBuf {
+    llvm_mingw_bin(root).join(executable("llvm-ar"))
+}
+
+fn linux_cc_compiler(root: &Path) -> PathBuf {
+    root.join("bin")
+        .join(host_runtime_target())
+        .join(executable("vapor-linux-cc"))
 }
 
 fn cargo_linker_env(target: &str) -> String {

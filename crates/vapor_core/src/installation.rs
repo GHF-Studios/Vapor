@@ -1,10 +1,9 @@
 //! Vapor installation identity and root discovery.
 //!
-//! A Vapor Installation is the replaceable App Instance boundary. Mutable
-//! persistent Vapor state belongs to OS user data instead of the Steam depot.
+//! A Vapor Home is the single ownership boundary for Vapor-owned files.
 //!
-//! A normal installed Vapor discovers its App Instance by walking upward from
-//! its own executable location.
+//! A normal installed Vapor discovers its home from `VAPOR_HOME`, its executable,
+//! or the user's default `Vapor` directory.
 //!
 //! Vapor processes launched indirectly from authored source inherit
 //! `VAPOR_HOME` from the installed Vapor process that spawned them.
@@ -19,6 +18,8 @@ use std::path::{Path, PathBuf};
 
 pub const VAPOR_HOME_ENV: &str = "VAPOR_HOME";
 
+pub const VAPOR_HOME_MARKER: &str = "Vapor-Home.toml";
+const DATA_DIR: &str = "data";
 const STATE_DIR: &str = "state";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,14 +27,16 @@ pub enum InstallationRootSource {
     Explicit,
     Environment,
     Executable,
+    DefaultHome,
 }
 
 impl fmt::Display for InstallationRootSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Explicit => "explicit app root",
+            Self::Explicit => "explicit Vapor Home",
             Self::Environment => VAPOR_HOME_ENV,
             Self::Executable => "executable root",
+            Self::DefaultHome => "default Vapor home",
         })
     }
 }
@@ -45,7 +48,7 @@ pub struct VaporInstallation {
 }
 
 impl VaporInstallation {
-    /// Construct an installation context from a caller-selected app root.
+    /// Construct a Vapor home context from a caller-selected root.
     ///
     /// Use this when an operation receives an explicit installation target;
     /// it keeps every downstream path calculation tied to that target instead
@@ -58,24 +61,26 @@ impl VaporInstallation {
         if canonical_root.join("Vapor-Client.vapor.toml").is_file() {
             return Err(InstallationError::InvalidExplicitRoot {
                 root: canonical_root,
-                reason: "this is an app source root, not an installed app root",
+                reason: "this is an app source root, not a Vapor Home",
             });
         }
-        let manifest = canonical_root.join("App.vapor.toml");
-        if !manifest.is_file() {
+        let marker = canonical_root.join(VAPOR_HOME_MARKER);
+        if !marker.is_file() {
             return Err(InstallationError::InvalidExplicitRoot {
                 root: canonical_root,
-                reason: "App.vapor.toml is missing",
+                reason: "Vapor-Home.toml is missing",
             });
         }
-        let source = fs::read_to_string(&manifest).map_err(|source| InstallationError::Io {
-            path: manifest.clone(),
+        let source = fs::read_to_string(&marker).map_err(|source| InstallationError::Io {
+            path: marker.clone(),
             source,
         })?;
-        if !source.lines().any(|line| line.trim() == "[root]") {
+        if !source.lines().any(|line| line.trim() == "[vapor]")
+            || !source.lines().any(|line| line.trim() == "schema = 1")
+        {
             return Err(InstallationError::InvalidExplicitRoot {
                 root: canonical_root,
-                reason: "App.vapor.toml does not declare [root]",
+                reason: "Vapor-Home.toml must declare [vapor] and schema = 1",
             });
         }
         Ok(Self {
@@ -84,57 +89,86 @@ impl VaporInstallation {
         })
     }
 
-    /// Discover the active Vapor Installation.
+    /// Discover the active Vapor Home.
     ///
     /// Resolution order:
     ///
     /// 1. Explicit/inherited `VAPOR_HOME`.
-    /// 2. An installed Vapor executable beneath the App Instance's `bin/`.
+    /// 2. An installed Vapor executable beneath the home's `bin/`.
+    /// 3. The default `<user-home>/Vapor` if it has a Vapor home marker.
     ///
     /// There is intentionally no authored-Workspace fallback. A Vapor source
     /// checkout is not an Installation.
     pub fn discover() -> Result<Self, InstallationError> {
         if let Some(root) = explicit_vapor_home() {
-            return Ok(Self {
-                root,
-                root_source: InstallationRootSource::Environment,
+            return Self::from_explicit_root(root).map(|mut installation| {
+                installation.root_source = InstallationRootSource::Environment;
+                installation
             });
         }
 
         let executable = env::current_exe().map_err(InstallationError::CurrentExecutable)?;
 
-        if let Some(root) = installation_root_from_executable(&executable) {
-            return Ok(Self {
-                root,
-                root_source: InstallationRootSource::Executable,
-            });
+        if let Some(root) = installation_root_from_executable(&executable)
+            && let Ok(mut installation) = Self::from_explicit_root(root)
+        {
+            installation.root_source = InstallationRootSource::Executable;
+            return Ok(installation);
+        }
+
+        if let Some(root) = default_vapor_home()
+            && root.join(VAPOR_HOME_MARKER).is_file()
+        {
+            let mut installation = Self::from_explicit_root(root)?;
+            installation.root_source = InstallationRootSource::DefaultHome;
+            return Ok(installation);
         }
 
         Err(InstallationError::NotFound { executable })
     }
 
-    /// OS-owned mutable Vapor state, intentionally outside the Steam App Instance.
-    pub fn user_data_root(&self) -> PathBuf {
-        platform_user_data_root().unwrap_or_else(|| env::temp_dir().join("vapor-user-data"))
+    /// Persistent Vapor data below the one canonical home.
+    pub fn data_root(&self) -> PathBuf {
+        self.root.join(DATA_DIR)
     }
 
-    /// Resolve persisted state while remaining compatible with the pre-userdata
-    /// layout until migration has actually occurred.
+    pub fn tools_root(&self) -> PathBuf {
+        self.root.join("tools")
+    }
+
+    pub fn cache_root(&self) -> PathBuf {
+        self.root.join("cache")
+    }
+
+    pub fn content_root(&self) -> PathBuf {
+        self.root.join("content")
+    }
+
+    pub fn sources_root(&self) -> PathBuf {
+        self.root.join("sources")
+    }
+
+    pub fn config_root(&self) -> PathBuf {
+        self.root.join("config")
+    }
+
+    pub fn output_root(&self) -> PathBuf {
+        self.root.join("output")
+    }
+
+    pub fn build_cache_root(&self, target: &str) -> PathBuf {
+        self.cache_root().join("build").join(target)
+    }
+
+    /// Resolve persisted state under the canonical Vapor home.
     pub fn state_root(&self) -> PathBuf {
-        let external = self.external_state_root();
-        let legacy = self.legacy_state_root();
-
-        if external.exists() || !legacy.exists() {
-            external
-        } else {
-            legacy
-        }
+        self.data_root().join(STATE_DIR)
     }
 
-    /// Ensure state is external to the Steam App Instance and migrate the
-    /// previous `<installation>/state` tree before any new writes occur.
+    /// Ensure state exists under the home, migrating the old `<home>/state`
+    /// folder before writing to the canonical `<home>/data/state` location.
     pub fn ensure_state_root(&self) -> Result<PathBuf, InstallationError> {
-        let state_root = self.external_state_root();
+        let state_root = self.state_root();
         let legacy = self.legacy_state_root();
 
         if !state_root.exists() && legacy.is_dir() {
@@ -186,10 +220,6 @@ impl VaporInstallation {
         Ok(state_root)
     }
 
-    fn external_state_root(&self) -> PathBuf {
-        self.user_data_root().join(STATE_DIR)
-    }
-
     fn legacy_state_root(&self) -> PathBuf {
         self.root.join(STATE_DIR)
     }
@@ -201,25 +231,11 @@ fn explicit_vapor_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn platform_user_data_root() -> Option<PathBuf> {
-    match env::consts::OS {
-        "windows" => env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .or_else(|| {
-                env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("AppData/Local"))
-            })
-            .map(|root| root.join("Vapor")),
-
-        "macos" => env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join("Library/Application Support/Vapor")),
-
-        _ => env::var_os("XDG_DATA_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-            .map(|root| root.join("vapor")),
-    }
+fn default_vapor_home() -> Option<PathBuf> {
+    env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from)
+        .map(|home| home.join("Vapor"))
 }
 
 fn copy_missing_tree(source: &Path, destination: &Path) -> Result<(), InstallationError> {
@@ -267,7 +283,8 @@ fn installation_root_from_executable(executable: &Path) -> Option<PathBuf> {
 
     // <installation>/bin/vapor
     if directory.file_name().is_some_and(|name| name == "bin") {
-        return directory.parent().map(Path::to_path_buf);
+        let root = directory.parent()?.to_path_buf();
+        return root.join(VAPOR_HOME_MARKER).is_file().then_some(root);
     }
 
     // <installation>/bin/<target>/vapor
@@ -276,10 +293,11 @@ fn installation_root_from_executable(executable: &Path) -> Option<PathBuf> {
         .and_then(Path::file_name)
         .is_some_and(|name| name == "bin")
     {
-        return directory
+        let root = directory
             .parent()
             .and_then(Path::parent)
-            .map(Path::to_path_buf);
+            .map(Path::to_path_buf)?;
+        return root.join(VAPOR_HOME_MARKER).is_file().then_some(root);
     }
 
     None
@@ -359,7 +377,11 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).expect("create explicit app root");
-        std::fs::write(root.join("App.vapor.toml"), "[root]\n").expect("write app manifest");
+        std::fs::write(
+            root.join(VAPOR_HOME_MARKER),
+            "schema = 1\n\n[vapor]\nid = \"test\"\n",
+        )
+        .expect("write Vapor home marker");
 
         let installation = VaporInstallation::from_explicit_root(root.clone())
             .expect("construct explicit installation context");

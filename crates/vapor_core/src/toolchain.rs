@@ -26,9 +26,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
-const RUSTUP_HOME_DIR: &str = "rustup-home";
-const CARGO_HOME_DIR: &str = "cargo-home";
-const LOCAL_RUSTUP_DIR: &str = "rustup/bin";
+const RUSTUP_HOME_DIR: &str = "tools/rustup/home";
+const CARGO_HOME_DIR: &str = "tools/cargo/home";
+const LOCAL_RUSTUP_DIR: &str = "tools/rustup/bin";
 
 const INSTALLATION_METADATA_DIR: &str = "metadata";
 const TOOLCHAIN_METADATA_FILE: &str = "toolchain.toml";
@@ -102,11 +102,12 @@ pub struct ManagedToolchain {
     pub workspace_root: PathBuf,
 
     pub vapor_home: PathBuf,
-    pub user_data_root: PathBuf,
+    pub data_root: PathBuf,
     pub installation_source: InstallationRootSource,
 
     pub rustup_home: PathBuf,
     pub cargo_home: PathBuf,
+    pub build_target: &'static str,
 
     pub pin: ToolchainPin,
 
@@ -188,13 +189,16 @@ impl ManagedToolchain {
         pin: ToolchainPin,
     ) -> Result<Self, ToolchainError> {
         let vapor_home = installation.root.clone();
-        let user_data_root = installation.user_data_root();
+        let data_root = installation.data_root();
 
-        let rustup_home = user_data_root.join(RUSTUP_HOME_DIR);
+        let rustup_home = installation.root.join(RUSTUP_HOME_DIR);
 
-        let cargo_home = user_data_root.join(CARGO_HOME_DIR);
+        let cargo_home = installation.root.join(CARGO_HOME_DIR);
 
         let host = current_host_triple()?;
+        let build_target = crate::HostTarget::current()
+            .map_err(|_| ToolchainError::UnsupportedHost)?
+            .triple();
 
         let toolchain_root = rustup_home
             .join("toolchains")
@@ -205,10 +209,11 @@ impl ManagedToolchain {
         Ok(Self {
             workspace_root,
             vapor_home,
-            user_data_root,
+            data_root,
             installation_source: installation.root_source,
             rustup_home,
             cargo_home,
+            build_target,
             pin,
             cargo_path: bin.join(executable_name("cargo")),
             rustc_path: bin.join(executable_name("rustc")),
@@ -713,11 +718,11 @@ mod tests {
     fn rust_toolchain_environment_sets_pinned_paths_and_removes_wrappers() {
         let environment = RustToolchainCommandEnvironment::new(
             "/vapor/app",
-            "/vapor/user/cargo-home",
-            "/vapor/user/rustup-home",
+            "/vapor/tools/cargo/home",
+            "/vapor/tools/rustup/home",
             "1.97.0-x86_64-unknown-linux-gnu",
-            "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustc",
-            "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustdoc",
+            "/vapor/tools/rustup/home/toolchains/1.97.0/bin/rustc",
+            "/vapor/tools/rustup/home/toolchains/1.97.0/bin/rustdoc",
         );
         let mut command = Command::new("cargo");
         command
@@ -736,11 +741,11 @@ mod tests {
         );
         assert_eq!(
             variables.get(OsStr::new("CARGO_HOME")),
-            Some(&Some("/vapor/user/cargo-home".into()))
+            Some(&Some("/vapor/tools/cargo/home".into()))
         );
         assert_eq!(
             variables.get(OsStr::new("RUSTUP_HOME")),
-            Some(&Some("/vapor/user/rustup-home".into()))
+            Some(&Some("/vapor/tools/rustup/home".into()))
         );
         assert_eq!(
             variables.get(OsStr::new("RUSTUP_TOOLCHAIN")),
@@ -749,13 +754,13 @@ mod tests {
         assert_eq!(
             variables.get(OsStr::new("RUSTC")),
             Some(&Some(
-                "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustc".into()
+                "/vapor/tools/rustup/home/toolchains/1.97.0/bin/rustc".into()
             ))
         );
         assert_eq!(
             variables.get(OsStr::new("RUSTDOC")),
             Some(&Some(
-                "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustdoc".into()
+                "/vapor/tools/rustup/home/toolchains/1.97.0/bin/rustdoc".into()
             ))
         );
         assert_eq!(variables.get(OsStr::new("RUSTC_WRAPPER")), Some(&None));
@@ -780,7 +785,11 @@ mod tests {
             "schema = 1\nchannel = \"stable\"\nversion = \"1.97.0\"\ndate = \"2026-01-01\"\n",
         )
         .expect("write installation toolchain metadata");
-        fs::write(root.join("App.vapor.toml"), "[root]\n").expect("write app manifest");
+        fs::write(
+            root.join(crate::VAPOR_HOME_MARKER),
+            "schema = 1\n\n[vapor]\nid = \"test\"\n",
+        )
+        .expect("write Vapor home marker");
 
         let installation = VaporInstallation::from_explicit_root(root.clone())
             .expect("construct explicit installation context");
@@ -804,7 +813,11 @@ mod tests {
             unique_suffix()
         ));
         fs::create_dir_all(&root).expect("create app root");
-        fs::write(root.join("App.vapor.toml"), "[root]\n").expect("write app manifest");
+        fs::write(
+            root.join(crate::VAPOR_HOME_MARKER),
+            "schema = 1\n\n[vapor]\nid = \"test\"\n",
+        )
+        .expect("write Vapor home marker");
 
         let installation = VaporInstallation::from_explicit_root(root.clone())
             .expect("construct explicit installation context");

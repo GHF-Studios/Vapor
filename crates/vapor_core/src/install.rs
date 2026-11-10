@@ -20,7 +20,7 @@ const PROFILE_BLOCK_END: &str = "# <<< Vapor managed PATH <<<";
 #[derive(Debug, Clone)]
 pub struct InstallReport {
     pub installation_root: PathBuf,
-    pub user_data_root: PathBuf,
+    pub data_root: PathBuf,
     pub superworkspace_root: PathBuf,
     pub integration: Vec<String>,
 }
@@ -34,7 +34,7 @@ pub fn install_installation() -> Result<InstallReport, InstallError> {
 pub fn install_installation_for(
     installation: &VaporInstallation,
 ) -> Result<InstallReport, InstallError> {
-    let user_data_root = installation.user_data_root();
+    let data_root = installation.data_root();
 
     installation
         .ensure_state_root()
@@ -45,7 +45,7 @@ pub fn install_installation_for(
 
     Ok(InstallReport {
         installation_root: installation.root.clone(),
-        user_data_root,
+        data_root,
         superworkspace_root: superworkspace.root,
         integration,
     })
@@ -55,20 +55,11 @@ pub fn ensure_canonical_superworkspace(
     installation: &VaporInstallation,
 ) -> Result<VaporSuperworkspace, InstallError> {
     let state = source_state(installation).map_err(InstallError::Source)?;
-    let root = match state.superworkspace {
-        Some(root) => root,
-        None => default_superworkspace_root()?,
-    };
+    let root = state
+        .superworkspace
+        .unwrap_or_else(|| installation.root.clone());
 
     configure_superworkspace(installation, &root).map_err(InstallError::Source)
-}
-
-fn default_superworkspace_root() -> Result<PathBuf, InstallError> {
-    env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .map(|home| home.join("Vapor"))
-        .ok_or(InstallError::HomeUnavailable)
 }
 
 fn install_machine_integration(

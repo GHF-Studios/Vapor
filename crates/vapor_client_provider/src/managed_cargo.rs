@@ -43,8 +43,8 @@ impl ApplicationCargo {
         let root = installation.root();
         let environment = RustToolchainCommandEnvironment::new(
             root,
-            root.join("cargo-home"),
-            root.join("rustup-home"),
+            root.join("tools/cargo/home"),
+            root.join("tools/rustup/home"),
             toolchain,
             rustc,
             rustdoc,
@@ -87,6 +87,7 @@ fn application_path(
         toolchain_bin.to_path_buf(),
         binaries.to_path_buf(),
         root.join("bin"),
+        root.join("tools/llvm-mingw/bin"),
     ];
     if let Some(inherited) = inherited {
         entries
@@ -111,8 +112,8 @@ fn application_path(
 
 fn is_raw_app_tool_path(root: &Path, entry: &Path) -> bool {
     [
-        root.join("cargo-home/bin"),
-        root.join("rustup/bin"),
+        root.join("tools/cargo/home/bin"),
+        root.join("tools/rustup/bin"),
         root.join("tools/steamcmd"),
         root.join("tools/zig"),
         root.join("tools/cross/bin"),
@@ -120,7 +121,7 @@ fn is_raw_app_tool_path(root: &Path, entry: &Path) -> bool {
     ]
     .iter()
     .any(|raw_path| entry == raw_path)
-        || (entry.starts_with(root.join("rustup-home/toolchains"))
+        || (entry.starts_with(root.join("tools/rustup/home/toolchains"))
             && entry.file_name().is_some_and(|name| name == "bin"))
 }
 
@@ -138,7 +139,7 @@ mod tests {
         let path = super::application_path(
             Path::new("/app"),
             Path::new("/app/bin/x86_64-linux"),
-            Path::new("/app/rustup-home/toolchains/1.97.0/bin"),
+            Path::new("/app/tools/rustup/home/toolchains/1.97.0/bin"),
             None,
         )
         .expect("construct app-managed path");
@@ -153,7 +154,7 @@ mod tests {
         let inherited = env::join_paths([
             Path::new("/app/tools/zig"),
             Path::new("/usr/bin"),
-            Path::new("/app/rustup-home/toolchains/old/bin"),
+            Path::new("/app/tools/rustup/home/toolchains/old/bin"),
             Path::new("/app/tools/steamcmd"),
         ])
         .expect("compose inherited path");
@@ -161,7 +162,7 @@ mod tests {
         let path = super::application_path(
             Path::new("/app"),
             Path::new("/app/bin/x86_64-linux"),
-            Path::new("/app/rustup-home/toolchains/1.97.0/bin"),
+            Path::new("/app/tools/rustup/home/toolchains/1.97.0/bin"),
             Some(&inherited),
         )
         .expect("construct app-managed path");
@@ -169,7 +170,7 @@ mod tests {
 
         assert_eq!(
             entries[0],
-            Path::new("/app/rustup-home/toolchains/1.97.0/bin")
+            Path::new("/app/tools/rustup/home/toolchains/1.97.0/bin")
         );
         assert_eq!(entries[1], Path::new("/app/bin/x86_64-linux"));
         assert_eq!(entries[2], Path::new("/app/bin"));

@@ -31,7 +31,7 @@ pub struct UninstallOptions {
 #[derive(Debug, Clone)]
 pub struct UninstallReport {
     pub installation_root: PathBuf,
-    pub user_data_root: PathBuf,
+    pub data_root: PathBuf,
     pub superworkspace_root: Option<PathBuf>,
     pub integration: Vec<String>,
     pub legacy_app_state_removed: Vec<PathBuf>,
@@ -51,7 +51,7 @@ pub fn uninstall_installation_for(
     installation: &VaporInstallation,
     options: UninstallOptions,
 ) -> Result<UninstallReport, UninstallError> {
-    let user_data_root = installation.user_data_root();
+    let data_root = installation.data_root();
 
     let superworkspace_root = if options.purge_superworkspace {
         Some(active_superworkspace(installation)?)
@@ -63,7 +63,7 @@ pub fn uninstall_installation_for(
     // mutating integration, user data, or authored source.
     let preflight = preflight_uninstall(
         installation,
-        &user_data_root,
+        &data_root,
         superworkspace_root.as_deref(),
         options,
     )?;
@@ -102,7 +102,7 @@ pub fn uninstall_installation_for(
 
     Ok(UninstallReport {
         installation_root: installation.root.clone(),
-        user_data_root,
+        data_root,
         superworkspace_root,
         integration,
         legacy_app_state_removed,
@@ -119,7 +119,7 @@ struct UninstallPreflight {
 
 fn preflight_uninstall(
     installation: &VaporInstallation,
-    user_data_root: &Path,
+    data_root: &Path,
     superworkspace_root: Option<&Path>,
     options: UninstallOptions,
 ) -> Result<UninstallPreflight, UninstallError> {
@@ -128,7 +128,7 @@ fn preflight_uninstall(
     let superworkspace_purge_root = if let Some(superworkspace) = superworkspace_root {
         let root = preflight_owned_tree(
             superworkspace,
-            &[installation.root.as_path(), user_data_root],
+            &[installation.root.as_path(), data_root],
         )?
         .ok_or_else(|| UninstallError::UnsafePurgeRoot {
             path: superworkspace.to_path_buf(),
@@ -141,7 +141,7 @@ fn preflight_uninstall(
     };
 
     let app_external_purge_root = if options.purge_app_external {
-        preflight_owned_tree(user_data_root, &[installation.root.as_path()])?
+        preflight_owned_tree(data_root, &[installation.root.as_path()])?
     } else {
         None
     };

@@ -95,7 +95,8 @@ pub use install::{
 };
 
 pub use installation::{
-    InstallationError, InstallationRootSource, VAPOR_HOME_ENV, VaporInstallation,
+    InstallationError, InstallationRootSource, VAPOR_HOME_ENV, VAPOR_HOME_MARKER,
+    VaporInstallation,
 };
 
 pub use local::{

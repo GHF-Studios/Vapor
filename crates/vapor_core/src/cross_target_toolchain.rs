@@ -59,7 +59,7 @@ pub fn install_windows_gnu_linker(
     let final_root = installation.root.join("tools/llvm-mingw");
 
     let tools_root = installation.root.join("tools");
-    let downloads = installation.root.join(".vapor/downloads");
+    let downloads = installation.cache_root().join("downloads");
     fs::create_dir_all(&tools_root).map_err(|error| CrossTargetToolchainError::Io {
         path: tools_root.clone(),
         message: error.to_string(),

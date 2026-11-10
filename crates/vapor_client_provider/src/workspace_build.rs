@@ -5,7 +5,7 @@ use crate::{
     discovery::EnvironmentPaths,
     managed_cargo::ApplicationCargo,
     process_output,
-    target::{host_runtime_target, validate_runtime_target},
+    target::{host_runtime_target, host_rust_target, validate_runtime_target},
     workspace::{CargoProject, WorkspaceManifest},
 };
 use std::{fs, path::Path};
@@ -44,9 +44,9 @@ pub struct BuildReport {
 
 /// Run a managed build or a complete publication validation/build sequence.
 ///
-/// Development artifacts remain in `output/dev`, release builds in
-/// `output/release`; no operation promotes binaries into the installed app
-/// root. Empty target lists preserve Cargo's host-default output layout.
+/// Build artifacts are shared per target under the Vapor Home cache. Release
+/// packaging stages promoted binaries separately under `output/`. Empty target
+/// lists select the platform runtime target explicitly.
 ///
 /// # Errors
 ///
@@ -174,11 +174,11 @@ pub fn run_selected_with_structured_events_cancellable(
         ));
     }
     let targets = if runtime_targets.is_empty() {
-        vec![None]
+        vec![Some(host_runtime_target())]
     } else {
         runtime_targets
             .iter()
-            .map(|target| Some(target.as_str()))
+            .map(|target| Some(target.as_str().to_owned()))
             .collect()
     };
     let steps = match mode {
@@ -206,11 +206,12 @@ pub fn run_selected_with_structured_events_cancellable(
                 &cargo,
                 project,
                 step,
-                targets[target],
+                targets[target].as_deref(),
                 &mut is_cancelled,
                 &mut report_output,
             )?;
             let target = targets[target]
+                .as_deref()
                 .map(|target| format!(" for {target}"))
                 .unwrap_or_default();
             Ok(format!(
@@ -248,26 +249,24 @@ pub fn clean_development_cache(
         ));
     }
 
-    let cache_root = paths.installation().root().join("output").join("dev");
-    let total = projects.len();
-    for (index, project) in projects.iter().enumerate() {
-        if is_cancelled() {
-            return Err("operation cancelled".to_owned());
-        }
-        remove_project_build_cache(&cache_root, project.name())?;
-        report_progress(index + 1, total, project.name());
+    if is_cancelled() {
+        return Err("operation cancelled".to_owned());
     }
+    let target = host_runtime_target();
+    let cache_root = paths.installation().root().join("cache/build");
+    remove_build_target_cache(&cache_root, &target)?;
+    report_progress(1, 1, &target);
     Ok(())
 }
 
-fn remove_project_build_cache(cache_root: &Path, project_name: &str) -> Result<(), String> {
-    let path = Path::new(project_name);
+fn remove_build_target_cache(cache_root: &Path, target_name: &str) -> Result<(), String> {
+    let path = Path::new(target_name);
     let mut components = path.components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
         || components.next().is_some()
     {
         return Err(format!(
-            "workspace Cargo project has an invalid cache name: {project_name}"
+            "build target cache must be a single directory name: {target_name}"
         ));
     }
 
@@ -375,7 +374,7 @@ fn cargo_args(step: CargoStep, target: Option<&str>) -> Vec<String> {
         CargoStep::Check => vec!["check", "--workspace", "--all-targets", "--locked"],
         CargoStep::Test => {
             let mut args = vec!["test", "--workspace", "--all-targets", "--locked"];
-            if target.is_some_and(|target| target != host_runtime_target()) {
+            if target.is_some_and(|target| target != host_rust_target()) {
                 args.push("--no-run");
             }
             args
@@ -393,7 +392,6 @@ fn cargo_args(step: CargoStep, target: Option<&str>) -> Vec<String> {
     }
     if !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
         && let Some(target) = target
-        && target != host_runtime_target()
     {
         args.extend(["--target".to_owned(), target.to_owned()]);
     }
@@ -441,15 +439,10 @@ fn run_step(
         )
     })?;
     let installation = paths.installation().root();
-    let profile = if step == CargoStep::BuildRelease {
-        "release"
-    } else {
-        "dev"
-    };
-    let target_directory = installation
-        .join("output")
-        .join(profile)
-        .join(project.name());
+    let build_target = target
+        .map(str::to_owned)
+        .unwrap_or_else(host_runtime_target);
+    let target_directory = installation.join("cache/build").join(build_target);
     let mut command = cargo.command();
     command
         .args(cargo_invocation_args(step, target, &source_manifest))
@@ -463,7 +456,6 @@ fn run_step(
     }
     if !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
         && let Some(target) = target
-        && target != host_runtime_target()
     {
         cross_toolchain::configure_linker_env(&mut command, installation, target)?;
     }
@@ -514,7 +506,7 @@ fn run_step(
 }
 
 fn is_foreign_target(target: Option<&str>) -> bool {
-    target.is_some_and(|target| target != host_runtime_target())
+    target.is_some_and(|target| target != host_rust_target())
 }
 
 fn step_label(step: CargoStep, target: Option<&str>) -> &'static str {
@@ -522,7 +514,7 @@ fn step_label(step: CargoStep, target: Option<&str>) -> &'static str {
         CargoStep::Format => "fmt",
         CargoStep::FmtCheck => "fmt --check",
         CargoStep::Check => "check",
-        CargoStep::Test if target.is_none_or(|target| target == host_runtime_target()) => "test",
+        CargoStep::Test if target.is_none_or(|target| target == host_rust_target()) => "test",
         CargoStep::Test => "test --no-run",
         CargoStep::Clippy => "clippy",
         CargoStep::Doc => "doc",
@@ -545,7 +537,7 @@ fn validate_targets(targets: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CargoStep, cargo_args, cargo_invocation_args, remove_project_build_cache, run_plan_steps,
+        CargoStep, cargo_args, cargo_invocation_args, remove_build_target_cache, run_plan_steps,
         validation_steps, validation_steps_with_build,
     };
 
@@ -559,26 +551,29 @@ mod tests {
                 .expect("system clock after epoch")
                 .as_nanos()
         ));
-        let project_cache = cache_root.join("sample-workspace");
+        let project_cache = cache_root.join("x86_64-unknown-linux-gnu");
+        let other_target = cache_root.join("x86_64-pc-windows-gnullvm");
         let smoke_output = cache_root.join("vapor-smoke-20261019");
         let release_output = cache_root.join("release");
         std::fs::create_dir_all(project_cache.join("debug/deps")).unwrap();
+        std::fs::create_dir_all(&other_target).unwrap();
         std::fs::create_dir_all(&smoke_output).unwrap();
         std::fs::create_dir_all(&release_output).unwrap();
         std::fs::write(project_cache.join("debug/deps/cache-file"), b"build cache").unwrap();
         std::fs::write(smoke_output.join("preserve"), b"smoke output").unwrap();
         std::fs::write(release_output.join("preserve"), b"release output").unwrap();
 
-        remove_project_build_cache(&cache_root, "sample-workspace").unwrap();
+        remove_build_target_cache(&cache_root, "x86_64-unknown-linux-gnu").unwrap();
 
         assert!(!project_cache.exists());
         assert!(smoke_output.join("preserve").is_file());
         assert!(release_output.join("preserve").is_file());
+        assert!(other_target.is_dir());
         std::fs::remove_dir_all(cache_root).unwrap();
     }
 
     #[test]
-    fn cleaning_rejects_project_names_that_escape_the_cache_root() {
+    fn cleaning_rejects_target_names_that_escape_the_cache_root() {
         let cache_root = std::env::temp_dir().join(format!(
             "vapor-workspace-build-clean-path-{}-{}",
             std::process::id(),
@@ -595,12 +590,7 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         let marker = outside.join("preserve");
         std::fs::write(&marker, b"keep").unwrap();
-        let outside_name = outside
-            .file_name()
-            .expect("outside directory name")
-            .to_string_lossy();
-
-        assert!(remove_project_build_cache(&cache_root, &format!("../{outside_name}")).is_err());
+        assert!(remove_build_target_cache(&cache_root, "../outside").is_err());
         assert!(marker.is_file());
 
         std::fs::remove_dir_all(cache_root).unwrap();
@@ -722,10 +712,12 @@ mod tests {
     }
 
     #[test]
-    fn cross_target_builds_disable_incremental_state_only_for_foreign_targets() {
-        let host = super::host_runtime_target();
-        assert!(!super::is_foreign_target(Some(&host)));
-        assert!(super::is_foreign_target(Some("x86_64-pc-windows-gnullvm")));
+    fn compiler_host_and_runtime_target_are_classified_separately() {
+        let rust_host = super::host_rust_target();
+        assert!(!super::is_foreign_target(Some(&rust_host)));
+        assert!(super::is_foreign_target(
+            Some(&super::host_runtime_target())
+        ));
         assert!(!super::is_foreign_target(None));
     }
 

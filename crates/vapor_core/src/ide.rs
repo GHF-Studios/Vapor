@@ -684,14 +684,14 @@ fn reconcile_rust_component(
 ///
 /// Current managed topology:
 ///
-/// <installation>
-/// ├── cargo-home/
-/// └── rustup-home/
+/// <vapor-home>/tools/
+/// ├── cargo/home/
+/// └── rustup/home/
 ///     └── toolchains/
 ///         └── <toolchain>/
 ///             └── bin/
 ///
-/// This deliberately keys off the named `rustup-home` boundary rather than a
+/// This deliberately keys off the `tools/rustup/home` boundary rather than a
 /// fixed number of parent traversals.
 fn managed_rust_environment_from_toolchain_home(
     toolchain_home: &Path,
@@ -701,13 +701,19 @@ fn managed_rust_environment_from_toolchain_home(
         .find(|ancestor| {
             ancestor
                 .file_name()
-                .is_some_and(|name| name == "rustup-home")
+                .is_some_and(|name| {
+                    name == "home"
+                        && ancestor
+                            .parent()
+                            .and_then(Path::file_name)
+                            .is_some_and(|name| name == "rustup")
+                })
         })?
         .to_path_buf();
 
-    let installation_root = rustup_home.parent()?;
+    let installation_root = rustup_home.parent()?.parent()?.parent()?;
 
-    let cargo_home = installation_root.join("cargo-home");
+    let cargo_home = installation_root.join("tools/cargo/home");
 
     Some((rustup_home, cargo_home))
 }

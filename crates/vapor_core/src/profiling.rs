@@ -123,7 +123,7 @@ struct Aggregate {
 pub fn profile_library_path() -> Result<PathBuf, ProfileError> {
     let installation = VaporInstallation::discover()?;
     Ok(installation
-        .user_data_root()
+        .data_root()
         .join(PROFILE_DIR)
         .join(LIBRARY_FILE))
 }
@@ -254,7 +254,7 @@ pub fn analyze_profile_trace(
     }
 
     let installation = VaporInstallation::discover()?;
-    let tracy = ManagedTracyToolset::discover(&installation.user_data_root())?;
+    let tracy = ManagedTracyToolset::discover(&installation.root)?;
     let csvexport = tracy.csvexport_executable()?;
     let mut command = crate::managed_process::background_command(csvexport);
     command.arg("-u").arg("-s").arg("\t");

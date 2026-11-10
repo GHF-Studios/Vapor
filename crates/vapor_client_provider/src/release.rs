@@ -8,7 +8,7 @@ use crate::{
     discovery::{EnvironmentPaths, ensure_contained},
     managed_cargo::ApplicationCargo,
     process_output,
-    target::host_runtime_target,
+    target::host_rust_target,
     workspace::{CargoProject, WorkspaceManifest},
 };
 use std::{
@@ -146,7 +146,7 @@ impl BuildStep {
         match self {
             Self::Fmt => "fmt --check",
             Self::Check => "check",
-            Self::Test if target == host_runtime_target() => "test",
+            Self::Test if target == host_rust_target() => "test",
             Self::Test => "test --no-run",
             Self::Clippy => "clippy",
             Self::Doc => "doc",
@@ -158,7 +158,7 @@ impl BuildStep {
         match self {
             Self::Fmt => vec!["fmt", "--all"],
             Self::Check => vec!["check", "--workspace", "--all-targets", "--locked"],
-            Self::Test if target == host_runtime_target() => {
+            Self::Test if target == host_rust_target() => {
                 vec!["test", "--workspace", "--all-targets", "--locked"]
             }
             Self::Test => vec![
@@ -176,11 +176,7 @@ impl BuildStep {
 }
 
 fn cargo_target_args(target: &str) -> Vec<&str> {
-    if target == host_runtime_target() {
-        Vec::new()
-    } else {
-        vec!["--target", target]
-    }
+    vec!["--target", target]
 }
 
 fn run_step(
@@ -204,16 +200,10 @@ fn run_step(
             source_manifest.display()
         )
     })?;
-    let output_profile = if matches!(step, BuildStep::Release) {
-        "release"
-    } else {
-        "dev"
-    };
     let target_directory = installation
         .root()
-        .join("output")
-        .join(output_profile)
-        .join(project.name());
+        .join("cache/build")
+        .join(target);
     let mut command = toolchain.command();
     command.args(step.cargo_args(target));
     if !matches!(step, BuildStep::Fmt) {
@@ -226,7 +216,7 @@ fn run_step(
         .env("CARGO_TARGET_DIR", target_directory);
     if matches!(step, BuildStep::Fmt) {
         command.args(["--", "--check"]);
-    } else if target != host_runtime_target() {
+    } else {
         cross_toolchain::configure_linker_env(&mut command, installation.root(), target)?;
         command.args(cargo_target_args(target));
     }
@@ -335,11 +325,7 @@ fn promote_release_outputs(
 
 fn release_output_root(installation: &Path, project: &str, target: &str) -> PathBuf {
     let root = installation.join("output/release").join(project);
-    if target == host_runtime_target() {
-        root.join("release")
-    } else {
-        root.join(target).join("release")
-    }
+    root.join(target).join("release")
 }
 
 fn promote_file(source: &Path, destination: &Path) -> Result<(), String> {
@@ -400,9 +386,9 @@ mod target_tests {
     use std::path::Path;
 
     #[test]
-    fn release_build_omits_the_target_flag_for_the_host_triple() {
+    fn release_build_selects_the_runtime_triple_explicitly() {
         let host = crate::host_runtime_target();
-        assert!(cargo_target_args(&host).is_empty());
+        assert_eq!(cargo_target_args(&host), ["--target", host.as_str()]);
     }
 
     #[test]
@@ -414,12 +400,12 @@ mod target_tests {
     }
 
     #[test]
-    fn release_promotion_uses_default_layout_for_host_and_triple_layout_for_cross_target() {
+    fn release_promotion_uses_triple_layout_for_runtime_targets() {
         let installation = Path::new("/vapor");
         let host = crate::host_runtime_target();
         assert_eq!(
             release_output_root(installation, "vapor", &host),
-            Path::new("/vapor/output/release/vapor/release")
+            Path::new("/vapor/output/release/vapor/x86_64-pc-windows-gnullvm/release")
         );
         assert_eq!(
             release_output_root(installation, "vapor", "x86_64-pc-windows-gnullvm"),

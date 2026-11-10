@@ -88,14 +88,17 @@ pub fn configure_superworkspace(
 ) -> Result<VaporSuperworkspace, SourceError> {
     let installation_root =
         fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
-    let user_data = installation.user_data_root();
-    let user_data_root = fs::canonicalize(&user_data).unwrap_or(user_data);
+    let data = installation.data_root();
+    let data_root = fs::canonicalize(&data).unwrap_or(data);
     let candidate = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    if roots_overlap(&candidate, &installation_root) || roots_overlap(&candidate, &user_data_root) {
+    if candidate != installation_root
+        && (roots_overlap(&candidate, &installation_root)
+            || roots_overlap(&candidate, &data_root))
+    {
         return Err(SourceError::UnsafeSuperworkspace {
             path: candidate,
             installation: installation_root,
-            user_data: user_data_root,
+            user_data: data_root,
         });
     }
 
