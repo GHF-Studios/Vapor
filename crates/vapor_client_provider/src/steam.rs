@@ -1,7 +1,7 @@
 //! SteamCMD-backed beta-branch SteamPipe publishing.
 
 use crate::{
-    discovery::{EnvironmentPaths, InstallationPaths, ensure_contained},
+    discovery::{EnvironmentPaths, InstallationPaths},
     distribution::{self, DistributionManifest, StageOptions, SteamDepotKind, SteamProductKind},
     manifest,
 };
@@ -13,10 +13,12 @@ use std::{
     process::Stdio,
 };
 
-const STEAMPIPE_TEMPLATE_ROOT: &str = "resources/steam/steampipe-templates";
-const APP_BUILD_TEMPLATE: &str = "app_build.vdf.tpl";
-const APP_BUILD_DEPOT_ENTRY_TEMPLATE: &str = "app_build_depot_entry.vdf.tpl";
-const DEPOT_BUILD_TEMPLATE: &str = "depot_build.vdf.tpl";
+const APP_BUILD_TEMPLATE_TEXT: &str =
+    include_str!("../../../../resources/steam/steampipe-templates/app_build.vdf.tpl");
+const APP_BUILD_DEPOT_ENTRY_TEMPLATE_TEXT: &str =
+    include_str!("../../../../resources/steam/steampipe-templates/app_build_depot_entry.vdf.tpl");
+const DEPOT_BUILD_TEMPLATE_TEXT: &str =
+    include_str!("../../../../resources/steam/steampipe-templates/depot_build.vdf.tpl");
 
 /// Locate the installation-owned SteamCMD executable.
 pub fn executable(paths: &EnvironmentPaths) -> Result<PathBuf, String> {
@@ -628,7 +630,7 @@ fn write_build_script(
     description: &str,
     preview: bool,
 ) -> Result<PathBuf, String> {
-    let templates = SteamPipeTemplates::load(paths.installation().root())?;
+    let templates = SteamPipeTemplates::load();
     let scripts = paths.installation().root().join("output/root/scripts");
     let output = paths.installation().root().join("output/root/steam-build");
     fs::create_dir_all(&scripts).map_err(|e| e.to_string())?;
@@ -685,25 +687,13 @@ struct SteamPipeTemplates {
 }
 
 impl SteamPipeTemplates {
-    fn load(installation_root: &Path) -> Result<Self, String> {
-        let root = installation_root.join(STEAMPIPE_TEMPLATE_ROOT);
-        ensure_contained(installation_root, &root)?;
-        Ok(Self {
-            app_build: read_template(&root, APP_BUILD_TEMPLATE)?,
-            app_build_depot_entry: read_template(&root, APP_BUILD_DEPOT_ENTRY_TEMPLATE)?,
-            depot_build: read_template(&root, DEPOT_BUILD_TEMPLATE)?,
-        })
+    fn load() -> Self {
+        Self {
+            app_build: APP_BUILD_TEMPLATE_TEXT.to_owned(),
+            app_build_depot_entry: APP_BUILD_DEPOT_ENTRY_TEMPLATE_TEXT.to_owned(),
+            depot_build: DEPOT_BUILD_TEMPLATE_TEXT.to_owned(),
+        }
     }
-}
-
-fn read_template(root: &Path, name: &str) -> Result<String, String> {
-    let path = root.join(name);
-    fs::read_to_string(&path).map_err(|error| {
-        format!(
-            "failed to read installed SteamPipe template '{}': {error}\nhelp: repair the Vapor installation's {STEAMPIPE_TEMPLATE_ROOT} bundle",
-            path.display()
-        )
-    })
 }
 
 fn render_template(template: &str, values: &[(&str, String)]) -> String {
