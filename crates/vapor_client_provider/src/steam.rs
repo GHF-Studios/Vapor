@@ -536,13 +536,29 @@ fn smoke_packagepack(
             ),
         )?;
 
+        let locator = match kind {
+            SteamDepotKind::Linux => "vapor-entrypoint",
+            SteamDepotKind::Windows => "vapor-entrypoint.exe",
+            SteamDepotKind::Common => {
+                return Err("runtime target resolved to common depot".to_owned());
+            }
+        };
+        let locator_path = PathBuf::from("bin").join(target).join(locator);
+        require_file(
+            depot.root().join(&locator_path),
+            &format!(
+                "staged {} depot has no target Steam-to-Vapor locator",
+                kind.label()
+            ),
+        )?;
+
         let files = files_under(depot.root())?;
         for file in &files {
             let name = file
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or_default();
-            if file == Path::new(&executable) {
+            if file == Path::new(&executable) || file == &locator_path {
                 continue;
             }
             let sidecar = match kind {

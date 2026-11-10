@@ -717,10 +717,18 @@ id = 45
             &[
                 ("loo-cast-packagepack", "linux binary"),
                 ("libunwind.so.8", "runtime"),
+                (
+                    "bin/x86_64-unknown-linux-gnu/vapor-entrypoint",
+                    "steam locator",
+                ),
             ],
             &[
                 ("loo-cast-packagepack.exe", "windows binary"),
                 ("libunwind.dll", "runtime"),
+                (
+                    "bin/x86_64-pc-windows-gnullvm/vapor-entrypoint.exe",
+                    "steam locator",
+                ),
             ],
         );
 
@@ -746,8 +754,18 @@ id = 45
             &[
                 ("loo-cast-packagepack", "linux binary"),
                 ("other-tool", "extra executable"),
+                (
+                    "bin/x86_64-unknown-linux-gnu/vapor-entrypoint",
+                    "steam locator",
+                ),
             ],
-            &[("loo-cast-packagepack.exe", "windows binary")],
+            &[
+                ("loo-cast-packagepack.exe", "windows binary"),
+                (
+                    "bin/x86_64-pc-windows-gnullvm/vapor-entrypoint.exe",
+                    "steam locator",
+                ),
+            ],
         );
 
         let result = crate::steam::smoke(
