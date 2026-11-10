@@ -6,6 +6,7 @@ use std::{
     env, fs,
     io::{self, Read},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 pub const WINDOWS_GNU_LINKER_VERSION: &str = "20260616";
@@ -18,6 +19,82 @@ const WINDOWS_ARCHIVE_SHA256: &str =
     "b9b68a4d276e16fa25802aaba458e4638f64b3884c290aaccdc2d87083b6ca35";
 const MAX_TOOLCHAIN_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const TOOLCHAIN_MARKER: &str = "vapor-toolchain.toml";
+
+/// Configure the installation-owned compiler, linker, and archiver for a
+/// supported runtime target. Development and distribution builds share this
+/// path so a Windows GNU runtime cannot accidentally fall back to MSVC. On
+/// Windows, the managed wrapper strips verbatim path prefixes that LLVM's
+/// Windows driver and linker do not accept.
+pub fn configure_runtime_target_linker_env(
+    command: &mut Command,
+    root: &Path,
+    target: &str,
+) -> Result<(), CrossTargetToolchainError> {
+    crate::target::validate_runtime_target(target)
+        .map_err(CrossTargetToolchainError::UnsupportedTarget)?;
+
+    let executable = |name: &str| format!("{name}{}", env::consts::EXE_SUFFIX);
+    let (compiler, archiver, required) = match target {
+        crate::target::WINDOWS_GNU_TARGET => {
+            let bin = root.join("tools/llvm-mingw/bin");
+            let compiler = bin.join(executable("x86_64-w64-mingw32-clang"));
+            let archiver = bin.join(executable("x86_64-w64-mingw32-ar"));
+            let required = vec![compiler.clone(), archiver.clone()];
+            (compiler, archiver, required)
+        }
+        crate::target::LINUX_GNU_TARGET => {
+            let host = crate::HostTarget::current()
+                .map_err(|_| CrossTargetToolchainError::UnsupportedHost)?
+                .triple();
+            let compiler = root
+                .join("bin")
+                .join(host)
+                .join(executable("vapor-linux-cc"));
+            let archiver = root
+                .join("tools/llvm-mingw/bin")
+                .join(executable("llvm-ar"));
+            let zig = root.join("tools/zig").join(executable("zig"));
+            let required = vec![compiler.clone(), archiver.clone(), zig];
+            (compiler, archiver, required)
+        }
+        _ => unreachable!("runtime target validation accepted an unknown target"),
+    };
+
+    let missing = required
+        .into_iter()
+        .filter(|path| !path.is_file())
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(CrossTargetToolchainError::TargetToolsUnavailable {
+            target: target.to_owned(),
+            missing,
+        });
+    }
+
+    let normalized_target = target.replace('-', "_").to_ascii_uppercase();
+    let compiler_wrapper = root
+        .join("tools/cc-wrapper")
+        .join(
+            crate::HostTarget::current()
+                .map_err(|_| CrossTargetToolchainError::UnsupportedHost)?
+                .triple(),
+        )
+        .join(executable("vapor-cc"));
+    let c_compiler = if compiler_wrapper.is_file() {
+        command.env("VAPOR_CC_REAL_COMPILER", &compiler);
+        compiler_wrapper
+    } else {
+        compiler.clone()
+    };
+    command
+        .env(
+            format!("CARGO_TARGET_{normalized_target}_LINKER"),
+            &c_compiler,
+        )
+        .env(format!("CC_{target}"), c_compiler)
+        .env(format!("AR_{target}"), &archiver);
+    Ok(())
+}
 
 /// Whether the selected installation has the linker and archiver Vapor uses
 /// for `x86_64-pc-windows-gnullvm` builds.
@@ -314,6 +391,8 @@ fn powershell_quote(value: &str) -> String {
 #[derive(Debug)]
 pub enum CrossTargetToolchainError {
     UnsupportedHost,
+    UnsupportedTarget(String),
+    TargetToolsUnavailable { target: String, missing: Vec<PathBuf> },
     IncompleteArchive(PathBuf),
     ArchiveTooLarge(u64),
     Download(String),
@@ -329,6 +408,17 @@ impl std::fmt::Display for CrossTargetToolchainError {
                 formatter,
                 "Windows GNU build tools are available only on x86-64 Linux and Windows hosts"
             ),
+            Self::UnsupportedTarget(target) => write!(
+                formatter,
+                "unsupported Vapor runtime target `{target}` for managed compilation"
+            ),
+            Self::TargetToolsUnavailable { target, missing } => {
+                write!(formatter, "managed compiler tools for `{target}` are incomplete")?;
+                for path in missing {
+                    write!(formatter, "\n  missing: {}", path.display())?;
+                }
+                Ok(())
+            }
             Self::IncompleteArchive(path) => write!(
                 formatter,
                 "the downloaded Windows GNU tool archive did not contain the required compiler and archiver at '{}'",
