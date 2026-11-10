@@ -28,6 +28,7 @@ pub mod resolution;
 pub mod role;
 pub mod run;
 pub mod source;
+pub mod storage;
 pub mod steam;
 pub mod superworkspace;
 pub mod toolchain;
