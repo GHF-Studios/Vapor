@@ -480,6 +480,18 @@ fn run_project_operation(
 }
 
 fn deployment_projects(workspace: &VaporWorkspace) -> Vec<VaporProject> {
+    // First-party executables are split across the Client checkout's sibling
+    // workspaces (CLI, GUI, Installer, Studio, and the Steam entrypoint). The
+    // selected workspace is usually the `Vapor` subdirectory, so filtering to
+    // that directory omits the actual `vapor` binary and makes local deploy
+    // fail. Resolve the owning Client root and include only projects beneath
+    // it; this still excludes duplicate or unrelated checkouts elsewhere in
+    // the superworkspace.
+    let client_root = workspace
+        .root
+        .ancestors()
+        .find(|root| root.join(CLIENT_DISTRIBUTION_MANIFEST_FILE_NAME).is_file());
+
     let mut projects = VaporSuperworkspace::discover_from(&workspace.root)
         .map(|superworkspace| {
             superworkspace
@@ -488,8 +500,14 @@ fn deployment_projects(workspace: &VaporWorkspace) -> Vec<VaporProject> {
                 // A user's checkout directory may sit beside older or
                 // experimental copies of the same repositories. Deployment
                 // must resolve binaries from the selected Client checkout,
-                // not from sibling Superworkspace entries.
-                .filter(|project| project.project.root.starts_with(&workspace.root))
+                // not from sibling Superworkspace entries. First-party
+                // component workspaces under the selected Client checkout
+                // are intentional siblings and must remain eligible.
+                .filter(|project| {
+                    project.project.root.starts_with(
+                        client_root.as_deref().unwrap_or(&workspace.root),
+                    )
+                })
                 .map(|project| project.project)
                 .collect::<Vec<_>>()
         })
