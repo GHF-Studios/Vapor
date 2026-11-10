@@ -26,7 +26,18 @@ pub struct DistributionManifest {
 pub struct Application {
     app_id: u32,
     development_branch: String,
+    product: SteamProductKind,
     depots: Option<SteamDepots>,
+}
+
+/// Kind of product assembled by one Steam application source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SteamProductKind {
+    /// The Vapor runtime and its self-hosting tools.
+    VaporRuntime,
+    /// One content Packagepack executable and its required runtime sidecars.
+    Packagepack,
 }
 
 /// Steam depot definitions for the platform-split app payload.
@@ -179,6 +190,10 @@ impl Application {
     /// Automatically activated development beta branch.
     pub fn development_branch(&self) -> &str {
         &self.development_branch
+    }
+    /// Product-specific payload contract for this Steam application.
+    pub fn product(&self) -> SteamProductKind {
+        self.product
     }
     /// Platform-split Steam depots.
     pub fn depots(&self) -> &SteamDepots {
@@ -547,4 +562,274 @@ fn validate_relative(path: &Path) -> Result<(), String> {
 
 fn io<'a>(action: &'a str, path: &'a Path) -> impl Fn(std::io::Error) -> String + 'a {
     move |error| format!("failed to {action} '{}': {error}", path.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Application, DepotStage, StageOptions, StageReport, SteamDepotKind, SteamProductKind,
+    };
+    use std::{fs, path::PathBuf};
+
+    fn temporary_root(label: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "vapor-packagepack-smoke-{label}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    fn stage_fixture(
+        root: &PathBuf,
+        common_files: &[(&str, &str)],
+        linux_files: &[(&str, &str)],
+        windows_files: &[(&str, &str)],
+    ) -> StageReport {
+        let mut depots = Vec::new();
+        let mut files = 0;
+        for (kind, entries) in [
+            (SteamDepotKind::Common, common_files),
+            (SteamDepotKind::Linux, linux_files),
+            (SteamDepotKind::Windows, windows_files),
+        ] {
+            let depot_root = root.join(kind.label());
+            for (name, contents) in entries {
+                let path = depot_root.join(name);
+                fs::create_dir_all(path.parent().expect("fixture file has parent"))
+                    .expect("create fixture directory");
+                fs::write(path, contents).expect("write fixture file");
+                files += 1;
+            }
+            depots.push(DepotStage {
+                kind,
+                root: depot_root,
+            });
+        }
+        StageReport {
+            root: root.clone(),
+            depots,
+            files,
+        }
+    }
+
+    fn packagepack_options() -> StageOptions {
+        StageOptions::runtime().with_runtime_targets(vec![
+            "x86_64-unknown-linux-gnu".to_owned(),
+            "x86_64-pc-windows-gnullvm".to_owned(),
+        ])
+    }
+
+    #[test]
+    fn steam_application_requires_and_parses_its_product_kind() {
+        let application: Application = toml::from_str(
+            r#"
+app-id = 42
+development-branch = "prealpha"
+product = "packagepack"
+
+[depots.common]
+id = 43
+[depots.linux]
+id = 44
+[depots.windows]
+id = 45
+"#,
+        )
+        .expect("parse Packagepack app policy");
+
+        assert_eq!(application.product(), SteamProductKind::Packagepack);
+    }
+
+    #[test]
+    fn steam_application_parses_the_vapor_runtime_product_kind() {
+        let application: Application = toml::from_str(
+            r#"
+app-id = 42
+development-branch = "prealpha"
+product = "vapor-runtime"
+
+[depots.common]
+id = 43
+[depots.linux]
+id = 44
+[depots.windows]
+id = 45
+"#,
+        )
+        .expect("parse Vapor runtime app policy");
+
+        assert_eq!(application.product(), SteamProductKind::VaporRuntime);
+    }
+
+    #[test]
+    fn steam_application_rejects_an_unknown_product_kind() {
+        let error = toml::from_str::<Application>(
+            r#"
+app-id = 42
+development-branch = "prealpha"
+product = "some-other-product"
+
+[depots.common]
+id = 43
+[depots.linux]
+id = 44
+[depots.windows]
+id = 45
+"#,
+        )
+        .expect_err("unknown Steam product kind must fail closed");
+
+        assert!(error.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn steam_application_requires_a_product_kind() {
+        let error = toml::from_str::<Application>(
+            r#"
+app-id = 42
+development-branch = "prealpha"
+
+[depots.common]
+id = 43
+[depots.linux]
+id = 44
+[depots.windows]
+id = 45
+"#,
+        )
+        .expect_err("a Steam app must explicitly select a product contract");
+
+        assert!(error.to_string().contains("product"));
+    }
+
+    #[test]
+    fn packagepack_payload_accepts_one_executable_and_allowlisted_runtime_sidecars() {
+        let root = temporary_root("valid");
+        let stage = stage_fixture(
+            &root,
+            &[(
+                "Packagepack.vapor.toml",
+                "[packagepack]\nbinaries = [\"loo-cast-packagepack\"]\n",
+            )],
+            &[
+                ("loo-cast-packagepack", "linux binary"),
+                ("libunwind.so.8", "runtime"),
+            ],
+            &[
+                ("loo-cast-packagepack.exe", "windows binary"),
+                ("libunwind.dll", "runtime"),
+            ],
+        );
+
+        let result = crate::steam::smoke(
+            &stage,
+            &packagepack_options(),
+            SteamProductKind::Packagepack,
+        );
+
+        fs::remove_dir_all(root).expect("remove fixture");
+        assert!(result.is_ok(), "unexpected rejection: {result:?}");
+    }
+
+    #[test]
+    fn packagepack_payload_rejects_extra_executables_and_unrelated_files() {
+        let root = temporary_root("extra");
+        let stage = stage_fixture(
+            &root,
+            &[(
+                "Packagepack.vapor.toml",
+                "[packagepack]\nbinaries = [\"loo-cast-packagepack\"]\n",
+            )],
+            &[
+                ("loo-cast-packagepack", "linux binary"),
+                ("other-tool", "extra executable"),
+            ],
+            &[("loo-cast-packagepack.exe", "windows binary")],
+        );
+
+        let result = crate::steam::smoke(
+            &stage,
+            &packagepack_options(),
+            SteamProductKind::Packagepack,
+        );
+
+        fs::remove_dir_all(root).expect("remove fixture");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unexpected"));
+    }
+
+    #[test]
+    fn packagepack_payload_rejects_vapor_runtime_files_in_shared_depot() {
+        let root = temporary_root("runtime-files");
+        let stage = stage_fixture(
+            &root,
+            &[
+                (
+                    "Packagepack.vapor.toml",
+                    "[packagepack]\nbinaries = [\"loo-cast-packagepack\"]\n",
+                ),
+                ("App.vapor.toml", "[root]\n"),
+            ],
+            &[("loo-cast-packagepack", "linux binary")],
+            &[("loo-cast-packagepack.exe", "windows binary")],
+        );
+
+        let result = crate::steam::smoke(
+            &stage,
+            &packagepack_options(),
+            SteamProductKind::Packagepack,
+        );
+
+        fs::remove_dir_all(root).expect("remove fixture");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("only Packagepack.vapor.toml"));
+    }
+
+    #[test]
+    fn packagepack_payload_requires_a_target_executable() {
+        let root = temporary_root("missing-binary");
+        let stage = stage_fixture(
+            &root,
+            &[(
+                "Packagepack.vapor.toml",
+                "[packagepack]\nbinaries = [\"loo-cast-packagepack\"]\n",
+            )],
+            &[],
+            &[("loo-cast-packagepack.exe", "windows binary")],
+        );
+
+        let result = crate::steam::smoke(
+            &stage,
+            &packagepack_options(),
+            SteamProductKind::Packagepack,
+        );
+
+        fs::remove_dir_all(root).expect("remove fixture");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Packagepack executable"));
+    }
+
+    #[test]
+    fn packagepack_payload_requires_the_shared_manifest() {
+        let root = temporary_root("missing");
+        let stage = stage_fixture(
+            &root,
+            &[],
+            &[("loo-cast-packagepack", "linux binary")],
+            &[("loo-cast-packagepack.exe", "windows binary")],
+        );
+
+        let result = crate::steam::smoke(
+            &stage,
+            &packagepack_options(),
+            SteamProductKind::Packagepack,
+        );
+
+        fs::remove_dir_all(root).expect("remove fixture");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Packagepack.vapor.toml"));
+    }
 }

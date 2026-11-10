@@ -88,15 +88,18 @@ pub fn package_application_with_context(
         &workspace_manifest,
         target_triples,
     )?;
-    context.set_phase(vapor_core::OperationPhase::Building);
-    vapor_client_provider::documentation::build(&paths, &workspace_manifest)?;
-    if context.is_cancelled() {
-        return Err("application packaging was cancelled after documentation".to_owned());
-    }
-
-    context.set_phase(vapor_core::OperationPhase::Staging);
-    let assets = vapor_client_provider::app_root::sync_release_assets(&paths, target_triples)?;
     let distribution = vapor_client_provider::distribution::DistributionManifest::load(&paths)?;
+    if distribution.application().product()
+        == vapor_client_provider::distribution::SteamProductKind::VaporRuntime
+    {
+        context.set_phase(vapor_core::OperationPhase::Building);
+        vapor_client_provider::documentation::build(&paths, &workspace_manifest)?;
+        if context.is_cancelled() {
+            return Err("application packaging was cancelled after documentation".to_owned());
+        }
+        context.set_phase(vapor_core::OperationPhase::Staging);
+        let _assets = vapor_client_provider::app_root::sync_release_assets(&paths, target_triples)?;
+    }
     let options = vapor_client_provider::distribution::StageOptions::runtime()
         .with_runtime_targets(target_triples.to_vec());
     let staged = vapor_client_provider::distribution::stage_with_options(
@@ -104,15 +107,23 @@ pub fn package_application_with_context(
         &distribution,
         options.clone(),
     )?;
-    vapor_client_provider::steam::smoke(&staged, &options)?;
+    vapor_client_provider::steam::smoke(&staged, &options, distribution.application().product())?;
 
-    Ok(format!(
-        "Packaged {} file(s) at {} for [{}]; promoted {promoted} release artifact(s), synchronized {} script(s), {} tool(s), and {} launch script(s).",
-        staged.files(),
-        staged.root().display(),
-        target_triples.join(", "),
-        assets.scripts,
-        assets.tools,
-        assets.launch_scripts,
-    ))
+    if distribution.application().product()
+        == vapor_client_provider::distribution::SteamProductKind::VaporRuntime
+    {
+        Ok(format!(
+            "Packaged {} file(s) at {} for [{}]; promoted {promoted} release artifact(s).",
+            staged.files(),
+            staged.root().display(),
+            target_triples.join(", "),
+        ))
+    } else {
+        Ok(format!(
+            "Packaged {} Packagepack depot file(s) at {} for [{}]; promoted {promoted} release artifact(s).",
+            staged.files(),
+            staged.root().display(),
+            target_triples.join(", "),
+        ))
+    }
 }

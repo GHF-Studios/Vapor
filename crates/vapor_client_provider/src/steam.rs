@@ -2,7 +2,7 @@
 
 use crate::{
     discovery::{EnvironmentPaths, InstallationPaths, ensure_contained},
-    distribution::{self, DistributionManifest, StageOptions, SteamDepotKind},
+    distribution::{self, DistributionManifest, StageOptions, SteamDepotKind, SteamProductKind},
     manifest,
 };
 use std::{
@@ -114,7 +114,11 @@ pub fn publish(
         return Err("Steam build description must contain 1 to 256 bytes".to_owned());
     }
     let stage = distribution::stage_with_options(paths, manifest, options.stage_options.clone())?;
-    smoke(&stage, &options.stage_options)?;
+    smoke(
+        &stage,
+        &options.stage_options,
+        manifest.application().product(),
+    )?;
     let fingerprint = fingerprint_stage(&stage)?;
     if options
         .expected_fingerprint
@@ -259,10 +263,18 @@ impl Hasher for Fnv64 {
 }
 
 /// Validate essential staged self-hosting inputs.
-pub fn smoke(stage: &distribution::StageReport, options: &StageOptions) -> Result<(), String> {
+pub fn smoke(
+    stage: &distribution::StageReport,
+    options: &StageOptions,
+    product: SteamProductKind,
+) -> Result<(), String> {
     let common = stage
         .depot(SteamDepotKind::Common)
         .ok_or_else(|| "staged application has no common depot".to_owned())?;
+    if product == SteamProductKind::Packagepack {
+        return smoke_packagepack(stage, options, common);
+    }
+
     for required in [manifest::APP_FILE_NAME, "docs"] {
         let path = common.root().join(required);
         if !path.exists() {
@@ -453,6 +465,139 @@ pub fn smoke(stage: &distribution::StageReport, options: &StageOptions) -> Resul
     Ok(())
 }
 
+fn smoke_packagepack(
+    stage: &distribution::StageReport,
+    options: &StageOptions,
+    common: &distribution::DepotStage,
+) -> Result<(), String> {
+    let packagepack_manifest = common.root().join("Packagepack.vapor.toml");
+    require_file(
+        packagepack_manifest.clone(),
+        "staged common depot has no Packagepack manifest",
+    )?;
+    let text = fs::read_to_string(&packagepack_manifest).map_err(|error| {
+        format!(
+            "failed to read Packagepack manifest '{}': {error}",
+            packagepack_manifest.display()
+        )
+    })?;
+    let manifest: toml::Value = toml::from_str(&text)
+        .map_err(|error| format!("invalid staged Packagepack manifest: {error}"))?;
+    let binaries = manifest
+        .get("packagepack")
+        .and_then(|packagepack| packagepack.get("binaries"))
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| "Packagepack manifest must declare packagepack.binaries".to_owned())?;
+    if binaries.len() != 1 {
+        return Err(format!(
+            "Steam Packagepack must declare exactly one executable, found {}",
+            binaries.len()
+        ));
+    }
+    let binary_name = binaries[0]
+        .as_str()
+        .filter(|name| {
+            !name.is_empty()
+                && Path::new(name)
+                    .file_name()
+                    .is_some_and(|base| base == *name)
+        })
+        .ok_or_else(|| "Packagepack binary name must be one safe filename".to_owned())?;
+
+    let common_files = files_under(common.root())?;
+    if common_files
+        != [PathBuf::from("Packagepack.vapor.toml")]
+            .into_iter()
+            .collect()
+    {
+        return Err("Packagepack shared depot may contain only Packagepack.vapor.toml".to_owned());
+    }
+
+    for target in options.runtime_targets() {
+        let kind = SteamDepotKind::for_runtime_target(target)?;
+        let depot = stage
+            .depot(kind)
+            .ok_or_else(|| format!("staged application has no {} depot", kind.label()))?;
+        let executable = match kind {
+            SteamDepotKind::Linux => binary_name.to_owned(),
+            SteamDepotKind::Windows => format!("{binary_name}.exe"),
+            SteamDepotKind::Common => {
+                return Err("runtime target resolved to common depot".to_owned());
+            }
+        };
+        let executable_path = depot.root().join(&executable);
+        require_file(
+            executable_path,
+            &format!(
+                "staged {} depot has no Packagepack executable",
+                kind.label()
+            ),
+        )?;
+
+        let files = files_under(depot.root())?;
+        for file in &files {
+            let name = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if file == Path::new(&executable) {
+                continue;
+            }
+            let sidecar = match kind {
+                SteamDepotKind::Windows => name.to_ascii_lowercase().ends_with(".dll"),
+                SteamDepotKind::Linux => name.ends_with(".so") || name.contains(".so."),
+                SteamDepotKind::Common => false,
+            };
+            if !sidecar || file.components().count() != 1 {
+                return Err(format!(
+                    "unexpected file in Packagepack {} depot: {}",
+                    kind.label(),
+                    file.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn files_under(root: &Path) -> Result<std::collections::BTreeSet<PathBuf>, String> {
+    fn visit(
+        root: &Path,
+        current: &Path,
+        files: &mut std::collections::BTreeSet<PathBuf>,
+    ) -> Result<(), String> {
+        let entries = fs::read_dir(current).map_err(|error| {
+            format!(
+                "failed to inspect staged path '{}': {error}",
+                current.display()
+            )
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|error| error.to_string())?;
+            if file_type.is_dir() {
+                visit(root, &path, files)?;
+            } else if file_type.is_file() {
+                files.insert(
+                    path.strip_prefix(root)
+                        .expect("descendant path")
+                        .to_path_buf(),
+                );
+            } else {
+                return Err(format!(
+                    "unsupported staged filesystem entry: {}",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+    let mut files = std::collections::BTreeSet::new();
+    visit(root, root, &mut files)?;
+    Ok(files)
+}
+
 fn require_file(path: PathBuf, message: &str) -> Result<(), String> {
     if path.is_file() {
         Ok(())
@@ -483,7 +628,7 @@ fn write_build_script(
     description: &str,
     preview: bool,
 ) -> Result<PathBuf, String> {
-    let templates = SteamPipeTemplates::load(paths.source().root())?;
+    let templates = SteamPipeTemplates::load(paths.installation().root())?;
     let scripts = paths.installation().root().join("output/root/scripts");
     let output = paths.installation().root().join("output/root/steam-build");
     fs::create_dir_all(&scripts).map_err(|e| e.to_string())?;
@@ -540,9 +685,9 @@ struct SteamPipeTemplates {
 }
 
 impl SteamPipeTemplates {
-    fn load(source_root: &Path) -> Result<Self, String> {
-        let root = source_root.join(STEAMPIPE_TEMPLATE_ROOT);
-        ensure_contained(source_root, &root)?;
+    fn load(installation_root: &Path) -> Result<Self, String> {
+        let root = installation_root.join(STEAMPIPE_TEMPLATE_ROOT);
+        ensure_contained(installation_root, &root)?;
         Ok(Self {
             app_build: read_template(&root, APP_BUILD_TEMPLATE)?,
             app_build_depot_entry: read_template(&root, APP_BUILD_DEPOT_ENTRY_TEMPLATE)?,
@@ -555,7 +700,7 @@ fn read_template(root: &Path, name: &str) -> Result<String, String> {
     let path = root.join(name);
     fs::read_to_string(&path).map_err(|error| {
         format!(
-            "failed to read SteamPipe template '{}': {error}\nhelp: keep Vapor Client SteamPipe templates checked in under {STEAMPIPE_TEMPLATE_ROOT}",
+            "failed to read installed SteamPipe template '{}': {error}\nhelp: repair the Vapor installation's {STEAMPIPE_TEMPLATE_ROOT} bundle",
             path.display()
         )
     })

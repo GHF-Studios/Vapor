@@ -7,7 +7,7 @@ pub use vapor_client_provider::workspace_build::{BuildMode, BuildReport};
 use vapor_client_provider::{
     app_root, content,
     discovery::{EnvironmentPaths, InstallationPaths},
-    distribution::{DistributionManifest, StageOptions},
+    distribution::{DistributionManifest, StageOptions, SteamProductKind},
     documentation,
     steam::{self, PublishOptions},
     workspace::{SourceRootKind, WorkspaceManifest},
@@ -426,8 +426,10 @@ pub fn stage_application_release(
         .filter(|branch| !branch.is_empty())
         .unwrap_or_else(|| manifest.application().development_branch());
     validate_release_inputs(account, branch, description, runtime_targets)?;
-    documentation::build(&paths, &workspace_manifest)?;
-    app_root::sync_release_assets(&paths, runtime_targets)?;
+    if manifest.application().product() == SteamProductKind::VaporRuntime {
+        documentation::build(&paths, &workspace_manifest)?;
+        app_root::sync_release_assets(&paths, runtime_targets)?;
+    }
     let mut review = stage_application_release_with_manifest(
         &paths,
         &manifest,
