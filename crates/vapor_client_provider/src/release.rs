@@ -227,7 +227,11 @@ fn run_step(
     if matches!(step, BuildStep::Fmt) {
         command.args(["--", "--check"]);
     } else if target != host_runtime_target() {
-        cross_toolchain::configure_linker_env(&mut command, installation.root(), target)?;
+        cross_toolchain::configure_linker_env(
+            &mut command,
+            &installation.user_data_root(),
+            target,
+        )?;
         command.args(cargo_target_args(target));
     }
     if matches!(step, BuildStep::Clippy) {
@@ -308,8 +312,12 @@ fn promote_release_outputs(
                 let parent = destination.parent().ok_or_else(|| {
                     format!("promoted binary has no parent: {}", destination.display())
                 })?;
-                promoted +=
-                    cross_toolchain::copy_windows_runtime_dlls(installation, target, parent)?;
+                promoted += cross_toolchain::copy_windows_runtime_dlls(
+                    installation,
+                    &paths.installation().user_data_root(),
+                    target,
+                    parent,
+                )?;
                 promoted += 1;
             }
             for library in project.libraries(target) {

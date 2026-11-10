@@ -191,7 +191,7 @@ fn write_activation_script(
     destination: &Path,
 ) -> Result<(), WorkspaceCommandError> {
     let content = format!(
-        "@echo off\r\nset \"VAPOR_HOME=%~dp0\"\r\nif \"%VAPOR_HOME:~-1%\"==\"\\\" set \"VAPOR_HOME=%VAPOR_HOME:~0,-1%\"\r\nset \"CARGO_HOME=%VAPOR_HOME%\\cargo-home\"\r\nset \"RUSTUP_HOME=%VAPOR_HOME%\\rustup-home\"\r\nset \"RUSTUP_TOOLCHAIN={}\"\r\nset \"VAPOR_STEAM_HOME=%VAPOR_HOME%\\steam\"\r\nset \"PATH=%VAPOR_HOME%;%VAPOR_HOME%\\bin;%RUSTUP_HOME%\\toolchains\\{}-{}\\bin;%VAPOR_HOME%\\cargo-home\\bin;%VAPOR_HOME%\\rustup\\bin;%VAPOR_HOME%\\steam\\steamcmd;%PATH%\"\r\n",
+        "@echo off\r\nset \"VAPOR_HOME=%~dp0\"\r\nif \"%VAPOR_HOME:~-1%\"==\"\\\" set \"VAPOR_HOME=%VAPOR_HOME:~0,-1%\"\r\nset \"CARGO_HOME=%VAPOR_HOME%\\tools\\cargo\\home\"\r\nset \"RUSTUP_HOME=%VAPOR_HOME%\\tools\\rustup\\home\"\r\nset \"RUSTUP_TOOLCHAIN={}\"\r\nset \"VAPOR_STEAM_HOME=%VAPOR_HOME%\\steam\"\r\nset \"PATH=%VAPOR_HOME%;%VAPOR_HOME%\\bin;%RUSTUP_HOME%\\toolchains\\{}-{}\\bin;%VAPOR_HOME%\\tools\\cargo\\bin;%VAPOR_HOME%\\tools\\rustup\\bin;%VAPOR_HOME%\\steam\\steamcmd;%PATH%\"\r\n",
         toolchain.toolchain.identifier(),
         toolchain.toolchain.identifier(),
         toolchain.host_triple
@@ -209,8 +209,8 @@ fn write_activation_script(
         r#"# Source this file from the Vapor app root: . ./vapor_env.sh
 VAPOR_HOME=$(CDPATH= cd -- "$(dirname -- "${{BASH_SOURCE:-$0}}")" && pwd)
 export VAPOR_HOME
-export CARGO_HOME="$VAPOR_HOME/cargo-home"
-export RUSTUP_HOME="$VAPOR_HOME/rustup-home"
+export CARGO_HOME="$VAPOR_HOME/tools/cargo/home"
+export RUSTUP_HOME="$VAPOR_HOME/tools/rustup/home"
 export RUSTUP_TOOLCHAIN="{}"
 export VAPOR_STEAM_HOME="$VAPOR_HOME/steam"
 
@@ -222,9 +222,9 @@ vapor_prepend_path() {{
 }}
 
 vapor_prepend_path "$VAPOR_HOME/steam/steamcmd"
-vapor_prepend_path "$VAPOR_HOME/rustup/bin"
+vapor_prepend_path "$VAPOR_HOME/tools/rustup/bin"
 vapor_prepend_path "$RUSTUP_HOME/toolchains/{}-{}/bin"
-vapor_prepend_path "$VAPOR_HOME/cargo-home/bin"
+vapor_prepend_path "$VAPOR_HOME/tools/cargo/bin"
 vapor_prepend_path "$VAPOR_HOME/bin"
 vapor_prepend_path "$VAPOR_HOME"
 export PATH

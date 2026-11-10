@@ -295,7 +295,11 @@ fn prepare_destination(
     let installation =
         fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
 
-    if destination.starts_with(&installation) || installation.starts_with(&destination) {
+    let managed_sources = installation.join("sources");
+    let is_managed_source_destination = destination.starts_with(&managed_sources);
+    if (destination.starts_with(&installation) || installation.starts_with(&destination))
+        && !is_managed_source_destination
+    {
         return Err(EcosystemError::OverlapsInstallation {
             destination,
             installation,
@@ -662,7 +666,7 @@ impl fmt::Display for EcosystemError {
             } => {
                 write!(
                     formatter,
-                    "source destination `{}` overlaps Vapor Installation `{}`",
+                    "source destination `{}` overlaps Vapor home `{}`; only the managed `sources` directory may contain checkouts",
                     destination.display(),
                     installation.display()
                 )

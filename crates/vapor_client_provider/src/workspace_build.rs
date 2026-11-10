@@ -465,7 +465,11 @@ fn run_step(
         && let Some(target) = target
         && target != host_runtime_target()
     {
-        cross_toolchain::configure_linker_env(&mut command, installation, target)?;
+        cross_toolchain::configure_linker_env(
+            &mut command,
+            &paths.installation().user_data_root(),
+            target,
+        )?;
     }
     if step == CargoStep::Doc {
         command.env("RUSTDOCFLAGS", "-D warnings");

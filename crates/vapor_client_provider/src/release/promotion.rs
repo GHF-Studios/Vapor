@@ -76,6 +76,7 @@ fn promote_for_targets_in_profile(
                 })?;
                 cross_toolchain::copy_windows_runtime_dlls(
                     installation,
+                    &paths.installation().user_data_root(),
                     target.triple(),
                     destination_root,
                 )?;

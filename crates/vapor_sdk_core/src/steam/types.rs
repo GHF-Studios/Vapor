@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use std::process::ExitStatus;
 
+/// Steam AppID for the locally shipped Loo-Cast product.
+pub const LOO_CAST_STEAM_APP_ID: u32 = 2_122_620;
+
 /// SDK Steam workflows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SteamCommand {

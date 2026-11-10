@@ -19,7 +19,9 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
 };
-use vapor_core::{ManagedToolchain, VaporInstallation};
+use vapor_core::{
+    ManagedToolchain, VAPOR_PRODUCT_ROOT_ENV, VaporInstallation,
+};
 
 /// Conventional installation directory containing runtime libraries.
 pub const LIBRARY_DIR: &str = "lib";
@@ -145,15 +147,17 @@ fn configured_source(installation: &InstallationPaths) -> Result<Option<PathBuf>
     }
 }
 
-/// Paths owned by the Steam installation/app root.
+/// Paths owned by the standalone Vapor home.
 #[derive(Debug, Clone)]
 pub struct InstallationPaths {
     executable: PathBuf,
     root: PathBuf,
+    user_data_root: PathBuf,
     binaries: PathBuf,
     libraries: Option<PathBuf>,
     cargo: Option<PathBuf>,
     identity_id: String,
+    product_root: Option<PathBuf>,
 }
 
 impl InstallationPaths {
@@ -168,11 +172,11 @@ impl InstallationPaths {
         Self::from_executable(&command)
     }
 
-    /// Discover an installation from the canonical executable location.
+    /// Discover the standalone Vapor home from the canonical executable location.
     ///
-    /// The executable must be laid out as `<app-root>/bin/vapor[.exe]` or
-    /// `<app-root>/bin/<target>/vapor[.exe]`.
-    /// `<app-root>/App.vapor.toml` must declare `[root]`.
+    /// The executable must be laid out as `<vapor-home>/bin/vapor[.exe]` or
+    /// `<vapor-home>/bin/<target>/vapor[.exe]` and the home must carry
+    /// `Vapor-Home.toml`.
     ///
     /// # Errors
     ///
@@ -232,17 +236,20 @@ impl InstallationPaths {
             ));
         }
         let root = candidate_root;
-        let marker = root.join(manifest::APP_FILE_NAME);
+        let marker = root.join(vapor_core::VAPOR_HOME_MANIFEST_FILE_NAME);
         if !marker.is_file() {
             return Err(format!(
-                "the installed Vapor application is missing its root manifest\n  executable: {}\n  app root:   {}\n  expected:   {}\nhelp: install or bootstrap the app root with a [root] {} beside bin/",
+                "the standalone Vapor home is missing its home marker\n  executable: {}\n  Vapor home: {}\n  expected:   {}\nhelp: install Vapor with its standalone installer",
                 executable.display(),
                 root.display(),
                 marker.display(),
-                manifest::APP_FILE_NAME
             ));
         }
-        let identity_id = require_installation_marker(&marker, &root)?;
+        let identity_id = require_vapor_home_marker(&marker, &root)?;
+        let product_root = explicit_product_root()?;
+        let user_data_root = VaporInstallation::from_explicit_root(root.clone())
+            .map_err(|error| format!("failed to resolve Vapor user-data location: {error}"))?
+            .user_data_root();
 
         let libraries = optional_directory(&root, LIBRARY_DIR)?;
         let cargo = bundled_cargo_candidates(&root)?
@@ -252,10 +259,12 @@ impl InstallationPaths {
         Ok(Self {
             executable,
             root,
+            user_data_root,
             binaries,
             libraries,
             cargo,
             identity_id,
+            product_root,
         })
     }
 
@@ -264,9 +273,14 @@ impl InstallationPaths {
         &self.executable
     }
 
-    /// Steam installation/app-root machinery boundary.
+    /// Standalone Vapor installation root.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Vapor-owned user data, rooted inside the standalone Vapor home.
+    pub fn user_data_root(&self) -> &Path {
+        &self.user_data_root
     }
 
     /// Directory containing the running Vapor executable.
@@ -274,14 +288,14 @@ impl InstallationPaths {
         &self.binaries
     }
 
-    /// App-local Vapor metadata directory.
-    pub fn vapor_dir(&self) -> PathBuf {
-        self.root.join(".vapor")
+    /// Canonical mutable data directory.
+    pub fn data_dir(&self) -> PathBuf {
+        self.root.join("data")
     }
 
     /// App-local mutable Vapor state directory.
     pub fn state_dir(&self) -> PathBuf {
-        self.vapor_dir().join("state")
+        self.data_dir().join("state")
     }
 
     /// Conventional `lib` directory, when installed.
@@ -308,6 +322,35 @@ impl InstallationPaths {
     /// Stable identity declared by the installation marker.
     pub fn identity_id(&self) -> &str {
         &self.identity_id
+    }
+
+    /// Steam-owned local product context supplied by its launch handoff.
+    /// Product files remain outside the Vapor installation and are never
+    /// inferred by treating the Steam directory as Vapor home.
+    pub fn product_root(&self) -> Option<&Path> {
+        self.product_root.as_deref()
+    }
+}
+
+fn explicit_product_root() -> Result<Option<PathBuf>, String> {
+    let Some(root) = env::var_os(VAPOR_PRODUCT_ROOT_ENV).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let root = canonical_directory(&PathBuf::from(root), "Vapor product root")?;
+    let marker = root.join(manifest::APP_FILE_NAME);
+    if !marker.is_file() {
+        return Err(format!(
+            "Vapor product root is missing {}: {}",
+            manifest::APP_FILE_NAME,
+            root.display()
+        ));
+    }
+    match manifest::read(&marker, &root)? {
+        VaporEntity::Root { .. } => Ok(Some(root)),
+        _ => Err(format!(
+            "Vapor product root marker must declare [root]: {}",
+            marker.display()
+        )),
     }
 }
 
@@ -374,15 +417,17 @@ impl SourceWorkspace {
             .to_path_buf();
         let identity_id = require_source_marker(&marker, &root)?;
 
-        if roots_overlap(&root, installation.root()) {
+        let managed_sources = installation.root().join("sources");
+        let is_managed_source = root.starts_with(&managed_sources);
+        if roots_overlap(&root, installation.root()) && !is_managed_source {
             if root == installation.root() {
                 return Err(format!(
-                    "no external source root is selected: invocation resolved the Steam installation/app root itself\n  app root: {}\nhelp: invoke Vapor from a separate source repository, or select a remembered source root in Vapor",
+                    "no source root is selected: invocation resolved the Vapor home itself\n  Vapor home: {}\nhelp: invoke Vapor from a repository under its managed sources directory, or select a source root in Vapor",
                     root.display()
                 ));
             }
             return Err(format!(
-                "the selected source root and Steam installation/app root are not disjoint\n  source root: {}\n  app root:    {}\nhelp: keep authored repositories outside the Steam installation/app root",
+                "the selected source root overlaps a runtime-owned Vapor path\n  source root: {}\n  Vapor home: {}\nhelp: keep authored repositories outside runtime paths or under Vapor home\\sources",
                 root.display(),
                 installation.root().display()
             ));
@@ -476,22 +521,16 @@ fn has_top_level_table(source: &str, expected: &str) -> bool {
     })
 }
 
-fn require_installation_marker(marker: &Path, root: &Path) -> Result<String, String> {
-    match manifest::read(marker, root)? {
-        VaporEntity::Root { id, .. } => Ok(id),
-        VaporEntity::Registry { id, .. } => Err(format!(
-            "highest Vapor manifest '{}' describes registry '{id}', not the Steam installation/app root; the installation must contain [root]",
-            marker.display()
-        )),
-        VaporEntity::Workspace { id, .. } => Err(format!(
-            "highest Vapor manifest '{}' describes workspace '{id}', not the Steam installation/app root; the installation must contain [root]",
-            marker.display()
-        )),
-        VaporEntity::Content { kind, id, .. } => Err(format!(
-            "highest Vapor manifest '{}' describes {kind} '{id}', not the Steam installation/app root; the installation must contain [root]",
-            marker.display()
-        )),
-    }
+fn require_vapor_home_marker(marker: &Path, root: &Path) -> Result<String, String> {
+    VaporInstallation::from_explicit_root(root.to_path_buf())
+        .map_err(|error| format!("invalid Vapor home marker '{}': {error}", marker.display()))?;
+    let source = fs::read_to_string(marker)
+        .map_err(|error| format!("failed to read '{}': {error}", marker.display()))?;
+    let id = source
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("id = \"")?.strip_suffix('"'))
+        .ok_or_else(|| format!("Vapor home marker '{}' has no id", marker.display()))?;
+    Ok(id.to_owned())
 }
 
 fn require_source_marker(marker: &Path, root: &Path) -> Result<String, String> {
@@ -566,7 +605,7 @@ fn optional_directory(root: &Path, name: &str) -> Result<Option<PathBuf>, String
 
 fn bundled_cargo_candidates(root: &Path) -> Result<Vec<PathBuf>, String> {
     let executable = format!("cargo{}", env::consts::EXE_SUFFIX);
-    let toolchains_root = root.join("rustup-home").join("toolchains");
+    let toolchains_root = root.join("tools/rustup/home/toolchains");
     let installation = VaporInstallation::from_explicit_root(root.to_path_buf())
         .map_err(|error| error.to_string())?;
     let pin =
@@ -602,7 +641,8 @@ fn bundled_cargo_candidates(root: &Path) -> Result<Vec<PathBuf>, String> {
         .into_iter()
         .map(|entry| entry.path().join("bin").join(&executable))
         .collect::<Vec<_>>();
-    candidates.push(root.join("cargo-home").join("bin").join(&executable));
+    candidates.push(root.join("tools/cargo/home/bin").join(&executable));
+    candidates.push(root.join("tools/cargo/bin").join(&executable));
     candidates.push(root.join("bin").join(executable));
     Ok(candidates)
 }
@@ -631,7 +671,7 @@ mod tests {
                 .expect("system clock after epoch")
                 .as_nanos()
         ));
-        let toolchains = root.join("rustup-home/toolchains");
+        let toolchains = root.join("tools/rustup/home/toolchains");
         let pinned = toolchains.join("1.97.0-x86_64-unknown-linux-gnu/bin/cargo");
         let ambient = toolchains.join("1.83.0-x86_64-unknown-linux-gnu/bin/cargo");
         fs::create_dir_all(pinned.parent().expect("pinned cargo parent"))
@@ -648,7 +688,11 @@ mod tests {
             "schema = 1\nchannel = \"stable\"\nversion = \"1.97.0\"\ndate = \"2026-07-09\"\n",
         )
         .expect("write installed pin");
-        fs::write(root.join("App.vapor.toml"), "[root]\n").expect("write app installation marker");
+        fs::write(
+            root.join(vapor_core::VAPOR_HOME_MANIFEST_FILE_NAME),
+            "schema = 1\n\n[vapor]\nid = \"ghf-studios/vapor\"\n",
+        )
+        .expect("write Vapor home marker");
 
         let candidates = bundled_cargo_candidates(&root).expect("discover bundled Cargo");
 

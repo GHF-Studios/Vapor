@@ -39,7 +39,7 @@ pub enum LocalCapability {
 #[serde(rename_all = "kebab-case")]
 pub enum AuthorityRequirement {
     WorkshopPublisher,
-    RootPublisher,
+    ApplicationPublisher,
 }
 
 /// Static product classification and prerequisites for a client action.

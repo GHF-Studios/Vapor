@@ -104,12 +104,15 @@ pub fn package_application_with_context(
         &distribution,
         options.clone(),
     )?;
-    vapor_client_provider::steam::smoke(&staged, &options)?;
+    vapor_client_provider::steam::smoke(&staged, &distribution, &options)?;
+    let (standalone_root, standalone_files) =
+        vapor_client_provider::distribution::stage_standalone_bundles(&paths, target_triples)?;
 
     Ok(format!(
-        "Packaged {} file(s) at {} for [{}]; promoted {promoted} release artifact(s), synchronized {} script(s), {} tool(s), and {} launch script(s).",
+        "Packaged {} Steam depot file(s) at {} and {standalone_files} standalone bundle file(s) under {}; promoted {promoted} release artifact(s) for [{}], synchronized {} script(s), {} tool(s), and {} launch script(s).",
         staged.files(),
         staged.root().display(),
+        standalone_root.display(),
         target_triples.join(", "),
         assets.scripts,
         assets.tools,

@@ -3,7 +3,6 @@
 mod content;
 mod environment;
 mod repair;
-mod root;
 mod steam;
 mod template;
 mod toolchain;
@@ -23,7 +22,6 @@ pub enum StateSurface {
     AuthoredComposition,
     BuildArtifact,
     Publication,
-    RootRelease,
     Steam,
 }
 
@@ -55,7 +53,6 @@ pub fn describe_command(command: &SdkCommand) -> CommandSpec {
             &["display toolchain, template, and project state"],
         ),
         SdkCommand::Environment(command) => environment::describe(command),
-        SdkCommand::Root(command) => root::describe(command),
         SdkCommand::Steam(command) => steam::describe(command),
         SdkCommand::Workspace(command) => workspace::describe(command),
         SdkCommand::Repair(command) => repair::describe(command),

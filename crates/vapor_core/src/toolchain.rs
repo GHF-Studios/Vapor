@@ -26,14 +26,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
-const RUSTUP_HOME_DIR: &str = "rustup-home";
-const CARGO_HOME_DIR: &str = "cargo-home";
-const LOCAL_RUSTUP_DIR: &str = "rustup/bin";
+const RUSTUP_HOME_DIR: &str = "tools/rustup/home";
+const CARGO_HOME_DIR: &str = "tools/cargo/home";
+const LOCAL_RUSTUP_DIR: &str = "tools/rustup/bin";
 
 const INSTALLATION_METADATA_DIR: &str = "metadata";
 const TOOLCHAIN_METADATA_FILE: &str = "toolchain.toml";
 const TOOLCHAIN_METADATA_SCHEMA: u32 = 1;
 pub const WINDOWS_GNU_TARGET: &str = "x86_64-pc-windows-gnullvm";
+pub const LINUX_GNU_TARGET: &str = "x86_64-unknown-linux-gnu";
+pub const DEVELOPER_TARGETS: &[&str] = &[LINUX_GNU_TARGET, WINDOWS_GNU_TARGET];
 
 /// Rust toolchain identity and roots applied to a Vapor-managed child process.
 ///
@@ -304,29 +306,31 @@ impl ManagedToolchain {
             });
         }
 
-        let mut target = crate::managed_process::background_command(&rustup);
-        target
-            .args([
-                "target",
-                "add",
-                WINDOWS_GNU_TARGET,
-                "--toolchain",
-                self.pin.identifier(),
-            ])
-            .env("RUSTUP_HOME", &self.rustup_home)
-            .env("CARGO_HOME", &self.cargo_home);
-        let status = crate::managed_process::run(&mut target, |stream, text| {
-            report_output(stream, "rustup target add", text)
-        })
-        .map_err(|message| ToolchainError::Process {
-            path: rustup.clone(),
-            message,
-        })?;
-        if !status.success() {
-            return Err(ToolchainError::RustupFailed {
-                path: rustup,
-                status,
-            });
+        for target_name in DEVELOPER_TARGETS {
+            let mut target = crate::managed_process::background_command(&rustup);
+            target
+                .args([
+                    "target",
+                    "add",
+                    target_name,
+                    "--toolchain",
+                    self.pin.identifier(),
+                ])
+                .env("RUSTUP_HOME", &self.rustup_home)
+                .env("CARGO_HOME", &self.cargo_home);
+            let status = crate::managed_process::run(&mut target, |stream, text| {
+                report_output(stream, "rustup target add", text)
+            })
+            .map_err(|message| ToolchainError::Process {
+                path: rustup.clone(),
+                message,
+            })?;
+            if !status.success() {
+                return Err(ToolchainError::RustupFailed {
+                    path: rustup.clone(),
+                    status,
+                });
+            }
         }
 
         if !self.is_installed() {
@@ -336,11 +340,13 @@ impl ManagedToolchain {
             });
         }
 
-        if !self.target_is_installed(WINDOWS_GNU_TARGET) {
-            return Err(ToolchainError::TargetIncomplete {
-                target: WINDOWS_GNU_TARGET,
-                toolchain: self.pin.version.clone(),
-            });
+        for target_name in DEVELOPER_TARGETS {
+            if !self.target_is_installed(target_name) {
+                return Err(ToolchainError::TargetIncomplete {
+                    target: target_name,
+                    toolchain: self.pin.version.clone(),
+                });
+            }
         }
 
         self.persist_installation_metadata()?;
@@ -643,7 +649,7 @@ impl fmt::Display for ToolchainError {
                 write!(
                     formatter,
                     "Vapor-managed Rust {version} is not installed; expected Cargo \
-                     at `{}`; use the Vapor Installer to establish Content Developer capability",
+                     at `{}`; use the Vapor Installer to complete Developer setup",
                     expected.display()
                 )
             }
@@ -780,7 +786,11 @@ mod tests {
             "schema = 1\nchannel = \"stable\"\nversion = \"1.97.0\"\ndate = \"2026-01-01\"\n",
         )
         .expect("write installation toolchain metadata");
-        fs::write(root.join("App.vapor.toml"), "[root]\n").expect("write app manifest");
+        fs::write(
+            root.join("Vapor-Home.toml"),
+            "schema = 1\n\n[vapor]\nid = \"ghf-studios/vapor\"\n",
+        )
+        .expect("write Vapor home marker");
 
         let installation = VaporInstallation::from_explicit_root(root.clone())
             .expect("construct explicit installation context");
@@ -804,7 +814,11 @@ mod tests {
             unique_suffix()
         ));
         fs::create_dir_all(&root).expect("create app root");
-        fs::write(root.join("App.vapor.toml"), "[root]\n").expect("write app manifest");
+        fs::write(
+            root.join("Vapor-Home.toml"),
+            "schema = 1\n\n[vapor]\nid = \"ghf-studios/vapor\"\n",
+        )
+        .expect("write Vapor home marker");
 
         let installation = VaporInstallation::from_explicit_root(root.clone())
             .expect("construct explicit installation context");

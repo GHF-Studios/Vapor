@@ -40,7 +40,7 @@ const METADATA_DIR: &str = "metadata";
 
 const BIN_DIR: &str = "bin";
 
-const RUSTUP_DIR: &str = "rustup/bin";
+const RUSTUP_DIR: &str = "tools/rustup/bin";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EcosystemDistributionManifest {

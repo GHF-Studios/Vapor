@@ -331,6 +331,7 @@ fn stage_runtime_outputs(
     if !staged.binaries.is_empty() {
         cross_toolchain::copy_windows_runtime_dlls(
             paths.installation().root(),
+            &paths.installation().user_data_root(),
             runtime_target.triple(),
             &bin_root,
         )?;
@@ -338,6 +339,7 @@ fn stage_runtime_outputs(
     if !staged.libraries.is_empty() {
         cross_toolchain::copy_windows_runtime_dlls(
             paths.installation().root(),
+            &paths.installation().user_data_root(),
             runtime_target.triple(),
             &lib_root,
         )?;

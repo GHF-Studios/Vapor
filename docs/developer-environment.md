@@ -7,21 +7,23 @@ their own installation flows.
 
 ## Role ownership
 
-`Composer` and higher currently require the pinned Vapor-managed
-Rust/Cargo toolchain, Rust Analyzer/components, the pinned managed Tracy
-profiler, and Tracy's managed saved-trace analysis utility.
+The `Developer` role requires the pinned Vapor-managed Rust/Cargo toolchain,
+Rust Analyzer/components, both supported Rust targets, both cross-linker
+toolsets, the pinned managed Tracy profiler, and Tracy's saved-trace analysis
+utility. Developer setup is mandatory; the Installer does not offer a partial
+or skipped toolset.
 
-Composer also receives the pinned Windows `gnullvm` Rust target and matching
-UCRT-based LLVM-MinGW linker/runtime bundle, so Windows package builds are
-available from supported developer installations without a second ad-hoc
-setup path. Player installations remain free of these authoring tools.
+For Linux package builds, Vapor manages Zig and a target-normalizing compiler
+wrapper. For Windows GNU builds, it manages the matching UCRT LLVM-MinGW
+compiler, archiver, and runtime. These tools and Rustup state are owned by the
+Vapor installation. Player installations remain free of these authoring tools.
 
 Promotion reconciles this complete set before persisting the higher role.
 Demotion is non-destructive and preserves installed tooling.
 
 ## Canonical reconciliation
 
-All ordinary developer-tool provisioning converges on
+All Developer-tool provisioning converges on
 `DeveloperEnvironment::reconcile`.
 
 It is used by role promotion, `vapor toolchain install`,

@@ -92,8 +92,6 @@ impl From<ActionProfile> for ActionProfileSnapshot {
 pub struct ClientSnapshot {
     pub revision: ClientRevision,
     pub host: HostSummary,
-    #[serde(default)]
-    pub root_distribution: RootDistributionIdentitySnapshot,
     pub active_composition_id: Option<String>,
     #[serde(default)]
     pub durable_state: DurableStateSnapshot,
@@ -119,8 +117,6 @@ pub struct ClientSnapshot {
     #[serde(default)]
     pub workshop: WorkshopSnapshot,
     #[serde(default)]
-    pub root_publishing: Option<RootPublishingSnapshot>,
-    #[serde(default)]
     pub application_release: Option<ApplicationReleaseSnapshot>,
     #[serde(default)]
     pub profile_traces: Vec<ProfileTraceSnapshot>,
@@ -139,6 +135,10 @@ pub struct InstallationRoleSnapshot {
     pub rust_ready: bool,
     #[serde(default)]
     pub rust_analyzer_ready: bool,
+    #[serde(default)]
+    pub linux_gnu_target_ready: bool,
+    #[serde(default)]
+    pub linux_gnu_linker_ready: bool,
     pub windows_gnu_target_ready: bool,
     pub windows_gnu_linker_ready: bool,
     pub tracy_profiler_ready: bool,
@@ -146,11 +146,19 @@ pub struct InstallationRoleSnapshot {
     pub error: Option<String>,
 }
 
-/// Canonical Steam identity for the installed Vapor root application.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RootDistributionIdentitySnapshot {
-    pub app_id: u32,
-    pub depot_id: u32,
+impl InstallationRoleSnapshot {
+    /// Whether the complete tool set promised by the Developer role is ready.
+    pub fn developer_tools_ready(&self) -> bool {
+        self.error.is_none()
+            && self.rust_ready
+            && self.rust_analyzer_ready
+            && self.linux_gnu_target_ready
+            && self.linux_gnu_linker_ready
+            && self.windows_gnu_target_ready
+            && self.windows_gnu_linker_ready
+            && self.tracy_profiler_ready
+            && self.tracy_analysis_ready
+    }
 }
 
 /// A saved Tracy capture projected from the Client service's managed library.
@@ -233,26 +241,6 @@ pub struct AvailableSuperworkspaceRepositorySnapshot {
     pub acquired: bool,
 }
 
-/// Service-owned preview and outcome for a first-party Steam root upload.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RootPublishingSnapshot {
-    pub review_id: String,
-    pub planned: bool,
-    pub app_id: u32,
-    pub depot_id: u32,
-    pub account: String,
-    pub description: String,
-    pub set_live: Option<String>,
-    pub steamcmd: String,
-    pub package_root: String,
-    pub copied_files: usize,
-    #[serde(default)]
-    pub fingerprint: String,
-    pub included_roots: Vec<String>,
-    pub status: Option<String>,
-    pub succeeded: bool,
-}
-
 /// Service-owned review or outcome for the split-depot application release.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApplicationReleaseSnapshot {
@@ -265,7 +253,7 @@ pub struct ApplicationReleaseSnapshot {
     pub account: String,
     pub description: String,
     #[serde(default)]
-    pub release_build_validated: bool,
+    pub payload_reviewed: bool,
     pub package_root: String,
     pub build_script: String,
     pub files: usize,

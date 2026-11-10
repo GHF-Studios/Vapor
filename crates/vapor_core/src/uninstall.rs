@@ -3,7 +3,9 @@
 //! Ordinary uninstall removes machine integration only. Vapor-owned OS user
 //! data and authored source survive unless explicitly purged.
 
-use crate::installation::{InstallationError, VAPOR_HOME_ENV, VaporInstallation};
+use crate::installation::{
+    InstallationError, VAPOR_HOME_ENV, VAPOR_HOME_MANIFEST_FILE_NAME, VaporInstallation,
+};
 use crate::source::{SourceError, source_state};
 use crate::superworkspace::{
     SUPERWORKSPACE_MANIFEST_FILE_NAME, SuperworkspaceError, VaporSuperworkspace,
@@ -15,16 +17,14 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const LEGACY_APP_ROOT_ENV: &str = "LOO_CAST_APP_ROOT";
 const PROFILE_BLOCK_START: &str = "# >>> Vapor managed PATH >>>";
 const PROFILE_BLOCK_END: &str = "# <<< Vapor managed PATH <<<";
-const LEGACY_APP_MUTABLE_DIRS: &[&str] = &["rustup-home", "cargo-home", "development"];
 const MANAGED_SUPERWORKSPACE_REPOSITORIES: &[&str] =
     &["Loo-Cast", "Vapor-Client", "Vapor-Platform-Server"];
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UninstallOptions {
-    pub purge_app_external: bool,
+    pub purge_user_data: bool,
     pub purge_superworkspace: bool,
 }
 
@@ -34,8 +34,7 @@ pub struct UninstallReport {
     pub user_data_root: PathBuf,
     pub superworkspace_root: Option<PathBuf>,
     pub integration: Vec<String>,
-    pub legacy_app_state_removed: Vec<PathBuf>,
-    pub app_external_purged: bool,
+    pub user_data_purged: bool,
     pub superworkspace_purged: bool,
 }
 
@@ -68,45 +67,29 @@ pub fn uninstall_installation_for(
         options,
     )?;
 
-    if !options.purge_app_external && installation.root.join("state").is_dir() {
-        installation
-            .ensure_state_root()
-            .map_err(UninstallError::Installation)?;
-    }
-
-    let legacy_app_state_removed = remove_legacy_app_mutable_state(installation)?;
-
-    let mut app_external_purged = false;
     let mut superworkspace_purged = false;
 
     if let Some(superworkspace) = &preflight.superworkspace_purge_root {
         superworkspace_purged = remove_preflighted_tree(superworkspace)?;
     }
 
-    if let Some(app_external) = &preflight.app_external_purge_root {
-        app_external_purged = remove_preflighted_tree(app_external)?;
-
-        let legacy_state = installation.root.join("state");
-        if legacy_state.is_dir() {
-            fs::remove_dir_all(&legacy_state).map_err(|source| UninstallError::Io {
-                path: legacy_state,
-                source,
-            })?;
-            app_external_purged = true;
-        }
-    }
-
-    // Machine integration is committed last. Safety validation above has
-    // already completed, so a refused purge cannot partially uninstall Vapor.
+    // Remove machine integration only after all safety-sensitive paths pass
+    // preflight. Then remove the runtime payload while retaining user-owned
+    // content by default.
     let integration = remove_machine_integration(installation)?;
+    let user_data_purged = if let Some(user_data) = &preflight.user_data_purge_root {
+        remove_preflighted_tree(user_data)?
+    } else {
+        remove_runtime_payload(installation)?;
+        false
+    };
 
     Ok(UninstallReport {
         installation_root: installation.root.clone(),
         user_data_root,
         superworkspace_root,
         integration,
-        legacy_app_state_removed,
-        app_external_purged,
+        user_data_purged,
         superworkspace_purged,
     })
 }
@@ -114,7 +97,7 @@ pub fn uninstall_installation_for(
 #[derive(Debug)]
 struct UninstallPreflight {
     superworkspace_purge_root: Option<PathBuf>,
-    app_external_purge_root: Option<PathBuf>,
+    user_data_purge_root: Option<PathBuf>,
 }
 
 fn preflight_uninstall(
@@ -126,9 +109,11 @@ fn preflight_uninstall(
     preflight_machine_integration_removal()?;
 
     let superworkspace_purge_root = if let Some(superworkspace) = superworkspace_root {
+        let managed_sources = installation.root.join("sources");
         let root = preflight_owned_tree(
             superworkspace,
             &[installation.root.as_path(), user_data_root],
+            Some(&managed_sources),
         )?
         .ok_or_else(|| UninstallError::UnsafePurgeRoot {
             path: superworkspace.to_path_buf(),
@@ -140,21 +125,29 @@ fn preflight_uninstall(
         None
     };
 
-    let app_external_purge_root = if options.purge_app_external {
-        preflight_owned_tree(user_data_root, &[installation.root.as_path()])?
+    let user_data_purge_root = if options.purge_user_data {
+        let root = fs::canonicalize(user_data_root).map_err(|source| UninstallError::Io {
+            path: user_data_root.to_path_buf(),
+            source,
+        })?;
+        if root.parent().is_none() || home_dir().is_some_and(|home| same_path(&root, &home)) {
+            return Err(UninstallError::UnsafePurgeRoot { path: root });
+        }
+        Some(root)
     } else {
         None
     };
 
     Ok(UninstallPreflight {
         superworkspace_purge_root,
-        app_external_purge_root,
+        user_data_purge_root,
     })
 }
 
 fn preflight_owned_tree(
     path: &Path,
     protected: &[&Path],
+    allowed_managed_child: Option<&Path>,
 ) -> Result<Option<PathBuf>, UninstallError> {
     if !path.exists() {
         return Ok(None);
@@ -169,9 +162,18 @@ fn preflight_owned_tree(
         return Err(UninstallError::UnsafePurgeRoot { path });
     }
 
+    let is_allowed_managed_child = allowed_managed_child
+        .and_then(|allowed| fs::canonicalize(allowed).ok())
+        .is_some_and(|allowed| same_path(&path, &allowed));
+
     for protected in protected {
         let protected = fs::canonicalize(protected).unwrap_or_else(|_| (*protected).to_path_buf());
         if path.starts_with(&protected) || protected.starts_with(&path) {
+            if is_allowed_managed_child
+                && path.parent().is_some_and(|parent| same_path(parent, &protected))
+            {
+                continue;
+            }
             return Err(UninstallError::UnsafePurgeRoot { path });
         }
     }
@@ -261,27 +263,37 @@ fn active_superworkspace(installation: &VaporInstallation) -> Result<PathBuf, Un
     })
 }
 
-fn remove_legacy_app_mutable_state(
-    installation: &VaporInstallation,
-) -> Result<Vec<PathBuf>, UninstallError> {
-    let mut removed = Vec::new();
-
-    for name in LEGACY_APP_MUTABLE_DIRS {
+fn remove_runtime_payload(installation: &VaporInstallation) -> Result<(), UninstallError> {
+    for name in ["bin", "docs", "examples", "metadata", "resources", "tools"] {
         let path = installation.root.join(name);
-
-        if !path.exists() {
-            continue;
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+                fs::remove_file(&path).map_err(|source| UninstallError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            }
+            Ok(_) => fs::remove_dir_all(&path).map_err(|source| UninstallError::Io {
+                path: path.clone(),
+                source,
+            })?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(UninstallError::Io {
+                    path: path.clone(),
+                    source,
+                });
+            }
         }
-
-        fs::remove_dir_all(&path).map_err(|source| UninstallError::Io {
-            path: path.clone(),
+    }
+    let marker = installation.root.join(VAPOR_HOME_MANIFEST_FILE_NAME);
+    if marker.is_file() {
+        fs::remove_file(&marker).map_err(|source| UninstallError::Io {
+            path: marker.clone(),
             source,
         })?;
-
-        removed.push(path);
     }
-
-    Ok(removed)
+    Ok(())
 }
 
 fn remove_machine_integration(
@@ -289,33 +301,13 @@ fn remove_machine_integration(
 ) -> Result<Vec<String>, UninstallError> {
     let mut removed = Vec::new();
 
-    if let Some(anchor) = legacy_anchor_file()
-        && anchor.is_file()
-        && anchor_targets_installation(&anchor, &installation.root)?
-    {
-        fs::remove_file(&anchor).map_err(|source| UninstallError::Io {
-            path: anchor.clone(),
-            source,
-        })?;
-        removed.push(format!(
-            "removed legacy app-root anchor {}",
-            anchor.display()
-        ));
-
-        if let Some(parent) = anchor.parent() {
-            let _ = fs::remove_dir(parent);
-        }
-    }
-
     if cfg!(windows) {
         if remove_windows_user_path(installation)? {
             removed.push("removed Vapor host binary directory from user PATH".to_owned());
         }
 
-        for variable in [VAPOR_HOME_ENV, LEGACY_APP_ROOT_ENV] {
-            if remove_windows_user_environment(variable, &installation.root)? {
-                removed.push(format!("removed user environment variable {variable}"));
-            }
+        if remove_windows_user_environment(VAPOR_HOME_ENV, &installation.root)? {
+            removed.push(format!("removed user environment variable {VAPOR_HOME_ENV}"));
         }
     } else {
         for profile in shell_profiles() {
@@ -329,23 +321,6 @@ fn remove_machine_integration(
     }
 
     Ok(removed)
-}
-
-fn legacy_anchor_file() -> Option<PathBuf> {
-    if cfg!(windows) {
-        env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .or_else(|| {
-                env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("AppData/Roaming"))
-            })
-            .map(|root| root.join("loo_cast/app_root.path"))
-    } else {
-        env::var_os("XDG_CONFIG_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .map(|root| root.join("loo_cast/app_root.path"))
-    }
 }
 
 fn shell_profiles() -> Vec<PathBuf> {
@@ -417,15 +392,12 @@ fn remove_managed_profile_block(
 }
 
 fn remove_windows_user_path(installation: &VaporInstallation) -> Result<bool, UninstallError> {
-    let target = if cfg!(all(
-        target_arch = "x86_64",
-        target_os = "windows",
-        target_env = "msvc"
-    )) {
-        "x86_64-pc-windows-msvc"
-    } else {
-        return Ok(false);
-    };
+    let target = crate::HostTarget::current()
+        .map_err(|error| UninstallError::Io {
+            path: installation.root.clone(),
+            source: io::Error::other(error),
+        })?
+        .triple();
 
     let bin = installation.root.join("bin").join(target);
     let legacy = format!(r"%VAPOR_HOME%\bin\{target}");
@@ -498,24 +470,6 @@ if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase))
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).contains("removed"))
-}
-
-fn anchor_targets_installation(
-    anchor: &Path,
-    installation_root: &Path,
-) -> Result<bool, UninstallError> {
-    let contents = fs::read_to_string(anchor).map_err(|source| UninstallError::Io {
-        path: anchor.to_path_buf(),
-        source,
-    })?;
-    Ok(anchor_contents_target_installation(
-        &contents,
-        installation_root,
-    ))
-}
-
-fn anchor_contents_target_installation(contents: &str, installation_root: &Path) -> bool {
-    contents.trim() == installation_root.to_string_lossy()
 }
 
 fn managed_profile_block_targets(source: &str, installation_root: &Path) -> bool {
@@ -850,8 +804,7 @@ impl std::error::Error for UninstallError {
 #[cfg(test)]
 mod tests {
     use super::{
-        PROFILE_BLOCK_END, PROFILE_BLOCK_START, anchor_contents_target_installation,
-        managed_profile_block_targets,
+        PROFILE_BLOCK_END, PROFILE_BLOCK_START, managed_profile_block_targets,
     };
     use crate::VAPOR_HOME_ENV;
     use std::path::Path;
@@ -867,20 +820,5 @@ mod tests {
 
         assert!(managed_profile_block_targets(&profile, primary));
         assert!(!managed_profile_block_targets(&profile, other));
-    }
-
-    #[test]
-    fn legacy_anchor_cleanup_matches_only_the_selected_installation() {
-        let primary = Path::new("/opt/vapor-primary");
-        let other = Path::new("/opt/vapor-other");
-
-        assert!(anchor_contents_target_installation(
-            " /opt/vapor-primary\n",
-            primary
-        ));
-        assert!(!anchor_contents_target_installation(
-            "/opt/vapor-primary\n",
-            other
-        ));
     }
 }

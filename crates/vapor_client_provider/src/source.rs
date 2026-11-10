@@ -59,7 +59,8 @@ pub(crate) enum GeneratedContentProject {
 
 /// Read the current app's Steam AppID for content templates.
 pub(crate) fn installation_app_id(installation: &InstallationPaths) -> Result<u32, String> {
-    let marker = installation.root().join(manifest::APP_FILE_NAME);
+    let product_root = installation.product_root().unwrap_or_else(|| installation.root());
+    let marker = product_root.join(manifest::APP_FILE_NAME);
     let source = fs::read_to_string(&marker)
         .map_err(|error| format!("failed to read '{}': {error}", marker.display()))?;
     #[derive(Deserialize)]

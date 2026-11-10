@@ -1,8 +1,8 @@
 //! Workshop/content discovery, packaging, installation state, and receipts.
 //!
 //! The module keeps SteamUGC and filesystem staging behind Vapor content
-//! operations. Authored intent is read from source role-specific manifests; generated
-//! app-owned state is written under the Steam installation/app root.
+//! operations. Authored intent is read from source role-specific manifests;
+//! generated state belongs to the standalone Vapor home.
 
 use crate::{
     discovery::{EnvironmentPaths, InstallationPaths, ensure_contained},
@@ -72,9 +72,13 @@ pub struct ContentLayout {
 }
 
 impl ContentLayout {
-    /// Build layout paths under the Steam installation/app root.
+    /// Build mutable content paths under the standalone Vapor home.
+    ///
+    /// Steam product files are accessed through `InstallationPaths::product_root`
+    /// and are never used as a destination for downloads, caches, or generated
+    /// content state.
     pub fn new(installation: &InstallationPaths) -> Self {
-        let app_content = installation.root().join("content");
+        let app_content = installation.user_data_root().join("content");
         let state = installation.state_dir().join("content");
         Self {
             steam_downloads: app_content.join("workshop/downloads"),
@@ -129,7 +133,7 @@ impl ContentLayout {
         &self.output_packages
     }
 
-    /// Temporary staging roots confined to the app-owned content output tree.
+    /// Temporary staging roots confined to Vapor-home content output.
     pub fn output_temporary(&self) -> &Path {
         &self.output_temporary
     }
@@ -374,7 +378,17 @@ pub fn acquire(
     }
 
     if let Some(seed) = root_content_seed(installation, selector)? {
-        return acquire_workshop_item(installation, seed.app_id, &seed.workshop_id, account);
+        if seed.source.as_deref() == Some("steam-depot") {
+            let path = product_path_for_seed(installation, &seed)?;
+            return Err(format!(
+                "'{}' is installed by Steam at {}; it is a local product and cannot be acquired as Workshop content",
+                seed.id,
+                path.display()
+            ));
+        }
+        if let Some(workshop_id) = seed.workshop_id.as_deref() {
+            return acquire_workshop_item(installation, seed.app_id, workshop_id, account);
+        }
     }
 
     if is_published_file_id(selector) {
@@ -714,15 +728,17 @@ pub fn root_content_seed_workshop_items(
         let Some(seed) = root_content_seed(installation, selector)? else {
             continue;
         };
-        let published_file_id = seed
-            .workshop_id
+        let Some(workshop_id) = seed.workshop_id.as_deref() else {
+            continue;
+        };
+        let published_file_id = workshop_id
             .parse::<u64>()
             .ok()
             .filter(|id| *id != 0)
             .ok_or_else(|| {
                 format!(
                     "root seed for '{}' has invalid Workshop item ID '{}'",
-                    seed.id, seed.workshop_id
+                    seed.id, workshop_id
                 )
             })?;
         downloads.insert((seed.app_id, published_file_id));
@@ -1110,6 +1126,16 @@ pub fn repair(
     for report in reports {
         if report.ok() {
             continue;
+        }
+        if load_index(&layout)?
+            .installed
+            .get(report.artifact_id())
+            .is_some_and(|record| record.source == "steam-depot")
+        {
+            return Err(format!(
+                "Steam-depot product '{}' failed verification; repair it through Steam so Vapor never mutates depot-owned files",
+                report.artifact_id()
+            ));
         }
         let corrupt = layout.installed().join(report.artifact_id());
         if corrupt.exists() {
@@ -1542,10 +1568,17 @@ impl vapor_client_domain::InstallContentProvider for LocalInstallProvider<'_> {
         }
 
         if let Some(seed) = root_content_seed(self.installation, selector)? {
+            if seed.source.as_deref() == Some("steam-depot") {
+                let root = product_path_for_seed(self.installation, &seed)?;
+                let artifact = read_deployed_manifest(&root)?;
+                validate_root_seed_artifact(&seed, &artifact)?;
+                return self.retain_artifact(artifact, InstallPlanSource::RootSeed, true);
+            }
             return Ok(InstallCandidateAvailability::Unavailable {
                 message: Some(format!(
                     "{} is supplied by Workshop item {}, but its manifest must be acquired before its dependencies can be resolved",
-                    seed.id, seed.workshop_id,
+                    seed.id,
+                    seed.workshop_id.as_deref().unwrap_or("an unspecified item"),
                 )),
                 warning: false,
                 seed: Some(seed_plan_node(seed)),
@@ -1695,7 +1728,27 @@ impl vapor_client_domain::InstallContentProvider for LocalInstallProvider<'_> {
                 return Ok(InstallCandidateAvailability::Unavailable {
                     message: Some(format!(
                         "Workshop seed {} resolves to '{}', but dependency identity must be '{}'",
-                        seed.workshop_id, seed.id, id,
+                        seed.workshop_id.as_deref().unwrap_or("(no Workshop ID)"),
+                        seed.id,
+                        id,
+                    )),
+                    warning: false,
+                    seed: None,
+                });
+            }
+            if seed.source.as_deref() == Some("steam-depot") {
+                let root = product_path_for_seed(self.installation, &seed)?;
+                let artifact = read_deployed_manifest(&root)?;
+                validate_root_seed_artifact(&seed, &artifact)?;
+                if version_satisfies(artifact.version(), Some(&requirement.version)) {
+                    return self.retain_artifact(artifact, InstallPlanSource::RootSeed, true);
+                }
+                return Ok(InstallCandidateAvailability::Unavailable {
+                    message: Some(format!(
+                        "Steam-depot product '{}' has version {}, which does not satisfy {}",
+                        id,
+                        artifact.version().unwrap_or("(unversioned)"),
+                        requirement.version,
                     )),
                     warning: false,
                     seed: None,
@@ -1730,7 +1783,7 @@ fn seed_plan_node(seed: RootContentSeed) -> InstallPlanNode {
         id: seed.id,
         version: None,
         kind: seed.kind,
-        published_file_id: Some(seed.workshop_id),
+        published_file_id: seed.workshop_id,
         source: InstallPlanSource::RootSeed,
         already_installed: false,
         dependencies: Vec::new(),
@@ -1906,20 +1959,30 @@ fn install_selector(
         ));
     }
 
+    if let Some(seed) = root_content_seed(context.installation, selector)?
+        && seed.source.as_deref() == Some("steam-depot")
+    {
+        install_steam_depot_product(context, &seed, expected_id, parent_kind, relationship, state)?;
+        return Ok(());
+    }
+
     if state.index.cache_by_selector(selector).is_none()
         && let Some(seed) = root_content_seed(context.installation, selector)?
     {
+        let workshop_id = seed.workshop_id.as_deref().ok_or_else(|| {
+            format!("root content '{}' has no Workshop ID and is not a Steam-depot product", seed.id)
+        })?;
         let acquired = acquire_workshop_item(
             context.installation,
             seed.app_id,
-            &seed.workshop_id,
+            workshop_id,
             context.account,
         )?;
         state.index.caches.insert(
             acquired.artifact_id().to_owned(),
             CacheRecord {
                 artifact_id: acquired.artifact_id().to_owned(),
-                workshop_id: Some(seed.workshop_id),
+                workshop_id: Some(workshop_id.to_owned()),
                 version: read_deployed_manifest(acquired.cache_root())?
                     .version()
                     .map(ToOwned::to_owned),
@@ -2051,6 +2114,19 @@ fn install_selector(
                     continue;
                 }
             }
+            if let Some(seed) = root_content_seed(context.installation, dependency.id())?
+                && seed.source.as_deref() == Some("steam-depot")
+            {
+                install_steam_depot_product(
+                    context,
+                    &seed,
+                    Some(dependency.id()),
+                    Some(pseudo.kind()),
+                    Some(dependency.relationship()),
+                    state,
+                )?;
+                continue;
+            }
             return Err(format!(
                 "{} requires {} '{}' at {}, but no compatible installed, local, or cached version is available",
                 pseudo.id(),
@@ -2087,6 +2163,146 @@ fn install_selector(
     })();
     state.visiting.remove(&pseudo_id);
     result
+}
+
+fn install_steam_depot_product(
+    context: &InstallContext<'_>,
+    seed: &RootContentSeed,
+    expected_id: Option<&str>,
+    parent_kind: Option<ContentKind>,
+    relationship: Option<&str>,
+    state: &mut InstallState<'_>,
+) -> Result<(), String> {
+    let root = product_path_for_seed(context.installation, seed)?;
+    let artifact = read_deployed_manifest(&root)?;
+    validate_root_seed_artifact(seed, &artifact)?;
+    if expected_id.is_some_and(|expected| artifact.id() != expected) {
+        return Err(format!(
+            "Steam-depot selector '{}' resolved to '{}', expected '{}'",
+            seed.id,
+            artifact.id(),
+            expected_id.unwrap_or_default()
+        ));
+    }
+    if let (Some(parent_kind), Some(relationship)) = (parent_kind, relationship) {
+        validate_dependency_edge(parent_kind, relationship, &artifact)?;
+    }
+    validate_artifact_dependency_roles(&artifact)?;
+    let id = artifact.id().to_owned();
+    if !state.visiting.insert(id.clone()) {
+        return Err(format!("content dependency cycle includes {id}"));
+    }
+
+    let result = (|| {
+        for dependency in artifact.dependencies().iter().filter(|item| !item.optional()) {
+            let requirement = dependency
+                .version()
+                .map(semver::VersionReq::parse)
+                .transpose()
+                .map_err(|error| {
+                    format!(
+                        "{} has invalid version requirement for {}: {error}",
+                        artifact.id(),
+                        dependency.id()
+                    )
+                })?;
+            let installed = state.index.installed.get(dependency.id()).is_some_and(|item| {
+                item.enabled && version_satisfies(item.version.as_deref(), requirement.as_ref())
+            });
+            if installed {
+                let installed = state
+                    .index
+                    .installed
+                    .get(dependency.id())
+                    .expect("enabled installed dependency was checked above");
+                let installed_artifact = read_deployed_manifest(&installed.installed_root)?;
+                validate_dependency_edge(
+                    artifact.kind(),
+                    dependency.relationship(),
+                    &installed_artifact,
+                )?;
+                continue;
+            }
+            let seed = root_content_seed(context.installation, dependency.workshop_id().unwrap_or(dependency.id()))?
+                .or(root_content_seed(context.installation, dependency.id())?)
+                .ok_or_else(|| format!(
+                    "{} requires {}, but no installed or Steam-depot product is available",
+                    artifact.id(), dependency.id()
+                ))?;
+            if seed.source.as_deref() != Some("steam-depot") {
+                return Err(format!(
+                    "{} requires {}, which is not installed and is not a Steam-depot product",
+                    artifact.id(), dependency.id()
+                ));
+            }
+            install_steam_depot_product(
+                context,
+                &seed,
+                Some(dependency.id()),
+                Some(artifact.kind()),
+                Some(dependency.relationship()),
+                state,
+            )?;
+        }
+        for conflict in artifact.conflicts() {
+            if state.index.installed.get(conflict.id()).is_some_and(|record| record.enabled) {
+                return Err(format!(
+                    "{} conflicts with installed content '{}'",
+                    artifact.id(), conflict.id()
+                ));
+            }
+        }
+
+        let fingerprint = fingerprint_tree(&root)?;
+        let record = InstalledRecord {
+            artifact_id: artifact.id().to_owned(),
+            kind: artifact.kind().to_string(),
+            version: artifact.version().map(ToOwned::to_owned),
+            workshop_id: None,
+            enabled: true,
+            installed_root: root.clone(),
+            fingerprint: fingerprint.clone(),
+            dependencies: artifact.dependencies().to_vec(),
+            conflicts: artifact.conflicts().to_vec(),
+            installed_at: now_seconds(),
+            source: "steam-depot".to_owned(),
+        };
+        state.index.installed.insert(id.clone(), record.clone());
+        write_lock(context.layout, &record)?;
+        let receipt = write_receipt(
+            context.installation,
+            "reference",
+            &id,
+            "steam-depot",
+            Some(&format!("root={}", root.display())),
+        )?;
+        state.reports.push(InstallReport {
+            artifact_id: id,
+            version: artifact.version().map(ToOwned::to_owned),
+            installed_root: root,
+            fingerprint,
+            receipt,
+        });
+        Ok(())
+    })();
+    state.visiting.remove(&id);
+    result
+}
+
+fn validate_root_seed_artifact(seed: &RootContentSeed, artifact: &ContentArtifact) -> Result<(), String> {
+    if seed.id != artifact.id() {
+        return Err(format!(
+            "root product '{}' declares identity '{}', but its content manifest declares '{}'",
+            seed.id, seed.id, artifact.id()
+        ));
+    }
+    if seed.kind != artifact.kind().to_string() {
+        return Err(format!(
+            "root product '{}' declares kind '{}', but its content manifest declares '{}'",
+            seed.id, seed.kind, artifact.kind()
+        ));
+    }
+    Ok(())
 }
 
 fn install_package(
@@ -2159,6 +2375,13 @@ fn move_enabled_state(
         .installed
         .get_mut(&artifact_id)
         .ok_or_else(|| format!("content is not installed: {artifact_id}"))?;
+    if record.source == "steam-depot" {
+        return Err(format!(
+            "cannot {} Steam-depot product '{}'; manage its availability through Steam",
+            if enable { "enable" } else { "disable" },
+            artifact_id
+        ));
+    }
     let (from_root, to_root) = if enable {
         (
             layout.disabled().join(&artifact_id),
@@ -2286,7 +2509,7 @@ fn root_steam_app_id(installation: &InstallationPaths) -> Result<u32, String> {
         app_id: Option<u32>,
     }
 
-    let path = installation.root().join(manifest::APP_FILE_NAME);
+    let path = root_manifest_path(installation);
     let source = fs::read_to_string(&path).map_err(io("read root manifest", &path))?;
     let manifest: RootManifest = toml::from_str(&source)
         .map_err(|error| format!("failed to parse '{}': {error}", path.display()))?;
@@ -2309,8 +2532,17 @@ struct RootContentSeed {
     id: String,
     kind: String,
     app_id: u32,
-    workshop_id: String,
+    workshop_id: Option<String>,
+    source: Option<String>,
+    path: Option<PathBuf>,
     default_launch: Option<String>,
+}
+
+fn root_manifest_path(installation: &InstallationPaths) -> PathBuf {
+    installation
+        .product_root()
+        .unwrap_or_else(|| installation.root())
+        .join(manifest::APP_FILE_NAME)
 }
 
 fn root_content_seed(
@@ -2327,7 +2559,7 @@ fn root_content_seed(
         content: Vec<RootContentSeed>,
     }
 
-    let path = installation.root().join(manifest::APP_FILE_NAME);
+    let path = root_manifest_path(installation);
     let source = fs::read_to_string(&path).map_err(io("read root manifest", &path))?;
     let manifest: RootManifest = toml::from_str(&source)
         .map_err(|error| format!("failed to parse '{}': {error}", path.display()))?;
@@ -2352,11 +2584,50 @@ fn root_content_seed_matches(seed: &RootContentSeed, selector: &str) -> bool {
             .rsplit('/')
             .next()
             .is_some_and(|name| name == identity)
-        || seed.workshop_id == selector
+        || seed.workshop_id.as_deref() == Some(selector)
         || seed
             .default_launch
             .as_deref()
             .is_some_and(|launch| launch == selector)
+}
+
+fn product_path_for_seed(
+    installation: &InstallationPaths,
+    seed: &RootContentSeed,
+) -> Result<PathBuf, String> {
+    let root = installation.product_root().ok_or_else(|| {
+        format!(
+            "Steam product '{}' requires an explicit {} context",
+            seed.id,
+            vapor_core::VAPOR_PRODUCT_ROOT_ENV
+        )
+    })?;
+    let relative = seed.path.as_deref().ok_or_else(|| {
+        format!(
+            "Steam product seed '{}' does not declare its relative path",
+            seed.id
+        )
+    })?;
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "Steam product seed '{}' has an unsafe relative path",
+            seed.id
+        ));
+    }
+    let product = root.join(relative);
+    let canonical = fs::canonicalize(&product).map_err(io("resolve Steam product", &product))?;
+    ensure_contained(root, &canonical)?;
+    if !canonical.is_dir() {
+        return Err(format!(
+            "Steam product path is not a directory: {}",
+            canonical.display()
+        ));
+    }
+    Ok(canonical)
 }
 
 fn fingerprint_tree(root: &Path) -> Result<Fingerprint, String> {
@@ -2553,7 +2824,9 @@ title = "Movement"
             id: "ghf-studios/loo-cast/loo-cast-packagepack".to_owned(),
             kind: "packagepack".to_owned(),
             app_id: 2122620,
-            workshop_id: "3762162548".to_owned(),
+            workshop_id: Some("3762162548".to_owned()),
+            source: None,
+            path: None,
             default_launch: Some("default".to_owned()),
         };
 
