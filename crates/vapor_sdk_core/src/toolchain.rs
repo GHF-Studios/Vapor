@@ -16,17 +16,17 @@ pub use plan::{ToolchainInstallPlan, ToolchainPlanError, toolchain_install_plan}
 /// Environment variable that overrides where Vapor stores executable-local state.
 pub const VAPOR_HOME_ENV: &str = "VAPOR_HOME";
 
-/// Directory under `VAPOR_HOME` that contains the Rustup binary Vapor prefers.
-pub const RUSTUP_DIR: &str = "rustup";
+/// Directory under `VAPOR_HOME` that owns the Rustup bootstrap binary.
+pub const RUSTUP_DIR: &str = "tools/rustup";
 
-/// Directory under `VAPOR_HOME/rustup` that contains the Rustup executable.
+/// Directory under `VAPOR_HOME/tools/rustup` that contains the Rustup executable.
 pub const RUSTUP_BIN_DIR: &str = "bin";
 
 /// Directory under `VAPOR_HOME` used as Rustup's managed home.
-pub const RUSTUP_HOME_DIR: &str = "rustup-home";
+pub const RUSTUP_HOME_DIR: &str = "tools/rustup/home";
 
 /// Directory under `VAPOR_HOME` used as Cargo's managed home.
-pub const CARGO_HOME_DIR: &str = "cargo-home";
+pub const CARGO_HOME_DIR: &str = "tools/cargo/home";
 
 /// Directory under `VAPOR_HOME` reserved for Rustup acquisition/bootstrap state.
 pub const TOOLCHAIN_BOOTSTRAP_DIR: &str = "toolchain-bootstrap";
@@ -227,8 +227,8 @@ pub fn toolchain_status() -> Result<ToolchainStatus, ToolchainStatusError> {
         .and_then(Path::parent)
         .unwrap_or(&managed.rustup_home)
         .to_path_buf();
-    let bootstrap_root = managed.user_data_root.join(TOOLCHAIN_BOOTSTRAP_DIR);
-    let output_root = managed.user_data_root.join(OUTPUT_DIR);
+    let bootstrap_root = managed.data_root.join(TOOLCHAIN_BOOTSTRAP_DIR);
+    let output_root = managed.data_root.join(OUTPUT_DIR);
     let cargo_path = managed.cargo_path.clone();
     let rustc_path = managed.rustc_path.clone();
     let install_state =

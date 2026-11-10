@@ -33,7 +33,7 @@ const LOCAL_RUSTUP_DIR: &str = "tools/rustup/bin";
 const INSTALLATION_METADATA_DIR: &str = "metadata";
 const TOOLCHAIN_METADATA_FILE: &str = "toolchain.toml";
 const TOOLCHAIN_METADATA_SCHEMA: u32 = 1;
-pub const WINDOWS_GNU_TARGET: &str = "x86_64-pc-windows-gnullvm";
+pub use crate::target::WINDOWS_GNU_TARGET;
 
 /// Rust toolchain identity and roots applied to a Vapor-managed child process.
 ///
@@ -70,6 +70,17 @@ impl RustToolchainCommandEnvironment {
 
     /// Apply Vapor's chosen Rust tools and remove ambient compiler wrappers.
     pub fn apply_to(&self, command: &mut Command) {
+        for (name, _) in env::vars_os() {
+            if name
+                .to_str()
+                .is_some_and(is_managed_build_environment_variable)
+            {
+                command.env_remove(name);
+            }
+        }
+        let host_target = crate::HostTarget::current()
+            .map(|target| target.triple())
+            .unwrap_or("unsupported-host");
         command
             .env(crate::VAPOR_HOME_ENV, &self.vapor_home)
             .env("CARGO_HOME", &self.cargo_home)
@@ -77,9 +88,52 @@ impl RustToolchainCommandEnvironment {
             .env("RUSTUP_TOOLCHAIN", &self.toolchain)
             .env("RUSTC", &self.rustc)
             .env("RUSTDOC", &self.rustdoc)
+            .env(
+                "CARGO_TARGET_DIR",
+                self.vapor_home.join("cache/build").join(host_target),
+            )
             .env_remove("RUSTC_WRAPPER")
             .env_remove("RUSTC_WORKSPACE_WRAPPER");
     }
+}
+
+pub(crate) fn is_managed_build_environment_variable(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    matches!(
+        name.as_str(),
+        "VAPOR_HOME"
+            | "CARGO_HOME"
+            | "RUSTUP_HOME"
+            | "RUSTUP_TOOLCHAIN"
+            | "RUSTC"
+            | "RUSTDOC"
+            | "PATH"
+            | "RUSTFLAGS"
+            | "RUSTDOCFLAGS"
+            | "CARGO_ENCODED_RUSTFLAGS"
+            | "CARGO_ENCODED_RUSTDOCFLAGS"
+            | "CARGO_BUILD_TARGET"
+            | "CARGO_TARGET_DIR"
+            | "CARGO_INCREMENTAL"
+            | "RUSTC_BOOTSTRAP"
+            | "RUSTC_WRAPPER"
+            | "RUSTC_WORKSPACE_WRAPPER"
+            | "CC"
+            | "CXX"
+            | "AR"
+            | "CFLAGS"
+            | "CXXFLAGS"
+            | "ARFLAGS"
+            | "CARGO_BUILD_RUSTC"
+            | "CARGO_BUILD_RUSTDOC"
+    ) || name.starts_with("CARGO_PROFILE_")
+        || (name.starts_with("CARGO_TARGET_")
+            && ["_RUSTFLAGS", "_LINKER", "_AR", "_RUNNER"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix)))
+        || ["CC_", "CXX_", "AR_", "CFLAGS_", "CXXFLAGS_", "ARFLAGS_"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -648,7 +702,7 @@ impl fmt::Display for ToolchainError {
                 write!(
                     formatter,
                     "Vapor-managed Rust {version} is not installed; expected Cargo \
-                     at `{}`; use the Vapor Installer to establish Content Developer capability",
+                     at `{}`; use the Vapor Installer to establish Developer capability",
                     expected.display()
                 )
             }

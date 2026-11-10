@@ -1,6 +1,7 @@
-//! App-local registration and resolution of external Vapor source roots.
+//! App-local registration and resolution of authored Vapor source roots.
 //!
-//! Authored source deliberately lives outside the Vapor Installation.
+//! Source may live outside Vapor Home or in its explicitly owned `sources/`
+//! subtree. Other paths inside Vapor Home are not valid source roots.
 //! The Installation remembers known source roots and one active source context.
 //!
 //! One-shot CLI context resolution follows:
@@ -92,8 +93,7 @@ pub fn configure_superworkspace(
     let data_root = fs::canonicalize(&data).unwrap_or(data);
     let candidate = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     if candidate != installation_root
-        && (roots_overlap(&candidate, &installation_root)
-            || roots_overlap(&candidate, &data_root))
+        && (roots_overlap(&candidate, &installation_root) || roots_overlap(&candidate, &data_root))
     {
         return Err(SourceError::UnsafeSuperworkspace {
             path: candidate,
@@ -141,7 +141,7 @@ pub fn resolve_source_context(
     })
 }
 
-/// Validate, remember, and select one external source root.
+/// Validate and register one authored source root without selecting it.
 /// Register a valid authored Workspace without changing the active source.
 pub fn remember_source(
     installation: &VaporInstallation,
@@ -156,14 +156,7 @@ pub fn remember_source(
         return Err(SourceError::NotDirectory { path: source });
     }
 
-    let installation_root =
-        fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
-    if roots_overlap(&source, &installation_root) {
-        return Err(SourceError::OverlapsInstallation {
-            source,
-            installation: installation_root,
-        });
-    }
+    validate_source_location(installation, &source)?;
 
     crate::VaporWorkspace::load(&source).map_err(|error| SourceError::InvalidWorkspace {
         path: source.clone(),
@@ -180,7 +173,7 @@ pub fn remember_source(
     source_state(installation)
 }
 
-/// Validate, remember, and select one external source root.
+/// Validate, remember, and select one authored source root.
 pub fn open_source(
     installation: &VaporInstallation,
     source: &Path,
@@ -194,15 +187,7 @@ pub fn open_source(
         return Err(SourceError::NotDirectory { path: source });
     }
 
-    let installation_root =
-        fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
-
-    if roots_overlap(&source, &installation_root) {
-        return Err(SourceError::OverlapsInstallation {
-            source,
-            installation: installation_root,
-        });
-    }
+    validate_source_location(installation, &source)?;
 
     let state_path = source_state_path(installation);
     let mut persisted = load(&state_path)?;
@@ -217,6 +202,36 @@ pub fn open_source(
     save(installation, &persisted)?;
 
     source_state(installation)
+}
+
+/// Validate that an authored source root does not overlap Vapor Home, except
+/// when the source is a proper descendant of Vapor Home's managed `sources/`
+/// directory. This keeps the app/runtime directories out of the source graph
+/// while allowing the canonical Vapor-owned superworkspace layout.
+pub fn validate_source_location(
+    installation: &VaporInstallation,
+    source: &Path,
+) -> Result<(), SourceError> {
+    let installation_root =
+        fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
+    if !roots_overlap(source, &installation_root) {
+        return Ok(());
+    }
+
+    let sources_root = installation.sources_root();
+    let sources_root = fs::canonicalize(&sources_root).unwrap_or(sources_root);
+    if sources_root.starts_with(&installation_root)
+        && sources_root != installation_root
+        && source != sources_root
+        && source.starts_with(&sources_root)
+    {
+        return Ok(());
+    }
+
+    Err(SourceError::OverlapsInstallation {
+        source: source.to_path_buf(),
+        installation: installation_root,
+    })
 }
 
 /// Clear the active authoring source without unregistering it.
@@ -399,8 +414,8 @@ impl fmt::Display for SourceError {
             } => {
                 write!(
                     formatter,
-                    "Vapor authored source and the Vapor Installation must be \
-                     disjoint; source `{}` overlaps installation `{}`",
+                    "Vapor source may be inside Vapor Home only below its `sources/` directory; \
+                     source `{}` overlaps installation `{}`",
                     source.display(),
                     installation.display()
                 )

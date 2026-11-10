@@ -17,7 +17,7 @@ pub(super) fn describe(command: &RootCommand) -> CommandSpec {
             &[
                 "the SDK executable root must contain bin/ and Vapor activation script(s)",
                 "the package output is generated under the SDK executable root output/ directory",
-                "cargo-home/ and output/ are never included in the Steam redistributable content",
+                "tools/cargo/home/ and data/output/ are never included in Steam redistributable content",
             ],
             &[
                 "refresh the managed root package content directory",

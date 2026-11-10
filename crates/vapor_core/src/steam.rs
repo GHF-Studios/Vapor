@@ -40,7 +40,7 @@ const METADATA_DIR: &str = "metadata";
 
 const BIN_DIR: &str = "bin";
 
-const RUSTUP_DIR: &str = "rustup/bin";
+const RUSTUP_DIR: &str = "tools/rustup/bin";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EcosystemDistributionManifest {
@@ -128,6 +128,10 @@ pub fn deploy_ecosystem_to_steam(
     workspace: &VaporWorkspace,
     options: SteamDeploymentOptions,
 ) -> Result<SteamDeploymentReport, SteamDeploymentError> {
+    // This API executes SteamCMD directly, so enforce the same distribution
+    // boundary as the SDK/client-provider paths before staging or building.
+    crate::distribution::require_distribution_job("SteamPipe uploads")
+        .map_err(SteamDeploymentError::DistributionJobRequired)?;
     let distribution = load_distribution(&workspace.root)?;
 
     validate_distribution(&distribution.manifest)?;
@@ -682,6 +686,7 @@ pub enum SteamDeploymentError {
     SteamAccountMismatch { expected: String, found: String },
 
     SteamCmdUnavailable,
+    DistributionJobRequired(String),
 
     SteamCmdStart { path: PathBuf, source: io::Error },
 
@@ -794,6 +799,8 @@ impl fmt::Display for SteamDeploymentError {
                     "SteamCMD is unavailable; install/expose `steamcmd` on PATH or provide `--steamcmd <PATH>`",
                 )
             }
+
+            Self::DistributionJobRequired(reason) => formatter.write_str(reason),
 
             Self::SteamCmdStart {
                 path,

@@ -136,7 +136,7 @@ impl RuntimeTarget {
         if target_triples.is_empty() {
             return Ok(vec![Self {
                 triple: host_runtime_target(),
-                explicit: true,
+                explicit: false,
             }]);
         }
         let mut seen = std::collections::BTreeSet::new();
@@ -162,10 +162,19 @@ impl RuntimeTarget {
     fn build_output_root(&self, installation: &Path, project: &str, profile: &str) -> PathBuf {
         let cargo_profile = if profile == "dev" { "debug" } else { profile };
         let _ = project;
-        installation
+        let target_root = installation
             .join("cache/build")
-            .join(self.triple())
-            .join(cargo_profile)
+            .join(self.triple());
+        // With `--target`, Cargo adds the target triple beneath CARGO_TARGET_DIR.
+        // Vapor already partitions CARGO_TARGET_DIR by triple, so promotion
+        // must follow that nested path. A host build without `--target` writes
+        // directly beneath its target directory.
+        let target_root = if self.explicit {
+            target_root.join(self.triple())
+        } else {
+            target_root
+        };
+        target_root.join(cargo_profile)
     }
 
     fn binary_file_name(&self, binary: &str) -> String {
@@ -239,7 +248,7 @@ mod tests {
 
     #[test]
     fn host_runtime_target_uses_the_target_specific_cargo_artifact_root() {
-        let target = RuntimeTarget::many(&[crate::host_runtime_target()])
+        let target = RuntimeTarget::many(&[])
             .expect("host target")
             .remove(0);
         assert_eq!(

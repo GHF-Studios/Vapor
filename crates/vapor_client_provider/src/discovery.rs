@@ -1,4 +1,4 @@
-//! Discovery of the Vapor Home and external source root.
+//! Discovery of Vapor Home and the selected authored source root.
 //!
 //! # Two-root model
 //!
@@ -145,7 +145,7 @@ fn configured_source(installation: &InstallationPaths) -> Result<Option<PathBuf>
     }
 }
 
-/// Paths owned by the Steam installation/app root.
+/// Paths owned by the Vapor Home application root.
 #[derive(Debug, Clone)]
 pub struct InstallationPaths {
     executable: PathBuf,
@@ -340,8 +340,8 @@ impl SourceWorkspace {
     /// # Errors
     ///
     /// Fails when the invocation directory is invalid, no marker exists, the
-    /// highest marker is not a source root, or the source root overlaps the Steam
-    /// installation.
+    /// highest marker is not a source root, or the source root overlaps Vapor
+    /// Home outside its managed `sources/` subtree.
     pub fn from_invocation(
         invocation: &Path,
         installation: &InstallationPaths,
@@ -349,7 +349,7 @@ impl SourceWorkspace {
         let invocation = canonical_directory(invocation, "invocation directory")?;
         let marker = highest_marker(&invocation).ok_or_else(|| {
             format!(
-                    "'{}' is not inside an external Vapor source root: no {} exists in any ancestor\nhelp: invoke Vapor from a source repository, not from the Steam app directory",
+                    "'{}' is not inside a Vapor source root: no {} exists in any ancestor\nhelp: select a source under Vapor Home/sources or invoke Vapor from an authored repository",
                 invocation.display(),
                 manifest::WORKSPACE_FILE_NAME
             )
@@ -392,15 +392,16 @@ impl SourceWorkspace {
         if roots_overlap(&root, installation.root()) {
             if root == installation.root() {
                 return Err(format!(
-                    "no external source root is selected: invocation resolved the Steam installation/app root itself\n  app root: {}\nhelp: invoke Vapor from a separate source repository, or select a remembered source root in Vapor",
+                    "no authored source root is selected: invocation resolved Vapor Home itself\n  Vapor Home: {}\nhelp: select a source under Vapor Home/sources, or open another authored repository",
                     root.display()
                 ));
             }
-            return Err(format!(
-                "the selected source root and Steam installation/app root are not disjoint\n  source root: {}\n  app root:    {}\nhelp: keep authored repositories outside the Steam installation/app root",
-                root.display(),
-                installation.root().display()
-            ));
+            let vapor_home = vapor_core::VaporInstallation::from_explicit_root(
+                installation.root().to_path_buf(),
+            )
+            .map_err(|error| error.to_string())?;
+            vapor_core::source::validate_source_location(&vapor_home, &root)
+                .map_err(|error| error.to_string())?;
         }
 
         Ok(Self {
@@ -621,9 +622,7 @@ fn bundled_cargo_candidates(root: &Path) -> Result<Vec<PathBuf>, String> {
         .into_iter()
         .map(|entry| entry.path().join("bin").join(&executable))
         .collect::<Vec<_>>();
-    candidates.push(
-        root.join("tools/cargo/home/bin").join(&executable),
-    );
+    candidates.push(root.join("tools/cargo/home/bin").join(&executable));
     candidates.push(root.join("bin").join(executable));
     Ok(candidates)
 }
