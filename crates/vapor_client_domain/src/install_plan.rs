@@ -15,7 +15,7 @@ pub enum InstallPlanSource {
     Cache,
     /// An enabled artifact already present in the app-owned installation.
     Installed,
-    /// A first-party Workshop seed that must be acquired before resolution.
+    /// A product-root seed, such as a Steam-depot product, or a Workshop seed.
     RootSeed,
 }
 

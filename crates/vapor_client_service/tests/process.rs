@@ -2,13 +2,24 @@ use std::{fs, path::PathBuf, time::Duration};
 use vapor_client::{Client, ClientHostConfig};
 use vapor_client_protocol::{
     CatalogAction, ClientAction, ClientEvent, ClientResponseKind, CompositionAction,
-    CompositionDocument, LegacyStorageSeed, ProtocolFrame, WorkshopAction, WorkspaceAction,
+    Composition, CompositionDocument, LegacyStorageSeed, ProtocolFrame, WorkshopAction, WorkspaceAction,
     WorkspaceFileResult, WorkspaceProjectSelection, WorkspaceToolOperation,
 };
 use vapor_client_service::run_simulator;
 
 fn service_executable() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_vapor-client-service"))
+}
+
+fn test_state_directory() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "vapor-client-service-process-state-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos()
+    ))
 }
 
 fn fixture_client() -> Client {
@@ -22,7 +33,7 @@ fn fixture_client() -> Client {
             active_composition_id: Some("default".to_owned()),
             fixture_mode: true,
             legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
-            state_directory: None,
+            state_directory: Some(test_state_directory()),
         },
     )
     .expect("fixture service starts")
@@ -148,7 +159,7 @@ fn workspace_file_results_follow_the_terminal_service_event() {
             active_composition_id: Some("default".to_owned()),
             fixture_mode: true,
             legacy_storage: LegacyStorageSeed::default(),
-            state_directory: None,
+            state_directory: Some(root.join("service-state")),
         },
     )
     .expect("fixture service starts");
@@ -229,7 +240,7 @@ fn managed_workspace_tool_contract_round_trips_and_fixture_process_refuses_execu
             active_composition_id: Some("default".to_owned()),
             fixture_mode: true,
             legacy_storage: LegacyStorageSeed::default(),
-            state_directory: None,
+            state_directory: Some(root.join("service-state")),
         },
     )
     .expect("fixture service starts");
@@ -292,7 +303,7 @@ fn fixture_service_rejects_workspace_run_configuration_requests() {
             active_composition_id: Some("default".to_owned()),
             fixture_mode: true,
             legacy_storage: LegacyStorageSeed::default(),
-            state_directory: None,
+            state_directory: Some(root.join("service-state")),
         },
     )
     .expect("fixture service starts");
@@ -406,7 +417,7 @@ fn fixture_service_rejects_workspace_run_configuration_requests() {
 }
 
 #[test]
-fn production_service_owns_workspace_run_configuration_resolution() {
+fn player_service_rejects_workspace_run_configuration_without_developer_setup() {
     let root = std::env::temp_dir().join(format!(
         "vapor-client-service-process-run-route-{}-{}",
         std::process::id(),
@@ -459,26 +470,13 @@ fn production_service_owns_workspace_run_configuration_resolution() {
     else {
         panic!("expected a service response");
     };
-    assert_eq!(response.kind, ClientResponseKind::OperationAccepted);
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    let mut service_resolved_run_configuration = false;
-    while std::time::Instant::now() < deadline {
-        if let ProtocolFrame::Event(ClientEvent::OperationChanged(event)) = client
-            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-            .expect("receive Run Configuration result")
-            && event.action == "workspace.run-configuration"
-            && let vapor_client_protocol::OperationStatus::Failed { message } = event.status
-        {
-            assert!(message.contains("declares no Run Configuration `default`"));
-            service_resolved_run_configuration = true;
-            break;
-        }
-    }
-    assert!(
-        service_resolved_run_configuration,
-        "the service resolves the workspace and reports its Run Configuration error"
-    );
+    assert_eq!(response.kind, ClientResponseKind::Rejected);
+    assert!(response.error.is_some_and(|error| {
+        error.code == vapor_client_protocol::ServiceErrorCode::ActionUnavailable
+            && error
+                .message
+                .contains("requires the Vapor installation to be set up as Developer")
+    }));
     client
         .shutdown(Duration::from_secs(2))
         .expect("production service shuts down");
@@ -565,7 +563,7 @@ fn fixture_workshop_review_and_publish_round_trip_through_the_service_process() 
             active_composition_id: Some("default".to_owned()),
             fixture_mode: true,
             legacy_storage: LegacyStorageSeed::default(),
-            state_directory: None,
+            state_directory: Some(test_state_directory()),
         },
     )
     .expect("fixture service starts with its authored workspace");
@@ -691,7 +689,7 @@ fn fixture_workshop_batch_review_round_trips_through_the_service_process() {
             active_composition_id: Some("default".to_owned()),
             fixture_mode: true,
             legacy_storage: LegacyStorageSeed::default(),
-            state_directory: None,
+            state_directory: Some(test_state_directory()),
         },
     )
     .expect("fixture service starts with its authored workspace");
@@ -853,7 +851,7 @@ fn every_checked_in_fixture_scenario_runs_through_a_child_process() {
 }
 
 #[test]
-fn production_service_imports_legacy_state_then_uses_its_store_after_restart() {
+fn service_imports_legacy_state_then_uses_its_store_after_restart() {
     let executable = service_executable();
     let state_directory = std::env::temp_dir().join(format!(
         "vapor-studio-restart-{}-{}",
@@ -863,7 +861,11 @@ fn production_service_imports_legacy_state_then_uses_its_store_after_restart() {
             .expect("system clock after epoch")
             .as_nanos()
     ));
-    let legacy_profiles = CompositionDocument::default();
+    let mut legacy_profiles = CompositionDocument::default();
+    let mut second_composition = Composition::default_composition();
+    second_composition.id = "composition-1".into();
+    second_composition.name = "Persisted composition".into();
+    legacy_profiles.compositions.push(second_composition);
     let legacy_storage = LegacyStorageSeed {
         profiles: Some(serde_json::to_string(&legacy_profiles).expect("encode legacy profiles")),
         active_profile_id: Some("default".into()),
@@ -881,7 +883,7 @@ fn production_service_imports_legacy_state_then_uses_its_store_after_restart() {
             state_directory: Some(state_directory.clone()),
         },
     )
-    .expect("production service imports legacy state");
+    .expect("service imports legacy state");
     assert_eq!(
         client
             .latest_snapshot()
@@ -889,29 +891,29 @@ fn production_service_imports_legacy_state_then_uses_its_store_after_restart() {
             .compositions
             .compositions
             .len(),
-        1
+        2
     );
-    let creation_request = client
+    let selection_request = client
         .send(
-            ClientAction::Composition(CompositionAction::Create {
-                name: "Persisted composition".into(),
+            ClientAction::Composition(CompositionAction::Select {
+                composition_id: "composition-1".into(),
             }),
             Some(client.latest_snapshot().revision),
         )
-        .expect("send profile creation");
+        .expect("select imported composition");
     let response = loop {
         match client
             .recv_timeout(Duration::from_secs(2))
-            .expect("receive profile creation")
+            .expect("receive composition selection")
         {
-            ProtocolFrame::Response(response) if response.request_id == creation_request => {
+            ProtocolFrame::Response(response) if response.request_id == selection_request => {
                 break response;
             }
             ProtocolFrame::Event(_) => continue,
-            other => panic!("expected profile response, received {other:?}"),
+            other => panic!("expected selection response, received {other:?}"),
         }
     };
-    assert_eq!(response.kind, ClientResponseKind::Applied);
+    assert_eq!(response.kind, ClientResponseKind::Applied, "error: {:?}", response.error);
     assert_eq!(
         response
             .snapshot
@@ -921,29 +923,8 @@ fn production_service_imports_legacy_state_then_uses_its_store_after_restart() {
             .len(),
         2
     );
-    let launch_request = client
-        .send(
-            ClientAction::Composition(CompositionAction::SetLaunchArguments {
-                composition_id: "composition-1".into(),
-                arguments: vec!["--safe-mode".into()],
-            }),
-            Some(response.revision),
-        )
-        .expect("send profile launch settings");
-    let response = loop {
-        match client
-            .recv_timeout(Duration::from_secs(2))
-            .expect("receive launch settings")
-        {
-            ProtocolFrame::Response(response) if response.request_id == launch_request => {
-                break response;
-            }
-            ProtocolFrame::Event(_) => continue,
-            other => panic!("expected launch settings response, received {other:?}"),
-        }
-    };
-    assert_eq!(response.kind, ClientResponseKind::Applied);
-    assert_eq!(response.snapshot.durable_state.composition_revision, 2);
+    assert_eq!(response.snapshot.durable_state.active_composition_id, "composition-1");
+    assert_eq!(response.snapshot.durable_state.composition_revision, 1);
     client
         .shutdown(Duration::from_secs(2))
         .expect("first service shuts down");
@@ -981,16 +962,7 @@ fn production_service_imports_legacy_state_then_uses_its_store_after_restart() {
             .active_composition_id,
         "composition-1"
     );
-    assert_eq!(
-        restarted
-            .latest_snapshot()
-            .durable_state
-            .compositions
-            .compositions[1]
-            .launch
-            .arguments,
-        ["--safe-mode"]
-    );
+    assert_eq!(restarted.latest_snapshot().durable_state.composition_revision, 1);
     assert!(state_directory.join("studio-state.json").is_file());
     restarted
         .shutdown(Duration::from_secs(2))

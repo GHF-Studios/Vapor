@@ -304,8 +304,12 @@ fn promote_release_outputs(
                 let parent = destination.parent().ok_or_else(|| {
                     format!("promoted binary has no parent: {}", destination.display())
                 })?;
-                promoted +=
-                    cross_toolchain::copy_windows_runtime_dlls(installation, target, parent)?;
+                promoted += cross_toolchain::copy_windows_runtime_dlls(
+                    installation,
+                    &paths.installation().user_data_root(),
+                    target,
+                    parent,
+                )?;
                 promoted += 1;
             }
             for library in project.libraries(target) {

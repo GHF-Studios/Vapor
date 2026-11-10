@@ -6,6 +6,7 @@ use crate::{
 };
 use serde::Deserialize;
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -59,7 +60,10 @@ pub(crate) enum GeneratedContentProject {
 
 /// Read the current app's Steam AppID for content templates.
 pub(crate) fn installation_app_id(installation: &InstallationPaths) -> Result<u32, String> {
-    let marker = installation.root().join(manifest::APP_FILE_NAME);
+    let product_root = installation
+        .product_root()
+        .unwrap_or_else(|| installation.root());
+    let marker = product_root.join(manifest::APP_FILE_NAME);
     let source = fs::read_to_string(&marker)
         .map_err(|error| format!("failed to read '{}': {error}", marker.display()))?;
     #[derive(Deserialize)]
@@ -69,24 +73,53 @@ pub(crate) fn installation_app_id(installation: &InstallationPaths) -> Result<u3
     #[derive(Deserialize)]
     struct RootSection {
         steam: Option<RootSteam>,
+        #[serde(default)]
+        content: Vec<RootContent>,
     }
     #[derive(Deserialize)]
     #[serde(rename_all = "kebab-case")]
     struct RootSteam {
-        app_id: u32,
+        app_id: Option<u32>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    struct RootContent {
+        app_id: Option<u32>,
+        source: Option<String>,
     }
     let parsed: RootManifest = toml::from_str(&source)
         .map_err(|error| format!("failed to parse '{}': {error}", marker.display()))?;
-    parsed
-        .root
-        .and_then(|root| root.steam)
-        .map(|steam| steam.app_id)
-        .ok_or_else(|| {
-            format!(
-                "installation manifest has no [root.steam].app-id: {}",
-                marker.display()
-            )
-        })
+    let root = parsed.root.ok_or_else(|| {
+        format!(
+            "installation manifest has no [root] section: {}",
+            marker.display()
+        )
+    })?;
+    if let Some(app_id) = root
+        .steam
+        .and_then(|steam| steam.app_id)
+        .filter(|app_id| *app_id != 0)
+    {
+        return Ok(app_id);
+    }
+
+    let product_app_ids = root
+        .content
+        .into_iter()
+        .filter(|content| content.source.as_deref() == Some("steam-depot"))
+        .filter_map(|content| content.app_id.filter(|app_id| *app_id != 0))
+        .collect::<BTreeSet<_>>();
+    match product_app_ids.len() {
+        1 => Ok(*product_app_ids.iter().next().expect("one app id")),
+        0 => Err(format!(
+            "installation manifest has no Steam app policy or depot-provided product app ID: {}",
+            marker.display()
+        )),
+        _ => Err(format!(
+            "installation manifest declares depot products from multiple Steam apps: {}",
+            marker.display()
+        )),
+    }
 }
 
 /// Create a basic engine/game/packagepack content workspace. Only the

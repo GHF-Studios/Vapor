@@ -5,10 +5,9 @@ use std::{
 pub use vapor_client_provider::workspace_build::{BuildMode, BuildReport};
 
 use vapor_client_provider::{
-    app_root, content,
+    content,
     discovery::{EnvironmentPaths, InstallationPaths},
     distribution::{DistributionManifest, StageOptions},
-    documentation,
     steam::{self, PublishOptions},
     workspace::{SourceRootKind, WorkspaceManifest},
 };
@@ -55,7 +54,7 @@ pub struct ApplicationReleaseReview {
     pub branch: String,
     pub account: String,
     pub description: String,
-    pub release_build_validated: bool,
+    pub payload_reviewed: bool,
     pub package_root: PathBuf,
     pub build_script: PathBuf,
     pub files: usize,
@@ -405,9 +404,10 @@ pub fn validate_application_release_request(
         .filter(|branch| !branch.is_empty())
         .unwrap_or_else(|| manifest.application().development_branch());
     validate_release_inputs(account, branch, description, runtime_targets)
+        .and_then(|()| validate_manifest_runtime_targets(&manifest, runtime_targets))
 }
 
-/// Stage a source workspace's declared app distribution for review without uploading.
+/// Stage the source manifest's declared app payload for review without uploading.
 pub fn stage_application_release(
     application_executable: &Path,
     workspace_root: &Path,
@@ -415,19 +415,16 @@ pub fn stage_application_release(
     branch: Option<&str>,
     description: &str,
     account: &str,
-    release_build_validated: bool,
 ) -> Result<ApplicationReleaseReview, String> {
     let installation = InstallationPaths::from_application_executable(application_executable)?;
     let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
     let manifest = DistributionManifest::load(&paths)?;
-    let workspace_manifest = WorkspaceManifest::load(&paths)?;
     let branch = branch
         .map(str::trim)
         .filter(|branch| !branch.is_empty())
         .unwrap_or_else(|| manifest.application().development_branch());
     validate_release_inputs(account, branch, description, runtime_targets)?;
-    documentation::build(&paths, &workspace_manifest)?;
-    app_root::sync_release_assets(&paths, runtime_targets)?;
+    validate_manifest_runtime_targets(&manifest, runtime_targets)?;
     let mut review = stage_application_release_with_manifest(
         &paths,
         &manifest,
@@ -437,7 +434,7 @@ pub fn stage_application_release(
         account,
         None,
     )?;
-    review.release_build_validated = release_build_validated;
+    review.payload_reviewed = true;
     Ok(review)
 }
 
@@ -447,8 +444,8 @@ pub fn publish_reviewed_application_release(
     workspace_root: &Path,
     reviewed: &ApplicationReleaseReview,
 ) -> Result<ApplicationReleaseResult, String> {
-    if !reviewed.release_build_validated {
-        return Err("Steam upload requires a service-validated release build".to_owned());
+    if !reviewed.payload_reviewed {
+        return Err("Steam upload requires a service-reviewed package payload".to_owned());
     }
     let installation = InstallationPaths::from_application_executable(application_executable)?;
     let paths = EnvironmentPaths::from_installation_and_source_path(installation, workspace_root)?;
@@ -459,6 +456,7 @@ pub fn publish_reviewed_application_release(
         &reviewed.description,
         &reviewed.runtime_targets,
     )?;
+    validate_manifest_runtime_targets(&manifest, &reviewed.runtime_targets)?;
     let mut current = stage_application_release_with_manifest(
         &paths,
         &manifest,
@@ -468,7 +466,7 @@ pub fn publish_reviewed_application_release(
         &reviewed.account,
         None,
     )?;
-    current.release_build_validated = true;
+    current.payload_reviewed = true;
     if &current != reviewed {
         return Err(
             "the Steam app release changed after review; stage and confirm it again".to_owned(),
@@ -483,7 +481,7 @@ pub fn publish_reviewed_application_release(
         &reviewed.account,
         Some(&reviewed.fingerprint),
     )?;
-    uploaded.release_build_validated = true;
+    uploaded.payload_reviewed = true;
     Ok(ApplicationReleaseResult {
         review: uploaded,
         uploaded: true,
@@ -519,13 +517,18 @@ fn stage_application_release_with_manifest(
             .stage()
             .depots()
             .iter()
-            .map(|depot| manifest.application().depot_id(depot.kind()))
-            .collect(),
+            .map(|depot| {
+                manifest
+                    .application()
+                    .depot_id(depot.kind())
+                    .ok_or_else(|| format!("staged {} depot is not configured", depot.kind().label()))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
         runtime_targets: runtime_targets.to_vec(),
         branch: branch.to_owned(),
         account: account.to_owned(),
         description: description.to_owned(),
-        release_build_validated: false,
+        payload_reviewed: false,
         package_root: report.stage().root().to_path_buf(),
         build_script: report.script().to_path_buf(),
         files: report.stage().files(),
@@ -574,6 +577,13 @@ fn validate_release_inputs(
         return Err("Runtime target triples must be unique".to_owned());
     }
     Ok(())
+}
+
+fn validate_manifest_runtime_targets(
+    manifest: &DistributionManifest,
+    selected: &[String],
+) -> Result<(), String> {
+    manifest.validate_runtime_targets(selected)
 }
 
 /// Stage source content and expose the exact artifact facts a frontend can review.

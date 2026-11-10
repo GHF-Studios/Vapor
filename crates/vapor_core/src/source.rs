@@ -1,7 +1,8 @@
-//! App-local registration and resolution of external Vapor source roots.
+//! App-local registration and resolution of Vapor source roots.
 //!
-//! Authored source deliberately lives outside the Vapor Installation.
-//! The Installation remembers known source roots and one active source context.
+//! Authored source may live in the managed `VAPOR_HOME/sources` area or at an
+//! external path. The Installation remembers known source roots and one active
+//! source context.
 //!
 //! One-shot CLI context resolution follows:
 //!
@@ -91,7 +92,11 @@ pub fn configure_superworkspace(
     let user_data = installation.user_data_root();
     let user_data_root = fs::canonicalize(&user_data).unwrap_or(user_data);
     let candidate = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    if roots_overlap(&candidate, &installation_root) || roots_overlap(&candidate, &user_data_root) {
+    let managed_sources_root = installation_root.join("sources");
+    let is_managed_sources_root = candidate == managed_sources_root;
+    if (roots_overlap(&candidate, &installation_root) || roots_overlap(&candidate, &user_data_root))
+        && !is_managed_sources_root
+    {
         return Err(SourceError::UnsafeSuperworkspace {
             path: candidate,
             installation: installation_root,
@@ -111,7 +116,7 @@ pub fn configure_superworkspace(
     Ok(superworkspace)
 }
 
-/// Return the currently selected external source root.
+/// Return the currently selected source root.
 pub fn active_source(installation: &VaporInstallation) -> Result<Option<PathBuf>, SourceError> {
     Ok(source_state(installation)?.active)
 }
@@ -138,8 +143,7 @@ pub fn resolve_source_context(
     })
 }
 
-/// Validate, remember, and select one external source root.
-/// Register a valid authored Workspace without changing the active source.
+/// Validate and remember one source root without changing the active source.
 pub fn remember_source(
     installation: &VaporInstallation,
     source: &Path,
@@ -155,7 +159,9 @@ pub fn remember_source(
 
     let installation_root =
         fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
-    if roots_overlap(&source, &installation_root) {
+    if roots_overlap(&source, &installation_root)
+        && !source.starts_with(installation_root.join("sources"))
+    {
         return Err(SourceError::OverlapsInstallation {
             source,
             installation: installation_root,
@@ -177,7 +183,7 @@ pub fn remember_source(
     source_state(installation)
 }
 
-/// Validate, remember, and select one external source root.
+/// Validate, remember, and select one source root.
 pub fn open_source(
     installation: &VaporInstallation,
     source: &Path,
@@ -194,7 +200,9 @@ pub fn open_source(
     let installation_root =
         fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
 
-    if roots_overlap(&source, &installation_root) {
+    if roots_overlap(&source, &installation_root)
+        && !source.starts_with(installation_root.join("sources"))
+    {
         return Err(SourceError::OverlapsInstallation {
             source,
             installation: installation_root,
@@ -396,8 +404,8 @@ impl fmt::Display for SourceError {
             } => {
                 write!(
                     formatter,
-                    "Vapor authored source and the Vapor Installation must be \
-                     disjoint; source `{}` overlaps installation `{}`",
+                    "Vapor source must be outside runtime-owned paths or inside \
+                     the managed sources directory; source `{}` overlaps installation `{}`",
                     source.display(),
                     installation.display()
                 )
@@ -409,7 +417,7 @@ impl fmt::Display for SourceError {
                 user_data,
             } => write!(
                 formatter,
-                "Superworkspace `{}` must not overlap the Vapor Installation `{}` or user data `{}`",
+                "Superworkspace `{}` must not overlap the Vapor Installation `{}` or user data `{}`; only the managed `sources` directory may live inside Vapor home",
                 path.display(),
                 installation.display(),
                 user_data.display()

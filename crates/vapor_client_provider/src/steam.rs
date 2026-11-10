@@ -114,7 +114,7 @@ pub fn publish(
         return Err("Steam build description must contain 1 to 256 bytes".to_owned());
     }
     let stage = distribution::stage_with_options(paths, manifest, options.stage_options.clone())?;
-    smoke(&stage, &options.stage_options)?;
+    smoke(&stage, manifest, &options.stage_options)?;
     let fingerprint = fingerprint_stage(&stage)?;
     if options
         .expected_fingerprint
@@ -258,223 +258,50 @@ impl Hasher for Fnv64 {
     }
 }
 
-/// Validate essential staged self-hosting inputs.
-pub fn smoke(stage: &distribution::StageReport, options: &StageOptions) -> Result<(), String> {
+/// Validate the composition manifest and required manifest-selected product paths.
+pub fn smoke(
+    stage: &distribution::StageReport,
+    manifest: &DistributionManifest,
+    options: &StageOptions,
+) -> Result<(), String> {
     let common = stage
         .depot(SteamDepotKind::Common)
-        .ok_or_else(|| "staged application has no common depot".to_owned())?;
-    for required in [manifest::APP_FILE_NAME, "docs"] {
-        let path = common.root().join(required);
-        if !path.exists() {
-            return Err(format!(
-                "staged common depot is missing required path: {}",
-                path.display()
-            ));
-        }
+        .ok_or_else(|| "staged application has no common content depot".to_owned())?;
+    let manifest_path = common.root().join(manifest::APP_FILE_NAME);
+    if !manifest_path.is_file() {
+        return Err(format!(
+            "staged common depot is missing the composition manifest: {}",
+            manifest_path.display()
+        ));
     }
 
-    for target in options.runtime_targets() {
-        let kind = SteamDepotKind::for_runtime_target(target)?;
-        let depot = stage
-            .depot(kind)
-            .ok_or_else(|| format!("staged application has no {} depot", kind.label()))?;
-        match kind {
-            SteamDepotKind::Common => {}
-            SteamDepotKind::Linux => {
-                let launch_script = depot.root().join("bin/vapor-launch.sh");
-                require_file(
-                    launch_script.clone(),
-                    "staged Linux depot has no launch script",
-                )?;
-                require_script_target(
-                    &launch_script,
-                    &format!("target=\"{target}\""),
-                    "staged Linux launch script selects the wrong runtime target",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-entrypoint"),
-                    "staged Linux depot has no target Vapor entrypoint",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor"),
-                    "staged Linux depot has no target Vapor binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-installer"),
-                    "staged Linux depot has no target Vapor Installer binary",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor-gui"),
-                    "staged Linux depot has no target Vapor GUI binary",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor-launcher"),
-                    "staged Linux depot has no target Vapor Launcher binary",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor-studio"),
-                    "staged Linux depot has no target Vapor Studio binary",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor-ide"),
-                    "staged Linux depot has no target Vapor IDE binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-installer-gui"),
-                    "staged Linux depot has no target Vapor Installer GUI binary",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor-ide-host"),
-                    "staged Linux depot has no target Vapor IDE host binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-client-service"),
-                    "staged Linux depot has no target Vapor Studio service binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("libsteam_api.so"),
-                    "staged Linux depot has no Steamworks runtime library",
-                )?;
+    for depot in stage.depots() {
+        let definition = manifest.application().depot(depot.kind()).ok_or_else(|| {
+            format!(
+                "staged {} depot is not declared by the app manifest",
+                depot.kind().label()
+            )
+        })?;
+        for item in definition.include() {
+            if item.target().is_some_and(|target| {
+                !options
+                    .runtime_targets()
+                    .iter()
+                    .any(|selected| selected == target)
+            }) {
+                continue;
             }
-            SteamDepotKind::Windows => {
-                let launch_script = depot.root().join("bin/vapor-launch.cmd");
-                require_file(
-                    launch_script.clone(),
-                    "staged Windows depot has no launch script",
-                )?;
-                require_script_target(
-                    &launch_script,
-                    &format!("set \"TARGET={target}\""),
-                    "staged Windows launch script selects the wrong runtime target",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-entrypoint.exe"),
-                    "staged Windows depot has no target Vapor entrypoint",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor.exe"),
-                    "staged Windows depot has no target Vapor binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-installer.exe"),
-                    "staged Windows depot has no target Vapor Installer binary",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor-gui.exe"),
-                    "staged Windows depot has no target Vapor GUI binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-launcher.exe"),
-                    "staged Windows depot has no target Vapor Launcher binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-studio.exe"),
-                    "staged Windows depot has no target Vapor Studio binary",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor-ide.exe"),
-                    "staged Windows depot has no target Vapor IDE binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-installer-gui.exe"),
-                    "staged Windows depot has no target Vapor Installer GUI binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-ide-host.exe"),
-                    "staged Windows depot has no target Vapor IDE host binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-client-service.exe"),
-                    "staged Windows depot has no target Vapor Studio service binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("steam_api64.dll"),
-                    "staged Windows depot has no Steamworks runtime library",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("libunwind.dll"),
-                    "staged Windows depot has no GNU runtime DLL",
-                )?;
+            if item.required() && !depot.root().join(item.destination()).exists() {
+                return Err(format!(
+                    "staged {} depot is missing required manifest path: {}",
+                    depot.kind().label(),
+                    depot.root().join(item.destination()).display()
+                ));
             }
         }
     }
     Ok(())
 }
-
-fn require_file(path: PathBuf, message: &str) -> Result<(), String> {
-    if path.is_file() {
-        Ok(())
-    } else {
-        Err(format!("{message}: {}", path.display()))
-    }
-}
-
-fn require_script_target(path: &Path, expected_line: &str, message: &str) -> Result<(), String> {
-    let script = fs::read_to_string(path).map_err(|error| {
-        format!(
-            "failed to read staged launch script '{}': {error}",
-            path.display()
-        )
-    })?;
-    if script.lines().any(|line| line.trim() == expected_line) {
-        Ok(())
-    } else {
-        Err(format!("{message}: {}", path.display()))
-    }
-}
-
 fn write_build_script(
     paths: &EnvironmentPaths,
     manifest: &DistributionManifest,
@@ -483,7 +310,7 @@ fn write_build_script(
     description: &str,
     preview: bool,
 ) -> Result<PathBuf, String> {
-    let templates = SteamPipeTemplates::load(paths.source().root())?;
+    let templates = SteamPipeTemplates::load(paths.installation().root())?;
     let scripts = paths.installation().root().join("output/root/scripts");
     let output = paths.installation().root().join("output/root/steam-build");
     fs::create_dir_all(&scripts).map_err(|e| e.to_string())?;
@@ -496,7 +323,10 @@ fn write_build_script(
     };
     let mut depot_entries = String::new();
     for depot in stage.depots() {
-        let depot_id = manifest.application().depot_id(depot.kind());
+        let depot_id = manifest
+            .application()
+            .depot_id(depot.kind())
+            .ok_or_else(|| format!("staged {} depot is not configured", depot.kind().label()))?;
         let depot_script = scripts.join(format!("depot_build_{depot_id}.vdf"));
         let depot_vdf = render_template(
             &templates.depot_build,
@@ -540,9 +370,9 @@ struct SteamPipeTemplates {
 }
 
 impl SteamPipeTemplates {
-    fn load(source_root: &Path) -> Result<Self, String> {
-        let root = source_root.join(STEAMPIPE_TEMPLATE_ROOT);
-        ensure_contained(source_root, &root)?;
+    fn load(vapor_home: &Path) -> Result<Self, String> {
+        let root = vapor_home.join(STEAMPIPE_TEMPLATE_ROOT);
+        ensure_contained(vapor_home, &root)?;
         Ok(Self {
             app_build: read_template(&root, APP_BUILD_TEMPLATE)?,
             app_build_depot_entry: read_template(&root, APP_BUILD_DEPOT_ENTRY_TEMPLATE)?,
@@ -555,7 +385,7 @@ fn read_template(root: &Path, name: &str) -> Result<String, String> {
     let path = root.join(name);
     fs::read_to_string(&path).map_err(|error| {
         format!(
-            "failed to read SteamPipe template '{}': {error}\nhelp: keep Vapor Client SteamPipe templates checked in under {STEAMPIPE_TEMPLATE_ROOT}",
+            "failed to read SteamPipe template '{}': {error}\nhelp: repair the Vapor installation so its {STEAMPIPE_TEMPLATE_ROOT} resources are present",
             path.display()
         )
     })

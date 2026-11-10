@@ -5,17 +5,19 @@ not be treated as one folder.
 
 | Object | Origin | Destination | Operation |
 | --- | --- | --- | --- |
-| Vapor application | Vapor root source and built binaries | Steam app/depot | root package / root publish |
-| Content artifact | Registered source project and runtime outputs | Steam Workshop item | content package / create / publish |
-| Player Library item | Workshop or local source | Local content cache | acquire / download |
+| Vapor runtime | Vapor Client release | Standalone Vapor home | install / update / repair / uninstall |
+| Loo Cast Packagepack | Loo Cast product source and target build | Steam app depot | validate / stage / SteamPipe publish |
+| Content artifact | Registered source project and runtime outputs | Its configured content source | validate / package / publish |
+| Player Library item | Workshop or another registered source | Local content cache | acquire / download |
 | Installed Composition | Selected Packagepack and resolved dependencies | Installed content roots | install / update / repair |
 
-The root application contains Vapor frontends and resources; it does not embed
-Loo-Cast Workshop content in its depot. A Packagepack is a content artifact,
-not an app depot. Players install Packagepacks and their dependency closure
-through the content lifecycle.
+The Steam app depot is a Loo Cast product mount, not a Vapor installation. For
+each supported OS it contains one primary Packagepack executable entry point,
+the Packagepack manifest, and only declared runtime sidecars required by that
+target. It contains no Vapor runtime or mutable Vapor state. Other content
+artifacts follow their own configured source and are acquired through the
+Library and Composition lifecycle.
 
-For either remote destination, Vapor validates and stages the exact files
-before upload. The root app uses a split common/Linux/Windows depot model. A
-Workshop item is one logical content artifact that may carry multiple runtime
-targets under target-specific directories.
+Vapor validates and stages exact files before upload. Steam uses a shared
+manifest depot plus target-specific Linux and Windows depots. Each content
+source can define its own target layout and authority rules.

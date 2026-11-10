@@ -339,27 +339,17 @@ pub enum WorkshopAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum PublishingAction {
-    StageRoot {
-        account: String,
-        description: String,
-        set_live: Option<String>,
-    },
     StageApplication {
         account: String,
         branch: Option<String>,
         description: String,
         runtime_targets: Vec<String>,
-        build_release: bool,
-    },
-    PublishRoot {
-        review_id: String,
-        confirmation: String,
     },
     PublishApplication {
         review_id: String,
         confirmation: String,
     },
-    DiscardRootReview,
+    DiscardApplicationReview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -398,7 +388,8 @@ impl ClientAction {
         const TRACY: &[LocalCapability] = &[LocalCapability::TracyProfiler];
         const WORKSHOP_PUBLISHER: &[AuthorityRequirement] =
             &[AuthorityRequirement::WorkshopPublisher];
-        const ROOT_PUBLISHER: &[AuthorityRequirement] = &[AuthorityRequirement::RootPublisher];
+        const APPLICATION_PUBLISHER: &[AuthorityRequirement] =
+            &[AuthorityRequirement::ApplicationPublisher];
 
         match self {
             Self::Catalog(action) => match action {
@@ -421,7 +412,7 @@ impl ClientAction {
                 | CompositionAction::SetLaunchArguments { .. }
                 | CompositionAction::AdoptVerifiedGraph { .. }
                 | CompositionAction::InvalidateContent { .. }
-                | CompositionAction::Preview { .. } => ActionProfile::new(WorkflowTier::Composer),
+                | CompositionAction::Preview { .. } => ActionProfile::new(WorkflowTier::Developer),
                 CompositionAction::RunSource { .. } => ActionProfile::new(WorkflowTier::Developer),
                 CompositionAction::Select { .. }
                 | CompositionAction::Install { .. }
@@ -455,7 +446,7 @@ impl ClientAction {
             Self::Authoring(action) => match action {
                 AuthoringAction::LoadComposition { .. }
                 | AuthoringAction::SaveComposition { .. } => {
-                    ActionProfile::new(WorkflowTier::Composer)
+                    ActionProfile::new(WorkflowTier::Developer)
                 }
                 AuthoringAction::PackageContent { .. } => {
                     ActionProfile::new(WorkflowTier::Developer).with_local_capabilities(RUST)
@@ -480,14 +471,14 @@ impl ClientAction {
                 WorkshopAction::DiscardReview => ActionProfile::new(WorkflowTier::Developer),
             },
             Self::Publishing(action) => match action {
-                PublishingAction::StageRoot { .. } | PublishingAction::StageApplication { .. } => {
-                    ActionProfile::new(WorkflowTier::Developer).with_local_capabilities(RUST)
+                PublishingAction::StageApplication { .. } => {
+                    ActionProfile::new(WorkflowTier::Developer)
                 }
-                PublishingAction::PublishRoot { .. }
-                | PublishingAction::PublishApplication { .. } => {
-                    ActionProfile::new(WorkflowTier::Developer).with_authority(ROOT_PUBLISHER)
+                PublishingAction::PublishApplication { .. } => {
+                    ActionProfile::new(WorkflowTier::Developer)
+                        .with_authority(APPLICATION_PUBLISHER)
                 }
-                PublishingAction::DiscardRootReview => ActionProfile::new(WorkflowTier::Developer),
+                PublishingAction::DiscardApplicationReview => ActionProfile::new(WorkflowTier::Developer),
             },
             Self::Developer(action) => {
                 let profile = ActionProfile::new(WorkflowTier::Developer);
@@ -627,11 +618,9 @@ impl ClientAction {
                 WorkshopAction::DiscardReview => "workshop.discard-review",
             },
             Self::Publishing(action) => match action {
-                PublishingAction::StageRoot { .. } => "publishing.stage-root",
                 PublishingAction::StageApplication { .. } => "publishing.stage-application",
-                PublishingAction::PublishRoot { .. } => "publishing.publish-root",
                 PublishingAction::PublishApplication { .. } => "publishing.publish-application",
-                PublishingAction::DiscardRootReview => "publishing.discard-root-review",
+                PublishingAction::DiscardApplicationReview => "publishing.discard-application-review",
             },
             Self::Developer(action) => match action {
                 DeveloperAction::RefreshInstallationRole => "developer.refresh-installation-role",
@@ -674,7 +663,7 @@ mod workflow_tests {
                 name: "My composition".to_owned(),
             })
             .workflow_tier(),
-            WorkflowTier::Composer
+            WorkflowTier::Developer
         );
         assert_eq!(
             ClientAction::Workspace(WorkspaceAction::OpenFile {

@@ -13,7 +13,7 @@ This ledger captures the clean-machine workflow that must work before Vapor infr
 ```text
 Install Loo Cast through Steam
 vapor-installer install
-vapor-installer role promote ecosystem-developer
+vapor-installer role promote developer
 vapor source acquire first-party-all
 ```
 
@@ -51,7 +51,7 @@ The single canonical Superworkspace is represented by `Superworkspace.vapor.toml
 - `vapor-all` → both Vapor operational roots
 - `first-party-all` → all three
 
-Registry data remains authoritative for acquisition URLs and checkout paths. Loo Cast is an ordinary content Workspace and therefore uses `Workspace.vapor.toml`; special operational/topology manifests stay in the same Vapor/TOML family but use repository-specific names where useful, including `Vapor-Client.vapor.toml` and `Vapor-Platform-Server.vapor.toml`.
+Registry data remains authoritative for acquisition URLs and checkout paths. Loo Cast is an ordinary content Workspace and therefore uses `Workspace.vapor.toml`; special operational/topology manifests stay in the same Vapor/TOML family but use repository-specific names where useful, including `App-Source.vapor.toml`, `Vapor-Standalone.toml`, and `Vapor-Platform-Server.vapor.toml`.
 
 ## Installed binary layout
 
@@ -71,7 +71,7 @@ Local deployment, Steam staging, activation and machine integration must use the
 
 ## Remaining clean-machine limitation
 
-Composer-or-higher Role promotion still requires Git on `PATH`; Vapor does not yet provision Git. Until that is fixed or explicitly declared a prerequisite, a truly blank machine is not fully self-hosting.
+Developer Role promotion still requires Git on `PATH`; Vapor does not yet provision Git. Until that is fixed or explicitly declared a prerequisite, a truly blank machine is not fully self-hosting.
 
 ## Execution ledger
 
@@ -84,7 +84,7 @@ Composer-or-higher Role promotion still requires Git on `PATH`; Vapor does not y
 - [x] Restore host-target-specific installed/staged binary layout.
 - [x] Register `Loo-Cast`, `Vapor-Client`, and `Vapor-Platform-Server` as canonical first-party acquisition roots.
 - [x] Restore Loo Cast's current-schema `Workspace.vapor.toml`.
-- [x] Normalize special root manifests to `Vapor-Client.vapor.toml` and `Vapor-Platform-Server.vapor.toml`.
+- [x] Use `App-Source.vapor.toml` for source identity, `Vapor-Standalone.toml` for standalone Vapor release/bootstrap policy, and `Vapor-Platform-Server.toml` for server topology.
 - [x] Make source acquisition finalize managed RustRover state and generated workflow configurations.
 - [ ] Build/test/deploy locally and push every accepted repository change.
 - [ ] Update/deploy the Platform Server Registry submodule.

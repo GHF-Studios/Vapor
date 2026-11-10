@@ -279,12 +279,46 @@ fn source_runtime_targets(path: &Path, kind: SourceRootKind) -> Result<Vec<Strin
         .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
     let manifest: SourceManifest = toml::from_str(&source)
         .map_err(|error| format!("failed to parse '{}': {error}", path.display()))?;
-    let targets = match kind {
+    let mut targets = match kind {
         SourceRootKind::Root => manifest.root.and_then(|owner| owner.runtime),
         SourceRootKind::Workspace => manifest.workspace.and_then(|owner| owner.runtime),
     }
     .map(|runtime| runtime.targets)
     .unwrap_or_default();
+    if targets.is_empty() && kind == SourceRootKind::Root {
+        let standalone_marker = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("Vapor-Standalone.toml");
+        if standalone_marker.is_file() {
+            let standalone_source = fs::read_to_string(&standalone_marker).map_err(|error| {
+                format!("failed to read '{}': {error}", standalone_marker.display())
+            })?;
+            let standalone: toml::Value = toml::from_str(&standalone_source).map_err(|error| {
+                format!("failed to parse '{}': {error}", standalone_marker.display())
+            })?;
+            targets = standalone
+                .get("payload")
+                .and_then(|payload| payload.get("targets"))
+                .and_then(toml::Value::as_array)
+                .ok_or_else(|| {
+                    format!(
+                        "standalone release marker '{}' must declare payload.targets",
+                        standalone_marker.display()
+                    )
+                })?
+                .iter()
+                .map(|target| {
+                    target.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                        format!(
+                            "standalone target entries in '{}' must be strings",
+                            standalone_marker.display()
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+        }
+    }
     validate_runtime_targets(path, targets)
 }
 

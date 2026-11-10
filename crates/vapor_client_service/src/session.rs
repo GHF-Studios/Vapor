@@ -34,10 +34,10 @@ use vapor_client_protocol::{
     ClientResponseKind, ClientRevision, Composition, CompositionAction, ContentReference,
     DeveloperAction, InstallationRoleSnapshot, InstallationState, LegacyStorageSeed, LibraryAction,
     LocalCapability, OperationEvent, OperationOutputEvent, OperationPhase, OperationStatus,
-    OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot, PublishingAction,
-    RootPublishingSnapshot, ServiceError, ServiceErrorCode, SessionAction,
-    SourceMetadataRepairAction, WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot,
-    WorkshopAction, WorkshopItemSnapshot, WorkshopMetadataDraft, WorkshopPackagePreviewSnapshot,
+    OperationSummary, ProfileReportSnapshot, ProfileTraceSnapshot, PublishingAction, ServiceError,
+    ServiceErrorCode, SessionAction, SourceMetadataRepairAction, WorkflowTier,
+    WorkshopAcquisitionBatchSnapshot, WorkshopAcquisitionSnapshot, WorkshopAction,
+    WorkshopItemSnapshot, WorkshopMetadataDraft, WorkshopPackagePreviewSnapshot,
     WorkshopReviewSnapshot, WorkshopSearchSnapshot, WorkshopSnapshot, WorkshopSubscriptionSnapshot,
     WorkspaceAction, WorkspaceAssociation, WorkspaceContentSnapshot, WorkspaceFileResult,
     WorkspaceProjectSelection, WorkspaceToolOperation,
@@ -181,7 +181,6 @@ pub struct ClientSession {
     workshop: WorkshopSnapshot,
     workshop_review: Option<WorkshopReviewState>,
     workshop_batch_review: Option<WorkshopBatchReviewState>,
-    root_publish_review: Option<RootPublishReviewState>,
     application_release_review: Option<application::ApplicationReleaseReview>,
     application_release_snapshot: Option<ApplicationReleaseSnapshot>,
     profile_traces: Vec<ProfileTraceSnapshot>,
@@ -191,6 +190,8 @@ pub struct ClientSession {
     operation_events: VecDeque<ClientEvent>,
     operation_receiver: Receiver<BackgroundOperationMessage>,
     operation_sender: SyncSender<BackgroundOperationMessage>,
+    #[cfg(test)]
+    test_installation_role: Option<InstallationRoleSnapshot>,
 }
 
 enum BackgroundOperationMessage {
@@ -198,7 +199,6 @@ enum BackgroundOperationMessage {
     Panicked { id: String, message: String },
     Complete(Box<CompositionOperationCompletion>),
     CompleteWorkshop(Box<WorkshopOperationCompletion>),
-    CompleteRootPublish(Box<RootPublishOperationCompletion>),
     CompleteApplicationRelease(Box<ApplicationReleaseOperationCompletion>),
     CompleteWorkspace(Box<WorkspaceOperationCompletion>),
     CompleteAuthoring(Box<AuthoringOperationCompletion>),
@@ -216,7 +216,6 @@ impl BackgroundOperationMessage {
             Self::Panicked { id, .. } => Some(id),
             Self::Complete(completion) => Some(&completion.id),
             Self::CompleteWorkshop(completion) => Some(&completion.id),
-            Self::CompleteRootPublish(completion) => Some(&completion.id),
             Self::CompleteApplicationRelease(completion) => Some(&completion.id),
             Self::CompleteWorkspace(completion) => Some(&completion.id),
             Self::CompleteAuthoring(completion) => Some(&completion.id),
@@ -361,26 +360,12 @@ struct AutoInstallCompositionTarget {
     inputs: CompositionOperationInputs,
 }
 
-struct RootPublishReviewState {
-    request: vapor_sdk_core::root::types::RootPublishRequest,
-    snapshot: RootPublishingSnapshot,
-}
-
-struct RootPublishOperationCompletion {
-    id: String,
-    review_id: String,
-    staged: bool,
-    request: vapor_sdk_core::root::types::RootPublishRequest,
-    result: Result<vapor_sdk_core::root::types::RootPublishReport, String>,
-}
-
 enum ApplicationReleaseTask {
     Stage {
         account: String,
         branch: Option<String>,
         description: String,
         runtime_targets: Vec<String>,
-        build_release: bool,
     },
     Publish(application::ApplicationReleaseReview),
 }
@@ -664,7 +649,6 @@ impl ClientSession {
             workshop: WorkshopSnapshot::default(),
             workshop_review: None,
             workshop_batch_review: None,
-            root_publish_review: None,
             application_release_review: None,
             application_release_snapshot: None,
             profile_traces: Vec::new(),
@@ -674,6 +658,8 @@ impl ClientSession {
             operation_events: VecDeque::new(),
             operation_receiver,
             operation_sender,
+            #[cfg(test)]
+            test_installation_role: None,
         }
     }
 
@@ -751,7 +737,7 @@ impl ClientSession {
             "studio-authoring" | "studio-workspace" => OperationResourceKey::Workspace(workspace),
             "studio-workshop" => OperationResourceKey::WorkshopAccount,
             "vapor-library" => OperationResourceKey::CatalogRefresh,
-            "studio-root-publishing" | "application-release" => OperationResourceKey::Publishing,
+            "application-release" => OperationResourceKey::Publishing,
             "installation-role" => OperationResourceKey::InstallationTools,
             "profiling" => OperationResourceKey::Profiling,
             domain => OperationResourceKey::Exclusive(domain.to_owned()),
@@ -771,11 +757,48 @@ impl ClientSession {
         }
 
         let profile = action.profile();
-        if profile.local_capabilities.is_empty() {
+        let role_transition = matches!(
+            action,
+            ClientAction::Developer(
+                DeveloperAction::RefreshInstallationRole
+                    | DeveloperAction::PromoteInstallationRole { .. }
+                    | DeveloperAction::DemoteInstallationRole { .. }
+            )
+        );
+        if profile.local_capabilities.is_empty()
+            && (profile.workflow_tier == WorkflowTier::Player || role_transition)
+        {
             return Ok(());
         }
 
+        #[cfg(test)]
+        let readiness = self
+            .test_installation_role
+            .clone()
+            .unwrap_or_else(application::installation_role_snapshot);
+        #[cfg(not(test))]
         let readiness = application::installation_role_snapshot();
+        if profile.workflow_tier != WorkflowTier::Player && !role_transition {
+            let installed_role = readiness.role.parse::<vapor_core::VaporRole>().ok();
+            if installed_role != Some(vapor_core::VaporRole::Developer) {
+                return Err(ServiceError {
+                    code: ServiceErrorCode::ActionUnavailable,
+                    message:
+                        "This workflow requires the Vapor installation to be set up as Developer."
+                            .to_owned(),
+                    retryable: true,
+                });
+            }
+            if !readiness.developer_tools_ready() {
+                return Err(ServiceError {
+                    code: ServiceErrorCode::ActionUnavailable,
+                    message: readiness.error.clone().unwrap_or_else(|| {
+                        "Developer setup is incomplete. Repair the Developer toolset in Vapor Installer before using this workflow.".to_owned()
+                    }),
+                    retryable: true,
+                });
+            }
+        }
         if let Some(error) = action_capability_error(profile, &readiness) {
             return Err(error);
         }
@@ -951,10 +974,11 @@ impl ClientSession {
                     }
                 },
                 ClientAction::Workspace(vapor_client_protocol::WorkspaceAction::Open { root }) => {
-                    let requested = PathBuf::from(root);
+                    let requested = PathBuf::from(&root);
                     if self.bootstrap.fixture_mode
-                        && (!requested.is_absolute()
-                            || !requested.starts_with(std::env::temp_dir()))
+                        && !root.contains("://")
+                        && requested.is_absolute()
+                        && !workspace::path_is_within(&requested, &std::env::temp_dir())
                     {
                         response_kind = ClientResponseKind::Rejected;
                         error = Some(ServiceError {
@@ -1561,8 +1585,7 @@ impl ClientSession {
                     }
                 },
                 ClientAction::Publishing(action) => match action {
-                    PublishingAction::DiscardRootReview => {
-                        self.root_publish_review = None;
+                    PublishingAction::DiscardApplicationReview => {
                         self.application_release_review = None;
                         self.application_release_snapshot = None;
                         self.revision.0 = self.revision.0.saturating_add(1);
@@ -1580,16 +1603,6 @@ impl ClientSession {
                             }
                         }
                     }
-                    action => match self.start_root_publish_operation(action) {
-                        Ok(()) => {
-                            response_kind = ClientResponseKind::OperationAccepted;
-                            self.revision.0 = self.revision.0.saturating_add(1);
-                        }
-                        Err(operation_error) => {
-                            response_kind = ClientResponseKind::Rejected;
-                            error = Some(operation_error);
-                        }
-                    },
                 },
                 action => {
                     response_kind = ClientResponseKind::Rejected;
@@ -1912,9 +1925,6 @@ impl ClientSession {
                 BackgroundOperationMessage::CompleteWorkshop(completion) => {
                     self.apply_workshop_completion(*completion);
                 }
-                BackgroundOperationMessage::CompleteRootPublish(completion) => {
-                    self.apply_root_publish_completion(*completion);
-                }
                 BackgroundOperationMessage::CompleteApplicationRelease(completion) => {
                     self.apply_application_release_completion(*completion);
                 }
@@ -2204,7 +2214,7 @@ fn action_can_rebase_on_current_state(action: &ClientAction) -> bool {
 
 fn ensure_workshop_app_id(bootstrap: &mut ClientHostConfig) {
     if !bootstrap.fixture_mode && bootstrap.workshop_app_id.is_none() {
-        bootstrap.workshop_app_id = Some(vapor_sdk_core::root::types::ROOT_STEAM_APP_ID);
+        bootstrap.workshop_app_id = Some(vapor_sdk_core::steam::types::LOO_CAST_STEAM_APP_ID);
     }
 }
 
@@ -2395,6 +2405,7 @@ mod tests {
     fn accepted_response_identifies_its_operation_when_an_unrelated_one_is_primary() {
         let mut session = session();
         session.bootstrap.fixture_mode = false;
+        use_ready_developer_installation(&mut session);
         session
             .operation_registry
             .start(
@@ -2679,6 +2690,21 @@ mod tests {
         })
     }
 
+    fn use_ready_developer_installation(session: &mut ClientSession) {
+        session.test_installation_role = Some(InstallationRoleSnapshot {
+            role: "developer".to_owned(),
+            rust_ready: true,
+            rust_analyzer_ready: true,
+            linux_gnu_target_ready: true,
+            linux_gnu_linker_ready: true,
+            windows_gnu_target_ready: true,
+            windows_gnu_linker_ready: true,
+            tracy_profiler_ready: true,
+            tracy_analysis_ready: true,
+            error: None,
+        });
+    }
+
     fn fixture_workspace_session() -> ClientSession {
         ClientSession::new(ClientHostConfig {
             application_executable: PathBuf::from("/app/bin/vapor-gui"),
@@ -2761,6 +2787,7 @@ mod tests {
     fn saved_source_lookup_can_run_during_workspace_discovery() {
         let mut session = session();
         session.bootstrap.fixture_mode = false;
+        use_ready_developer_installation(&mut session);
         session.bootstrap.workspace_root = Some(PathBuf::from("/fixture/workspace"));
         let discovery = BackgroundOperationSpec {
             domain: "studio-authoring",
@@ -2957,6 +2984,7 @@ mod tests {
             legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
             state_directory: Some(root.join("service-state")),
         });
+        use_ready_developer_installation(&mut session);
         let review = application::ApplicationReleaseReview {
             app_id: 2122620,
             depot_ids: vec![2122621],
@@ -2964,7 +2992,7 @@ mod tests {
             branch: "vapor-dev".into(),
             account: "builder".into(),
             description: "release".into(),
-            release_build_validated: true,
+            payload_reviewed: true,
             package_root: root.join("stage"),
             build_script: root.join("build.vdf"),
             files: 1,
@@ -2980,7 +3008,7 @@ mod tests {
             branch: review.branch.clone(),
             account: review.account.clone(),
             description: review.description.clone(),
-            release_build_validated: review.release_build_validated,
+            payload_reviewed: review.payload_reviewed,
             package_root: review.package_root.display().to_string(),
             build_script: review.build_script.display().to_string(),
             files: review.files,
@@ -3001,23 +3029,23 @@ mod tests {
         assert!(!session.has_active_operation());
         assert!(session.application_release_review.is_some());
 
-        let mut unbuilt_review = review;
-        unbuilt_review.release_build_validated = false;
-        session.application_release_review = Some(unbuilt_review.clone());
+        let mut unreviewed_payload = review;
+        unreviewed_payload.payload_reviewed = false;
+        session.application_release_review = Some(unreviewed_payload.clone());
         session.application_release_snapshot = Some(ApplicationReleaseSnapshot {
             review_id: "release-review".into(),
             planned: true,
-            app_id: unbuilt_review.app_id,
-            depot_ids: unbuilt_review.depot_ids.clone(),
-            runtime_targets: unbuilt_review.runtime_targets.clone(),
-            branch: unbuilt_review.branch.clone(),
-            account: unbuilt_review.account.clone(),
-            description: unbuilt_review.description.clone(),
-            release_build_validated: false,
-            package_root: unbuilt_review.package_root.display().to_string(),
-            build_script: unbuilt_review.build_script.display().to_string(),
-            files: unbuilt_review.files,
-            fingerprint: unbuilt_review.fingerprint.clone(),
+            app_id: unreviewed_payload.app_id,
+            depot_ids: unreviewed_payload.depot_ids.clone(),
+            runtime_targets: unreviewed_payload.runtime_targets.clone(),
+            branch: unreviewed_payload.branch.clone(),
+            account: unreviewed_payload.account.clone(),
+            description: unreviewed_payload.description.clone(),
+            payload_reviewed: false,
+            package_root: unreviewed_payload.package_root.display().to_string(),
+            build_script: unreviewed_payload.build_script.display().to_string(),
+            files: unreviewed_payload.files,
+            fingerprint: unreviewed_payload.fingerprint.clone(),
             succeeded: false,
             status: None,
         });
@@ -3032,7 +3060,7 @@ mod tests {
         assert!(
             response
                 .error
-                .is_some_and(|error| error.message.contains("service-validated release build"))
+                .is_some_and(|error| error.message.contains("service-reviewed package payload"))
         );
         assert!(!session.has_active_operation());
         std::fs::remove_dir_all(root).expect("remove isolated workspace");
@@ -4015,7 +4043,7 @@ mod tests {
             }),
         ));
 
-        assert_eq!(response.kind, ClientResponseKind::Applied);
+        assert_eq!(response.kind, ClientResponseKind::Applied, "response: {response:?}");
         let content = response.snapshot.workspace_content;
         assert!(content.source_projects_loaded);
         assert_eq!(content.source_projects[0].id, "fixture.game");
@@ -4106,7 +4134,7 @@ mod tests {
     fn fixture_sessions_reject_installation_role_mutations() {
         for action in [
             DeveloperAction::PromoteInstallationRole {
-                target: "composer".to_owned(),
+                target: "developer".to_owned(),
             },
             DeveloperAction::DemoteInstallationRole {
                 target: "player".to_owned(),
@@ -4132,7 +4160,7 @@ mod tests {
         ensure_workshop_app_id(&mut production);
         assert_eq!(
             production.workshop_app_id,
-            Some(vapor_sdk_core::root::types::ROOT_STEAM_APP_ID)
+            Some(vapor_sdk_core::steam::types::LOO_CAST_STEAM_APP_ID)
         );
 
         let mut fixture = session().bootstrap;
@@ -4339,7 +4367,7 @@ mod tests {
                     module_path,
                     parent_contents,
                     ..
-                } if module_path == "crate/src/components.rs"
+                } if module_path.replace('\\', "/") == "crate/src/components.rs"
                     && parent_contents.ends_with("pub mod components;\n"))
         )));
         assert!(root.join("crate/src/components.rs").is_file());
@@ -4350,6 +4378,52 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).expect("remove fixture workspace");
+    }
+
+    #[test]
+    fn developer_service_resolves_workspace_run_configuration_before_tool_execution() {
+        let root = fixture_temp_workspace("workspace-run-configuration");
+        std::fs::write(
+            root.join("Workspace.vapor.toml"),
+            "schema = 1\n\n[workspace]\nname = \"run-route\"\norganization = \"ghf-studios\"\nversion = \"0.1.0\"\nrepository = \"\"\n\n[toolchain]\nchannel = \"stable\"\nversion = \"1.97.0\"\ndate = \"2026-07-09\"\n\n[[project]]\nname = \"run-route\"\npath = \".\"\n",
+        )
+        .expect("write workspace manifest");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"run-route\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write Cargo manifest");
+        std::fs::create_dir_all(root.join("src")).expect("create project sources");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write Rust entrypoint");
+        let mut session = ClientSession::new(ClientHostConfig {
+            application_executable: PathBuf::from("/app/bin/vapor-gui"),
+            workshop_app_id: None,
+            workspace_root: Some(root.clone()),
+            active_composition_id: Some("default".to_owned()),
+            fixture_mode: false,
+            legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
+            state_directory: None,
+        });
+        use_ready_developer_installation(&mut session);
+
+        let response = session.dispatch(request(
+            None,
+            ClientAction::Workspace(WorkspaceAction::RunConfiguration {
+                workspace_root: root.display().to_string(),
+                configuration: "default".into(),
+                profiling: false,
+            }),
+        ));
+        assert_eq!(response.kind, ClientResponseKind::OperationAccepted);
+        let events = wait_for_operation(&mut session);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ClientEvent::OperationChanged(event)
+                if event.action == "workspace.run-configuration"
+                    && matches!(&event.status, OperationStatus::Failed { message }
+                        if message.contains("declares no Run Configuration `default`"))
+        )));
+        std::fs::remove_dir_all(root).expect("remove workspace fixture");
     }
 
     #[test]
@@ -4681,6 +4755,7 @@ mod tests {
             legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
             state_directory: None,
         });
+        use_ready_developer_installation(&mut session);
         let created = session.dispatch(request(
             Some(0),
             ClientAction::Composition(CompositionAction::Create {

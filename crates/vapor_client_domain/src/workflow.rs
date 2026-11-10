@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 pub enum WorkflowTier {
     #[default]
     Player,
-    Composer,
     Developer,
 }
 
@@ -18,9 +17,7 @@ impl WorkflowTier {
     pub const fn includes(self, required: Self) -> bool {
         matches!(
             (self, required),
-            (_, Self::Player)
-                | (Self::Composer | Self::Developer, Self::Composer)
-                | (Self::Developer, Self::Developer)
+            (_, Self::Player) | (Self::Developer, Self::Developer)
         )
     }
 }
@@ -39,7 +36,7 @@ pub enum LocalCapability {
 #[serde(rename_all = "kebab-case")]
 pub enum AuthorityRequirement {
     WorkshopPublisher,
-    RootPublisher,
+    ApplicationPublisher,
 }
 
 /// Static product classification and prerequisites for a client action.
@@ -80,12 +77,8 @@ mod tests {
     #[test]
     fn workflow_tiers_include_all_lower_levels() {
         assert!(WorkflowTier::Player.includes(WorkflowTier::Player));
-        assert!(WorkflowTier::Composer.includes(WorkflowTier::Player));
-        assert!(WorkflowTier::Composer.includes(WorkflowTier::Composer));
         assert!(WorkflowTier::Developer.includes(WorkflowTier::Player));
-        assert!(WorkflowTier::Developer.includes(WorkflowTier::Composer));
         assert!(WorkflowTier::Developer.includes(WorkflowTier::Developer));
-        assert!(!WorkflowTier::Player.includes(WorkflowTier::Composer));
-        assert!(!WorkflowTier::Composer.includes(WorkflowTier::Developer));
+        assert!(!WorkflowTier::Player.includes(WorkflowTier::Developer));
     }
 }

@@ -21,18 +21,18 @@ pub struct CrossToolchainStatus {
     pub installed: bool,
     /// The Zig executable used by the Linux cross-linker wrapper.
     pub path: PathBuf,
-    /// Missing tools, reported with their expected app-local paths.
+    /// Missing tools, reported with their expected Vapor-home paths.
     pub missing: Vec<String>,
 }
 
-/// Inspect the app-local cross-compilation toolchains.
-pub fn inspect(root: &Path) -> CrossToolchainStatus {
-    let zig = zig_executable(root);
+/// Inspect the cross-compilation toolchains in Vapor home.
+pub fn inspect(vapor_home: &Path) -> CrossToolchainStatus {
+    let zig = zig_executable(vapor_home);
     let mut missing = Vec::new();
     if !is_executable(&zig) {
         missing.push(format!("zig (expected at {})", zig.display()));
     }
-    let clang = llvm_mingw_clang(root);
+    let clang = llvm_mingw_clang(vapor_home);
     if !is_executable(&clang) {
         missing.push(format!(
             "llvm-mingw clang (expected at {})",
@@ -44,7 +44,7 @@ pub fn inspect(root: &Path) -> CrossToolchainStatus {
         "llvm-dlltool",
         "x86_64-w64-mingw32-ar",
     ] {
-        let path = llvm_mingw_bin(root).join(executable(tool));
+        let path = llvm_mingw_bin(vapor_home).join(executable(tool));
         if !is_executable(&path) {
             missing.push(format!(
                 "llvm-mingw tool {} (expected at {})",
@@ -53,11 +53,27 @@ pub fn inspect(root: &Path) -> CrossToolchainStatus {
             ));
         }
     }
-    let linker = zig_linker_path(root, LINUX_GNU_TARGET);
+    let linker = zig_linker_path(vapor_home, LINUX_GNU_TARGET);
     if !is_executable(&linker) {
         missing.push(format!(
             "{LINUX_GNU_TARGET} linker wrapper (expected at {})",
             linker.display()
+        ));
+    }
+    if !llvm_mingw_bin(vapor_home).parent().is_some_and(|bundle| {
+        bundle
+            .join("x86_64-w64-mingw32/bin/libunwind.dll")
+            .is_file()
+    }) {
+        missing.push("llvm-mingw runtime DLL (libunwind.dll)".to_owned());
+    }
+    let archiver = vapor_home
+        .join("tools/cross/bin")
+        .join(format!("zig-ar{}", env::consts::EXE_SUFFIX));
+    if !is_executable(&archiver) {
+        missing.push(format!(
+            "Linux target archiver (expected at {})",
+            archiver.display()
         ));
     }
     CrossToolchainStatus {
@@ -67,42 +83,62 @@ pub fn inspect(root: &Path) -> CrossToolchainStatus {
     }
 }
 
-/// Configure the app-local linker, compiler, and archiver for a Cargo target.
+/// Configure Vapor-home linker, compiler, and archiver tools for a Cargo target.
 ///
 /// Host targets need no cross toolchain. Unsupported cross targets retain
 /// Cargo's normal lookup rules so installed target providers can be used.
 pub fn configure_linker_env(
     command: &mut Command,
-    root: &Path,
+    vapor_home: &Path,
     target: &str,
 ) -> Result<(), String> {
     validate_runtime_target(target)?;
     if target == WINDOWS_GNU_TARGET {
-        let compiler = llvm_mingw_clang(root);
-        let archiver = llvm_mingw_bin(root).join(executable("x86_64-w64-mingw32-ar"));
+        let compiler = llvm_mingw_clang(vapor_home);
+        let archiver = llvm_mingw_bin(vapor_home).join(executable("x86_64-w64-mingw32-ar"));
+        let runtime = vapor_home.join("tools/llvm-mingw/x86_64-w64-mingw32/bin");
+        let runtime_dll = runtime.join("libunwind.dll");
         require_target_tools(target, &[&compiler, &archiver])?;
+        if !runtime_dll.is_file() {
+            return Err(format!(
+                "cannot build target {target}: required LLVM-MinGW runtime is missing at {}\nhelp: complete or repair Developer setup in Vapor Installer",
+                runtime_dll.display()
+            ));
+        }
+        let inherited = env::var_os("PATH").unwrap_or_default();
+        let mut path_entries = vec![runtime];
+        path_entries.extend(env::split_paths(&inherited));
+        let path = env::join_paths(path_entries).map_err(|error| {
+            format!("failed to prepare the Windows cross-linker runtime path: {error}")
+        })?;
         command
             .env(cargo_linker_env(target), &compiler)
             .env(cargo_compiler_env(target), &compiler)
-            .env(cargo_archiver_env(target), archiver);
+            .env(cargo_archiver_env(target), archiver)
+            .env("PATH", path);
     } else if target == LINUX_GNU_TARGET && target != host_runtime_target() {
-        let linker = zig_linker_path(root, target);
-        require_target_tools(target, &[&zig_executable(root), &linker])?;
-        command.env(cargo_linker_env(target), linker);
+        let linker = zig_linker_path(vapor_home, target);
+        let archiver = zig_archiver_path(vapor_home);
+        require_target_tools(target, &[&zig_executable(vapor_home), &linker, &archiver])?;
+        command
+            .env(cargo_linker_env(target), &linker)
+            .env(cargo_compiler_env(target), linker)
+            .env(cargo_archiver_env(target), archiver);
     }
     Ok(())
 }
 
 /// Copy runtime DLLs required by a Windows GNU binary into its deploy directory.
 pub fn copy_windows_runtime_dlls(
-    root: &Path,
+    installation_root: &Path,
+    vapor_home: &Path,
     target: &str,
     target_directory: &Path,
 ) -> Result<usize, String> {
     if target != WINDOWS_GNU_TARGET {
         return Ok(0);
     }
-    ensure_contained(root, target_directory)?;
+    ensure_contained(installation_root, target_directory)?;
     fs::create_dir_all(target_directory).map_err(|error| {
         format!(
             "failed to create Windows runtime DLL directory '{}': {error}",
@@ -110,18 +146,18 @@ pub fn copy_windows_runtime_dlls(
         )
     })?;
 
-    let source_directory = root.join("tools/llvm-mingw/x86_64-w64-mingw32/bin");
+    let source_directory = vapor_home.join("tools/llvm-mingw/x86_64-w64-mingw32/bin");
     let mut copied = 0;
     for dll in WINDOWS_RUNTIME_DLLS {
         let source = source_directory.join(dll);
         if !source.is_file() {
             return Err(format!(
-                "cannot stage Windows runtime DLL '{dll}': missing {}\nhelp: run `rust-script --force <app-root>/resources/vapor/tools/production/app_setup/setup_development.rs` to install app-local llvm-mingw",
+                "cannot stage Windows runtime DLL '{dll}': missing {}\nhelp: complete or repair Developer setup in Vapor Installer",
                 source.display()
             ));
         }
         let target = target_directory.join(dll);
-        ensure_contained(root, &target)?;
+        ensure_contained(installation_root, &target)?;
         fs::copy(&source, &target).map_err(|error| {
             format!(
                 "failed to copy Windows runtime DLL '{}' to '{}': {error}",
@@ -150,27 +186,34 @@ fn require_target_tools(target: &str, paths: &[&PathBuf]) -> Result<(), String> 
         Ok(())
     } else {
         Err(format!(
-            "cannot build target {target}: app-local cross toolchain is incomplete\nmissing entries:\n  - {}\nhelp: run `rust-script --force <app-root>/resources/vapor/tools/production/app_setup/setup_development.rs`",
+            "cannot build target {target}: Vapor-managed cross toolchain is incomplete\nmissing entries:\n  - {}\nhelp: complete or repair Developer setup in Vapor Installer",
             missing.join("\n  - ")
         ))
     }
 }
 
-fn zig_executable(root: &Path) -> PathBuf {
-    root.join("tools/zig").join(executable("zig"))
+fn zig_executable(vapor_home: &Path) -> PathBuf {
+    vapor_home.join("tools/zig").join(executable("zig"))
 }
 
-fn llvm_mingw_bin(root: &Path) -> PathBuf {
-    root.join("tools/llvm-mingw/bin")
+fn llvm_mingw_bin(vapor_home: &Path) -> PathBuf {
+    vapor_home.join("tools/llvm-mingw/bin")
 }
 
-fn llvm_mingw_clang(root: &Path) -> PathBuf {
-    llvm_mingw_bin(root).join(executable("x86_64-w64-mingw32-clang"))
+fn llvm_mingw_clang(vapor_home: &Path) -> PathBuf {
+    llvm_mingw_bin(vapor_home).join(executable("x86_64-w64-mingw32-clang"))
 }
 
-fn zig_linker_path(root: &Path, target: &str) -> PathBuf {
-    root.join("tools/cross/bin")
+fn zig_linker_path(vapor_home: &Path, target: &str) -> PathBuf {
+    vapor_home
+        .join("tools/cross/bin")
         .join(format!("{target}-zig-cc{}", env::consts::EXE_SUFFIX))
+}
+
+fn zig_archiver_path(vapor_home: &Path) -> PathBuf {
+    vapor_home
+        .join("tools/cross/bin")
+        .join(format!("zig-ar{}", env::consts::EXE_SUFFIX))
 }
 
 fn cargo_linker_env(target: &str) -> String {
@@ -219,10 +262,22 @@ mod tests {
 
     impl TestRoot {
         fn new() -> Self {
+            let thread = std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .chars()
+                .map(|character| {
+                    if character.is_ascii_alphanumeric() || character == '-' {
+                        character
+                    } else {
+                        '-'
+                    }
+                })
+                .collect::<String>();
             let root = std::env::temp_dir().join(format!(
                 "vapor-cross-toolchain-test-{}-{}",
                 std::process::id(),
-                std::thread::current().name().unwrap_or("test")
+                thread
             ));
             let _ = fs::remove_dir_all(&root);
             fs::create_dir_all(root.join("tools/llvm-mingw/bin")).unwrap();
@@ -252,8 +307,17 @@ mod tests {
     #[test]
     fn windows_gnu_target_uses_the_same_mingw_compiler_and_archiver() {
         let root = TestRoot::new();
-        let compiler = root.executable("tools/llvm-mingw/bin/x86_64-w64-mingw32-clang");
-        let archiver = root.executable("tools/llvm-mingw/bin/x86_64-w64-mingw32-ar");
+        let compiler = root.executable(&format!(
+            "tools/llvm-mingw/bin/x86_64-w64-mingw32-clang{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        let archiver = root.executable(&format!(
+            "tools/llvm-mingw/bin/x86_64-w64-mingw32-ar{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        let runtime = root.0.join("tools/llvm-mingw/x86_64-w64-mingw32/bin");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(runtime.join("libunwind.dll"), b"test runtime").unwrap();
         let mut command = vapor_core::managed_process::background_command("cargo");
 
         configure_linker_env(&mut command, &root.0, WINDOWS_GNU_TARGET).unwrap();

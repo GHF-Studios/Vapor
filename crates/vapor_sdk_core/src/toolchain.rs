@@ -23,10 +23,10 @@ pub const RUSTUP_DIR: &str = "rustup";
 pub const RUSTUP_BIN_DIR: &str = "bin";
 
 /// Directory under `VAPOR_HOME` used as Rustup's managed home.
-pub const RUSTUP_HOME_DIR: &str = "rustup-home";
+pub const RUSTUP_HOME_DIR: &str = "tools/rustup/home";
 
 /// Directory under `VAPOR_HOME` used as Cargo's managed home.
-pub const CARGO_HOME_DIR: &str = "cargo-home";
+pub const CARGO_HOME_DIR: &str = "tools/cargo/home";
 
 /// Directory under `VAPOR_HOME` reserved for Rustup acquisition/bootstrap state.
 pub const TOOLCHAIN_BOOTSTRAP_DIR: &str = "toolchain-bootstrap";

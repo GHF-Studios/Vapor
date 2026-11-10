@@ -862,7 +862,54 @@ pub(super) fn is_isolated_fixture_workspace(root: &Path) -> bool {
     let Ok(temporary_root) = std::env::temp_dir().canonicalize() else {
         return false;
     };
-    root.starts_with(temporary_root)
+    path_is_within(&root, &temporary_root)
+}
+
+#[cfg(not(windows))]
+pub(super) fn path_is_within(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+}
+
+#[cfg(windows)]
+pub(super) fn path_is_within(path: &Path, root: &Path) -> bool {
+    fn normalized(path: &Path) -> String {
+        path.to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('/', r"\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    }
+
+    fn resolved_for_comparison(path: &Path) -> PathBuf {
+        // Canonicalize the nearest existing ancestor, then append any missing
+        // tail. This also normalizes Windows short/long path aliases for an
+        // expected-but-not-created workspace path.
+        let mut ancestor = path;
+        let mut missing = Vec::new();
+        while !ancestor.exists() {
+            let Some(name) = ancestor.file_name() else {
+                return path.to_path_buf();
+            };
+            missing.push(name.to_os_string());
+            let Some(parent) = ancestor.parent() else {
+                return path.to_path_buf();
+            };
+            ancestor = parent;
+        }
+        let mut resolved = ancestor
+            .canonicalize()
+            .unwrap_or_else(|_| ancestor.to_path_buf());
+        for name in missing.into_iter().rev() {
+            resolved.push(name);
+        }
+        resolved
+    }
+
+    let path = resolved_for_comparison(path);
+    let root = resolved_for_comparison(root);
+    let path = normalized(&path);
+    let root = normalized(&root);
+    path == root || path.starts_with(&format!("{root}\\"))
 }
 
 fn workspace_result_outcome(

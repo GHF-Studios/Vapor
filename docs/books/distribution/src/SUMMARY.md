@@ -7,7 +7,7 @@
 
 # Steam
 
-- [Root App](steam/root-app.md)
+- [Loo Cast Packagepack Steam depot](steam/root-app.md)
 - [SteamPipe](steam/steampipe.md)
 - [SteamCMD](steam/steamcmd.md)
 - [Workshop](steam/workshop.md)

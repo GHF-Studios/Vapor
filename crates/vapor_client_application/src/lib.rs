@@ -181,6 +181,8 @@ fn installation_role_snapshot_for(
             role: role.to_owned(),
             rust_ready: tools.rust_installed,
             rust_analyzer_ready: tools.rust_analyzer_installed,
+            linux_gnu_target_ready: tools.linux_gnu_target_installed,
+            linux_gnu_linker_ready: tools.linux_gnu_linker_installed,
             windows_gnu_target_ready: tools.windows_gnu_target_installed,
             windows_gnu_linker_ready: tools.windows_gnu_linker_installed,
             tracy_profiler_ready: tools.tracy_profiler_installed,
@@ -283,11 +285,11 @@ mod installation_role_snapshot_tests {
     #[test]
     fn readiness_failure_does_not_erase_the_installed_role() {
         let snapshot = installation_role_snapshot_for(
-            "ecosystem-developer",
+            "developer",
             Err("packaged toolchain pin is missing".to_owned()),
         );
 
-        assert_eq!(snapshot.role, "ecosystem-developer");
+        assert_eq!(snapshot.role, "developer");
         assert!(!snapshot.rust_ready);
         assert_eq!(
             snapshot.error.as_deref(),

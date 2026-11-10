@@ -11,7 +11,6 @@ pub mod content;
 pub mod environment;
 pub mod options;
 pub mod repair;
-pub mod root;
 pub mod spec;
 pub mod steam;
 pub mod template;

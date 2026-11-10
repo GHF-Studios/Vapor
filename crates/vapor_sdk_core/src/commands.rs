@@ -3,7 +3,6 @@
 use crate::content::{ContentSource, ContentType};
 use crate::environment::EnvironmentCommand;
 use crate::repair::RepairCommand;
-use crate::root::types::RootCommand;
 use crate::steam::types::SteamCommand;
 use crate::template::TemplateCommand;
 use crate::toolchain::ToolchainCommand;
@@ -84,7 +83,6 @@ pub enum SdkCommand {
     Version,
     Status,
     Environment(EnvironmentCommand),
-    Root(RootCommand),
     Steam(SteamCommand),
     Workspace(WorkspaceCommand),
     Repair(RepairCommand),

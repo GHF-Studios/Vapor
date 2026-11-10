@@ -464,7 +464,11 @@ fn run_step(
     if !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
         && let Some(target) = target
     {
-        cross_toolchain::configure_linker_env(&mut command, installation, target)?;
+        cross_toolchain::configure_linker_env(
+            &mut command,
+            &paths.installation().user_data_root(),
+            target,
+        )?;
     }
     if step == CargoStep::Doc {
         command.env("RUSTDOCFLAGS", "-D warnings");
@@ -714,10 +718,13 @@ mod tests {
     }
 
     #[test]
-    fn explicitly_selected_host_target_reuses_cargo_default_output() {
+    fn explicitly_selected_host_target_is_passed_to_cargo() {
         let host = super::host_runtime_target();
         let args = cargo_args(CargoStep::Build, Some(&host));
-        assert!(!args.iter().any(|argument| argument == "--target"));
+        assert!(
+            args.windows(2)
+                .any(|arguments| { arguments[0] == "--target" && arguments[1] == host })
+        );
     }
 
     #[test]

@@ -1018,10 +1018,12 @@ pub(super) fn resolve_live_workshop_download(
         }
     }
 
-    if let Some(seed) = root_content_seed(installation, selector)? {
+    if let Some(seed) = root_content_seed(installation, selector)?
+        && let Some(published_file_id) = seed.workshop_id
+    {
         return Ok(Some(WorkshopDownload {
             app_id: seed.app_id,
-            published_file_id: seed.workshop_id,
+            published_file_id,
         }));
     }
 

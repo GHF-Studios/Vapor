@@ -2,7 +2,6 @@ use crate::installation::VaporInstallation;
 use crate::registry::{RegisteredRepository, RegistryClient, RegistryError};
 use crate::role::git_available;
 use crate::source::SourceError;
-use crate::steam::{INSTALLED_ECOSYSTEM_METADATA_FILE_NAME, ROOT_DISTRIBUTION_MANIFEST_FILE_NAME};
 use crate::superworkspace::{SuperworkspaceError, VaporSuperworkspace};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -12,6 +11,9 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitStatus;
+
+const INSTALLED_ECOSYSTEM_METADATA_FILE_NAME: &str = "ecosystem.toml";
+const STANDALONE_MANIFEST_FILE_NAME: &str = "Vapor-Standalone.toml";
 
 #[derive(Debug, Clone)]
 pub struct EcosystemBootstrap {
@@ -250,7 +252,7 @@ fn find_source_bootstrap(start: &Path) -> Result<PathBuf, EcosystemError> {
     })?;
 
     for root in start.ancestors() {
-        let candidate = root.join(ROOT_DISTRIBUTION_MANIFEST_FILE_NAME);
+        let candidate = root.join(STANDALONE_MANIFEST_FILE_NAME);
 
         if candidate.is_file() {
             return Ok(candidate);
@@ -295,7 +297,11 @@ fn prepare_destination(
     let installation =
         fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
 
-    if destination.starts_with(&installation) || installation.starts_with(&destination) {
+    let managed_sources = installation.join("sources");
+    let is_managed_source_destination = destination.starts_with(&managed_sources);
+    if (destination.starts_with(&installation) || installation.starts_with(&destination))
+        && !is_managed_source_destination
+    {
         return Err(EcosystemError::OverlapsInstallation {
             destination,
             installation,
@@ -586,7 +592,7 @@ impl fmt::Display for EcosystemError {
             Self::SourceBootstrapNotFound { start } => {
                 write!(
                     formatter,
-                    "could not find `{ROOT_DISTRIBUTION_MANIFEST_FILE_NAME}` from `{}`",
+                    "could not find `{STANDALONE_MANIFEST_FILE_NAME}` from `{}`",
                     start.display()
                 )
             }
@@ -662,7 +668,7 @@ impl fmt::Display for EcosystemError {
             } => {
                 write!(
                     formatter,
-                    "source destination `{}` overlaps Vapor Installation `{}`",
+                    "source destination `{}` overlaps Vapor home `{}`; only the managed `sources` directory may contain checkouts",
                     destination.display(),
                     installation.display()
                 )

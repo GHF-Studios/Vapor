@@ -29,7 +29,6 @@ pub mod role;
 pub mod run;
 pub mod source;
 pub mod storage;
-pub mod steam;
 pub mod superworkspace;
 pub mod toolchain;
 pub mod tracy;
@@ -49,7 +48,8 @@ pub use cargo_reconciliation::{
 };
 
 pub use cross_target_toolchain::{
-    CrossTargetToolchainError, WINDOWS_GNU_LINKER_VERSION, install_windows_gnu_linker,
+    CrossTargetToolchainError, LINUX_GNU_LINKER_VERSION, WINDOWS_GNU_LINKER_VERSION,
+    install_linux_gnu_linker, install_windows_gnu_linker, linux_gnu_linker_installed,
     windows_gnu_linker_installed,
 };
 
@@ -96,7 +96,8 @@ pub use install::{
 };
 
 pub use installation::{
-    InstallationError, InstallationRootSource, VAPOR_HOME_ENV, VaporInstallation,
+    InstallationError, InstallationRootSource, LegacyHomeMigrationReport, VAPOR_HOME_ENV,
+    VAPOR_HOME_MANIFEST_FILE_NAME, VAPOR_PRODUCT_ROOT_ENV, VaporInstallation,
 };
 
 pub use local::{
@@ -160,23 +161,21 @@ pub use source::{
     resolve_source_context, source_state,
 };
 
-pub use steam::{
-    EcosystemDistributionManifest, SteamDeploymentError, SteamDeploymentOptions,
-    SteamDeploymentReport, SteamDepotStage, deploy_ecosystem_to_steam,
-};
-
 pub use superworkspace::{
     SUPERWORKSPACE_MANIFEST_FILE_NAME, SuperworkspaceError, SuperworkspaceProject,
     SuperworkspaceRepository, SuperworkspaceRepositoryKind, VaporSuperworkspace,
 };
 
-pub use toolchain::{ManagedToolchain, RustToolchainCommandEnvironment, ToolchainError};
+pub use toolchain::{
+    DEVELOPER_TARGETS, LINUX_GNU_TARGET, ManagedToolchain, RustToolchainCommandEnvironment,
+    ToolchainError, WINDOWS_GNU_TARGET,
+};
 
 pub use tracy::{ManagedTracyRepair, ManagedTracyToolset, TRACY_PROFILER_VERSION, TracyError};
 
 pub use uninstall::{
-    UninstallError, UninstallOptions, UninstallReport, uninstall_installation,
-    uninstall_installation_for,
+    FullNukePreview, UninstallError, UninstallOptions, UninstallReport, preview_full_nuke,
+    uninstall_installation, uninstall_installation_for,
 };
 
 pub use workspace::{

@@ -15,6 +15,8 @@ pub struct RootAssetReport {
     pub tools: usize,
     /// Platform-specific launch scripts installed.
     pub launch_scripts: usize,
+    /// Shared SteamPipe templates installed for optional app/depot packaging.
+    pub steam_templates: usize,
 }
 
 /// Synchronize source-owned launch assets into the app installation.
@@ -33,6 +35,12 @@ pub fn sync_release_assets(
             paths,
             "resources/vapor/tools",
             "resources/vapor/tools",
+            false,
+        )?,
+        steam_templates: sync_source_tree(
+            paths,
+            "resources/steam/steampipe-templates",
+            "resources/steam/steampipe-templates",
             false,
         )?,
         launch_scripts: sync_launch_scripts(paths, targets)?,

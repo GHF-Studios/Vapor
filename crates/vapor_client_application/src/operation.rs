@@ -46,8 +46,8 @@ pub enum OperationKind {
     RunInstalled,
     StageWorkshop,
     PublishWorkshop,
-    StageRootDistribution,
-    PublishRootDistribution,
+    StageApplicationRelease,
+    PublishApplicationRelease,
 }
 
 impl OperationKind {
@@ -92,8 +92,8 @@ impl OperationKind {
             Self::RunInstalled => "run-installed",
             Self::StageWorkshop => "stage-workshop",
             Self::PublishWorkshop => "publish-workshop",
-            Self::StageRootDistribution => "stage-root-distribution",
-            Self::PublishRootDistribution => "publish-root-distribution",
+            Self::StageApplicationRelease => "stage-application-release",
+            Self::PublishApplicationRelease => "publish-application-release",
         }
     }
 }
