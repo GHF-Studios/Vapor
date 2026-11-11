@@ -116,6 +116,16 @@ pub fn uninstall_installation_for(
 pub fn validate_superworkspace_for_erasure(
     installation: &VaporInstallation,
 ) -> Result<PathBuf, UninstallError> {
+    // A Vapor Home marked by the installation itself is the explicit scope of
+    // `erase all`; it must remain erasable even if source-state bookkeeping was
+    // erased or left pointing at a previous workspace during a clean rebuild.
+    let home_marker = installation.root.join("Vapor-Home.toml");
+    if fs::read_to_string(&home_marker)
+        .is_ok_and(|contents| contents.contains("id = \"ghf-studios/vapor\""))
+    {
+        return Ok(installation.root.clone());
+    }
+
     let root = active_superworkspace(installation)?;
     ensure_superworkspace_purge_safe(&root)?;
     Ok(root)
