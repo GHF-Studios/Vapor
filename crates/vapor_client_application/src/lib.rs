@@ -8,6 +8,7 @@ mod composition;
 mod content;
 mod deployment;
 mod documentation;
+mod journey;
 mod operation;
 mod publishing;
 mod workspace;
@@ -37,6 +38,12 @@ pub use content::{
 pub use deployment::{deploy_application_with_context, package_application_with_context};
 pub use documentation::build_documentation_with_context;
 pub use documentation::publish_documentation_with_context;
+pub use journey::{
+    JourneyDefinition, JourneyProgressSnapshot, JourneySnapshot, QuestAvailability,
+    QuestCompletion, QuestDefinition, QuestEvidence, QuestEvidenceKind, QuestSnapshot,
+    confirm_journey_quest, journey_catalog, journey_progress, observe_developer_toolchain,
+    observe_installed_composition, observe_successful_operation, wheel_salvage_workspace,
+};
 pub use operation::{
     CoreOperationEvent, CoreOperationRequest, OperationCancellation, OperationContext,
     OperationEvent, OperationEventSink, OperationId, OperationKind, OperationOutput,
