@@ -16,6 +16,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+#[cfg(windows)]
+use std::process::Stdio;
 
 const DEV_PROFILE_DIR: &str = "debug";
 const BIN_DIR: &str = "bin";
@@ -108,6 +110,7 @@ pub enum LocalClientDeploymentOutcome {
     AuthorityDelegated {
         executable: PathBuf,
         installation_root: PathBuf,
+        completion_log: Option<PathBuf>,
     },
     Deployed {
         report: EcosystemDeploymentReport,
@@ -119,15 +122,16 @@ pub enum LocalClientDeploymentOutcome {
 /// Deploy the active Vapor Client workspace into the local Vapor App Instance.
 ///
 /// The first invocation builds a source authority in Vapor's managed cache,
-/// promotes it to a temporary executable inside Vapor Home, and runs it from
-/// there. That CLI re-enters this operation and performs the promotion. Cargo
-/// output is never used as a live executable path.
+/// promotes it to a temporary executable inside Vapor Home, and delegates the
+/// promotion. On Windows, an external coordinator waits for this CLI to exit
+/// before running the authority, because the CLI executable is one of the files
+/// being replaced. Cargo output is never used as a live executable path.
 pub fn deploy_client_locally() -> Result<LocalClientDeploymentOutcome, DevelopmentError> {
     let workspace = client_workspace()?;
 
     if !local_deployment_authority_active()? {
         let authority = build_workspace_deployment_authority(&workspace)?;
-        run_workspace_deployment_authority(&workspace, &authority)?;
+        let completion_log = run_workspace_deployment_authority(&workspace, &authority)?;
         let deployed_executable = authority
             .installation_root
             .join(BIN_DIR)
@@ -136,6 +140,7 @@ pub fn deploy_client_locally() -> Result<LocalClientDeploymentOutcome, Developme
         return Ok(LocalClientDeploymentOutcome::AuthorityDelegated {
             executable: deployed_executable,
             installation_root: authority.installation_root,
+            completion_log,
         });
     }
 
@@ -705,43 +710,183 @@ pub fn local_deployment_authority_active() -> Result<bool, DevelopmentError> {
 pub fn run_workspace_deployment_authority(
     workspace: &VaporWorkspace,
     authority: &LocalDeploymentAuthority,
-) -> Result<(), DevelopmentError> {
+) -> Result<Option<PathBuf>, DevelopmentError> {
     let canonical_authority =
         fs::canonicalize(&authority.executable).map_err(|source| DevelopmentError::Io {
             path: authority.executable.clone(),
             source,
         })?;
 
-    let output = crate::managed_process::background_command(&canonical_authority)
-        .args(["client", "deploy", "local"])
-        .current_dir(&workspace.root)
-        .env(crate::VAPOR_HOME_ENV, &authority.installation_root)
-        .env(LOCAL_DEPLOYMENT_AUTHORITY_ENV, &canonical_authority)
-        .output();
-    let cleanup = fs::remove_file(&canonical_authority);
-    let output = output.map_err(|source| DevelopmentError::DeploymentAuthorityStart {
-        executable: canonical_authority.clone(),
+    #[cfg(windows)]
+    {
+        return schedule_windows_local_deployment(workspace, authority, &canonical_authority)
+            .map(Some);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let output = crate::managed_process::background_command(&canonical_authority)
+            .args(["client", "deploy", "local"])
+            .current_dir(&workspace.root)
+            .env(crate::VAPOR_HOME_ENV, &authority.installation_root)
+            .env(LOCAL_DEPLOYMENT_AUTHORITY_ENV, &canonical_authority)
+            .output();
+        let cleanup = fs::remove_file(&canonical_authority);
+        let output = output.map_err(|source| DevelopmentError::DeploymentAuthorityStart {
+            executable: canonical_authority.clone(),
+            source,
+        })?;
+        cleanup.map_err(|source| DevelopmentError::Io {
+            path: canonical_authority.clone(),
+            source,
+        })?;
+
+        if output.status.success() {
+            Ok(None)
+        } else {
+            let diagnostic = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            let diagnostic = if diagnostic.is_empty() {
+                String::from_utf8_lossy(&output.stdout).trim().to_owned()
+            } else {
+                diagnostic
+            };
+            Err(DevelopmentError::DeploymentAuthorityFailed {
+                executable: canonical_authority,
+                status: output.status,
+                diagnostic,
+            })
+        }
+    }
+}
+
+#[cfg(windows)]
+fn schedule_windows_local_deployment(
+    workspace: &VaporWorkspace,
+    authority: &LocalDeploymentAuthority,
+    canonical_authority: &Path,
+) -> Result<PathBuf, DevelopmentError> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let handoff_root = authority
+        .installation_root
+        .join("cache/deployment-handoff");
+    let log_root = authority.installation_root.join("data/logs");
+    fs::create_dir_all(&handoff_root).map_err(|source| DevelopmentError::Io {
+        path: handoff_root.clone(),
         source,
     })?;
-    cleanup.map_err(|source| DevelopmentError::Io {
-        path: canonical_authority.clone(),
+    fs::create_dir_all(&log_root).map_err(|source| DevelopmentError::Io {
+        path: log_root.clone(),
         source,
     })?;
 
-    if output.status.success() {
-        Ok(())
+    let process_id = std::process::id();
+    let script_path = handoff_root.join(format!("local-deploy-{process_id}.ps1"));
+    let log_path = log_root.join(format!("local-deploy-{process_id}.log"));
+    let mut script_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&script_path)
+        .map_err(|source| DevelopmentError::Io {
+            path: script_path.clone(),
+            source,
+        })?;
+    let script = format!(
+        r#"$ErrorActionPreference = 'Stop'
+$parent = {parent}
+$helper = {helper}
+$vaporHome = {home}
+$workspace = {workspace}
+$log = {log}
+$stdout = "$log.stdout"
+$stderr = "$log.stderr"
+$deadline = (Get-Date).AddMinutes(2)
+try {{
+    [IO.File]::WriteAllText($log, "Waiting for Vapor process $parent to exit before local deployment.`r`n")
+    while (Get-Process -Id $parent -ErrorAction SilentlyContinue) {{
+        if ((Get-Date) -ge $deadline) {{ throw 'Vapor did not exit within two minutes; no binaries were replaced.' }}
+        Start-Sleep -Milliseconds 200
+    }}
+    $env:VAPOR_HOME = $vaporHome
+    $env:{authority_env} = $helper
+    $process = Start-Process -FilePath $helper -ArgumentList @('client', 'deploy', 'local') -WorkingDirectory $workspace -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    foreach ($output in @($stdout, $stderr)) {{
+        if (Test-Path -LiteralPath $output) {{
+            [IO.File]::AppendAllText($log, [IO.File]::ReadAllText($output))
+            Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+        }}
+    }}
+    $exitCode = $process.ExitCode
+    [IO.File]::AppendAllText($log, "`r`nDeployment helper exit code: $exitCode`r`n")
+    if ($exitCode -ne 0) {{ throw "Local deployment failed with exit code $exitCode; see the log." }}
+}} catch {{
+    [IO.File]::AppendAllText($log, "`r`nLocal deployment handoff failed: $($_.Exception.Message)`r`n")
+}} finally {{
+    Remove-Item -LiteralPath $helper -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stdout -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stderr -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+}}
+"#,
+        parent = process_id,
+        helper = powershell_literal(&windows_process_path(&authority.executable)),
+        home = powershell_literal(&windows_process_path(&authority.installation_root)),
+        workspace = powershell_literal(&windows_process_path(&workspace.root)),
+        log = powershell_literal(&windows_process_path(&log_path)),
+        authority_env = LOCAL_DEPLOYMENT_AUTHORITY_ENV,
+    );
+    script_file
+        .write_all(script.as_bytes())
+        .map_err(|source| DevelopmentError::Io {
+            path: script_path.clone(),
+            source,
+        })?;
+    drop(script_file);
+
+    let mut command = crate::managed_process::background_command(
+        crate::managed_process::windows_powershell_executable(),
+    );
+    command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(&script_path)
+        .current_dir(&workspace.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    if let Err(source) = command.spawn() {
+        let _ = fs::remove_file(&script_path);
+        let _ = fs::remove_file(canonical_authority);
+        return Err(DevelopmentError::DeploymentAuthorityStart {
+            executable: script_path,
+            source,
+        });
+    }
+
+    Ok(log_path)
+}
+
+#[cfg(windows)]
+fn powershell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(windows)]
+fn windows_process_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if let Some(unc_path) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc_path}")
+    } else if let Some(drive_path) = path.strip_prefix(r"\\?\") {
+        drive_path.to_owned()
     } else {
-        let diagnostic = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        let diagnostic = if diagnostic.is_empty() {
-            String::from_utf8_lossy(&output.stdout).trim().to_owned()
-        } else {
-            diagnostic
-        };
-        Err(DevelopmentError::DeploymentAuthorityFailed {
-            executable: canonical_authority,
-            status: output.status,
-            diagnostic,
-        })
+        path.into_owned()
     }
 }
 
