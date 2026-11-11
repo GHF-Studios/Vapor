@@ -106,10 +106,13 @@ pub fn configure_superworkspace(
         .map_err(|error| SourceError::Superworkspace(error.to_string()))?;
     let mut persisted = load(&source_state_path(installation))?;
     persisted.superworkspace = Some(superworkspace.root.clone());
-    if !persisted.known.contains(&superworkspace.root) {
-        persisted.known.push(superworkspace.root.clone());
-        persisted.known.sort();
-    }
+    // A Superworkspace owns and organizes authored source roots; it is not
+    // itself one of those roots. Keeping it in `known` makes the source picker
+    // report the Vapor Home as an unavailable source because it has no
+    // Workspace.vapor.toml.
+    persisted
+        .known
+        .retain(|known| known != &superworkspace.root);
     save(installation, &persisted)?;
     Ok(superworkspace)
 }
