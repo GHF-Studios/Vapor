@@ -518,9 +518,10 @@ fn deployment_projects(workspace: &VaporWorkspace) -> Vec<VaporProject> {
                 // component workspaces under the selected Client checkout
                 // are intentional siblings and must remain eligible.
                 .filter(|project| {
-                    project.project.root.starts_with(
-                        client_root.as_deref().unwrap_or(&workspace.root),
-                    )
+                    project
+                        .project
+                        .root
+                        .starts_with(client_root.as_deref().unwrap_or(&workspace.root))
                 })
                 .map(|project| project.project)
                 .collect::<Vec<_>>()
@@ -635,10 +636,11 @@ pub fn build_workspace_deployment_authority(
     let projects = deployment_projects(workspace);
     let compiler_wrapper_target = find_binary_target(&toolchain, &projects, "vapor-cc")?;
     build_binary(&toolchain, &compiler_wrapper_target, "vapor-cc")?;
-    let compiler_wrapper_output = development_target_dir(&toolchain, &compiler_wrapper_target.project)
-        .join(toolchain.build_target)
-        .join(DEV_PROFILE_DIR)
-        .join(executable_name("vapor-cc"));
+    let compiler_wrapper_output =
+        development_target_dir(&toolchain, &compiler_wrapper_target.project)
+            .join(toolchain.build_target)
+            .join(DEV_PROFILE_DIR)
+            .join(executable_name("vapor-cc"));
     let compiler_wrapper = toolchain
         .vapor_home
         .join("tools/cc-wrapper")
@@ -710,14 +712,14 @@ pub fn run_workspace_deployment_authority(
             source,
         })?;
 
-    let status = crate::managed_process::background_command(&canonical_authority)
+    let output = crate::managed_process::background_command(&canonical_authority)
         .args(["client", "deploy", "local"])
         .current_dir(&workspace.root)
         .env(crate::VAPOR_HOME_ENV, &authority.installation_root)
         .env(LOCAL_DEPLOYMENT_AUTHORITY_ENV, &canonical_authority)
-        .status();
+        .output();
     let cleanup = fs::remove_file(&canonical_authority);
-    let status = status.map_err(|source| DevelopmentError::DeploymentAuthorityStart {
+    let output = output.map_err(|source| DevelopmentError::DeploymentAuthorityStart {
         executable: canonical_authority.clone(),
         source,
     })?;
@@ -726,12 +728,19 @@ pub fn run_workspace_deployment_authority(
         source,
     })?;
 
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
+        let diagnostic = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let diagnostic = if diagnostic.is_empty() {
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        } else {
+            diagnostic
+        };
         Err(DevelopmentError::DeploymentAuthorityFailed {
             executable: canonical_authority,
-            status,
+            status: output.status,
+            diagnostic,
         })
     }
 }
@@ -1047,6 +1056,7 @@ pub enum DevelopmentError {
     DeploymentAuthorityFailed {
         executable: PathBuf,
         status: ExitStatus,
+        diagnostic: String,
     },
 
     UnsupportedHost,
@@ -1154,11 +1164,20 @@ impl fmt::Display for DevelopmentError {
                 )
             }
 
-            Self::DeploymentAuthorityFailed { executable, status } => {
+            Self::DeploymentAuthorityFailed {
+                executable,
+                status,
+                diagnostic,
+            } => {
                 write!(
                     formatter,
-                    "source deployment authority `{}` failed with {status}",
+                    "source deployment authority `{}` failed with {status}{}",
                     executable.display(),
+                    if diagnostic.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {diagnostic}")
+                    },
                 )
             }
 
