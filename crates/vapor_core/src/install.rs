@@ -255,7 +255,9 @@ Write-Output 'registered'
         powershell_literal(&windows_environment_path(root)),
         powershell_literal(&windows_environment_path(bin)),
     );
-    let output = crate::managed_process::background_command(windows_powershell_executable())
+    let output = crate::managed_process::background_command(
+        crate::managed_process::windows_powershell_executable(),
+    )
         .args(["-NoProfile", "-NonInteractive", "-Command"])
         .arg(command)
         .output()
@@ -282,23 +284,13 @@ fn powershell_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn windows_environment_path(path: &Path) -> String {
+pub(crate) fn windows_environment_path(path: &Path) -> String {
     let path = path.to_string_lossy();
     if let Some(unc_path) = path.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{unc_path}")
     } else {
         path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
     }
-}
-
-fn windows_powershell_executable() -> PathBuf {
-    env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("System32")
-        .join("WindowsPowerShell")
-        .join("v1.0")
-        .join("powershell.exe")
 }
 
 #[derive(Debug)]

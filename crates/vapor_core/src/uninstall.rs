@@ -438,12 +438,9 @@ fn remove_windows_user_path(installation: &VaporInstallation) -> Result<bool, Un
     let bins = targets
         .iter()
         .map(|target| {
-            installation
-                .root
-                .join("bin")
-                .join(target)
-                .to_string_lossy()
-                .into_owned()
+            crate::install::windows_environment_path(
+                &installation.root.join("bin").join(target),
+            )
         })
         .collect::<Vec<_>>()
         .join("|");
@@ -497,7 +494,9 @@ public static class VaporEnvironmentBroadcast {
         powershell_literal(&bins),
         powershell_literal(&legacy),
     );
-    let output = crate::managed_process::background_command("powershell")
+    let output = crate::managed_process::background_command(
+        crate::managed_process::windows_powershell_executable(),
+    )
         .args(["-NoProfile", "-NonInteractive", "-Command"])
         .arg(command)
         .output()
@@ -538,9 +537,11 @@ if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase))
     let command = format!(
         "& {{ {script} }} {} {}",
         powershell_literal(variable),
-        powershell_literal(&installation_root.to_string_lossy()),
+        powershell_literal(&crate::install::windows_environment_path(installation_root)),
     );
-    let output = crate::managed_process::background_command("powershell")
+    let output = crate::managed_process::background_command(
+        crate::managed_process::windows_powershell_executable(),
+    )
         .args(["-NoProfile", "-NonInteractive", "-Command"])
         .arg(command)
         .output()
