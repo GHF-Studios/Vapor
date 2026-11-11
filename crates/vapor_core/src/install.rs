@@ -207,13 +207,19 @@ $path = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($null -eq $path) { $path = '' }
 $entries = @($path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 $canonicalBin = [IO.Path]::GetFullPath($bin).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
-$present = $entries | Where-Object {
+$entries = @($entries | Where-Object {
     try {
-        $entry = [IO.Path]::GetFullPath($_).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
-        [string]::Equals($entry, $canonicalBin, [StringComparison]::OrdinalIgnoreCase)
-    } catch { $false }
-}
-if (-not $present) { $entries += $bin }
+        $candidate = $_
+        if ($candidate.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
+            $candidate = '\\' + $candidate.Substring(8)
+        } elseif ($candidate.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) {
+            $candidate = $candidate.Substring(4)
+        }
+        $entry = [IO.Path]::GetFullPath($candidate).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
+        -not [string]::Equals($entry, $canonicalBin, [StringComparison]::OrdinalIgnoreCase)
+    } catch { $true }
+})
+$entries += $bin
 [Environment]::SetEnvironmentVariable('Path', ($entries -join ';'), 'User')
 $storedHome = [Environment]::GetEnvironmentVariable('VAPOR_HOME', 'User')
 $storedPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -246,10 +252,10 @@ Write-Output 'registered'
 
     let command = format!(
         "& {{ {script} }} {} {}",
-        powershell_literal(&root.to_string_lossy()),
-        powershell_literal(&bin.to_string_lossy()),
+        powershell_literal(&windows_environment_path(root)),
+        powershell_literal(&windows_environment_path(bin)),
     );
-    let output = crate::managed_process::background_command("powershell")
+    let output = crate::managed_process::background_command(windows_powershell_executable())
         .args(["-NoProfile", "-NonInteractive", "-Command"])
         .arg(command)
         .output()
@@ -274,6 +280,25 @@ Write-Output 'registered'
 
 fn powershell_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn windows_environment_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if let Some(unc_path) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc_path}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
+    }
+}
+
+fn windows_powershell_executable() -> PathBuf {
+    env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe")
 }
 
 #[derive(Debug)]
