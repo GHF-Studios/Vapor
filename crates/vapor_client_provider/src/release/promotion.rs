@@ -8,6 +8,7 @@ use crate::{
 };
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -187,6 +188,9 @@ impl RuntimeTarget {
 }
 
 fn promote_file(source: &Path, destination: &Path) -> Result<(), String> {
+    if destination.is_file() && files_are_identical(source, destination)? {
+        return Ok(());
+    }
     let parent = destination.parent().ok_or_else(|| {
         format!(
             "binary destination has no parent: {}",
@@ -222,6 +226,52 @@ fn promote_file(source: &Path, destination: &Path) -> Result<(), String> {
             destination.display()
         )
     })
+}
+
+fn files_are_identical(source: &Path, destination: &Path) -> Result<bool, String> {
+    let source_metadata = fs::metadata(source)
+        .map_err(|error| format!("failed to inspect '{}': {error}", source.display()))?;
+    let destination_metadata = fs::metadata(destination).map_err(|error| {
+        format!(
+            "failed to inspect existing binary '{}': {error}",
+            destination.display()
+        )
+    })?;
+    if source_metadata.len() != destination_metadata.len() {
+        return Ok(false);
+    }
+
+    let mut source_file = fs::File::open(source)
+        .map_err(|error| format!("failed to read '{}': {error}", source.display()))?;
+    let mut destination_file = fs::File::open(destination).map_err(|error| {
+        format!(
+            "failed to inspect existing binary '{}': {error}",
+            destination.display()
+        )
+    })?;
+    let mut source_buffer = [0; 64 * 1024];
+    let mut destination_buffer = [0; 64 * 1024];
+    loop {
+        let source_read = source_file
+            .read(&mut source_buffer)
+            .map_err(|error| format!("failed to read '{}': {error}", source.display()))?;
+        let destination_read = destination_file
+            .read(&mut destination_buffer)
+            .map_err(|error| {
+                format!(
+                    "failed to inspect existing binary '{}': {error}",
+                    destination.display()
+                )
+            })?;
+        if source_read != destination_read
+            || source_buffer[..source_read] != destination_buffer[..destination_read]
+        {
+            return Ok(false);
+        }
+        if source_read == 0 {
+            return Ok(true);
+        }
+    }
 }
 
 #[cfg(test)]

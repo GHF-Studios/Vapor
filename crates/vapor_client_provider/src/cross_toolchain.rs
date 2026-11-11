@@ -1,6 +1,6 @@
 use crate::{
     discovery::ensure_contained,
-    target::{host_runtime_target, validate_runtime_target},
+    target::host_runtime_target,
 };
 use std::{
     env, fs,
@@ -8,10 +8,7 @@ use std::{
     process::Command,
 };
 
-/// Linux target supported by Vapor's bundled Zig cross linker.
-pub const LINUX_GNU_TARGET: &str = "x86_64-unknown-linux-gnu";
-/// Windows target supported by the bundled LLVM-MinGW toolchain.
-pub const WINDOWS_GNU_TARGET: &str = "x86_64-pc-windows-gnullvm";
+pub use crate::target::{LINUX_GNU_TARGET, WINDOWS_GNU_TARGET};
 const WINDOWS_RUNTIME_DLLS: &[&str] = &["libunwind.dll"];
 
 /// Availability of Vapor's managed cross-compilation tools.
@@ -76,35 +73,16 @@ pub fn inspect(root: &Path) -> CrossToolchainStatus {
 
 /// Configure the app-local linker, compiler, and archiver for a Cargo target.
 ///
-/// Host targets need no cross toolchain. Unsupported cross targets retain
-/// Cargo's normal lookup rules so installed target providers can be used.
+/// Selects the Vapor-managed toolchain from the requested target, even when it
+/// matches the host. This keeps host and cross builds on the same ABI/tool path.
+/// Unsupported targets are rejected before Cargo is invoked.
 pub fn configure_linker_env(
     command: &mut Command,
     root: &Path,
     target: &str,
 ) -> Result<(), String> {
-    validate_runtime_target(target)?;
-    if target == WINDOWS_GNU_TARGET {
-        let compiler = llvm_mingw_clang(root);
-        let archiver = llvm_mingw_bin(root).join(executable("x86_64-w64-mingw32-ar"));
-        require_target_tools(target, &[&compiler, &archiver])?;
-        command
-            .env(cargo_linker_env(target), &compiler)
-            .env(cargo_compiler_env(target), &compiler)
-            .env(cargo_archiver_env(target), archiver);
-    } else if target == LINUX_GNU_TARGET && target != host_runtime_target() {
-        let linker_and_compiler = linux_cc_compiler(root);
-        let archiver = llvm_ar(root);
-        require_target_tools(
-            target,
-            &[&zig_executable(root), &linker_and_compiler, &archiver],
-        )?;
-        command
-            .env(cargo_linker_env(target), &linker_and_compiler)
-            .env(cargo_compiler_env(target), &linker_and_compiler)
-            .env(cargo_archiver_env(target), archiver);
-    }
-    Ok(())
+    vapor_core::configure_runtime_target_linker_env(command, root, target)
+        .map_err(|error| error.to_string())
 }
 
 /// Copy runtime DLLs required by a Windows GNU binary into its deploy directory.
@@ -136,6 +114,23 @@ pub fn copy_windows_runtime_dlls(
         }
         let target = target_directory.join(dll);
         ensure_contained(root, &target)?;
+        if target.is_file() {
+            let source_bytes = fs::read(&source).map_err(|error| {
+                format!(
+                    "failed to read Windows runtime DLL '{}': {error}",
+                    source.display()
+                )
+            })?;
+            let target_bytes = fs::read(&target).map_err(|error| {
+                format!(
+                    "failed to inspect deployed Windows runtime DLL '{}': {error}",
+                    target.display()
+                )
+            })?;
+            if source_bytes == target_bytes {
+                continue;
+            }
+        }
         fs::copy(&source, &target).map_err(|error| {
             format!(
                 "failed to copy Windows runtime DLL '{}' to '{}': {error}",
@@ -146,28 +141,6 @@ pub fn copy_windows_runtime_dlls(
         copied += 1;
     }
     Ok(copied)
-}
-
-fn require_target_tools(target: &str, paths: &[&PathBuf]) -> Result<(), String> {
-    let missing = paths
-        .iter()
-        .filter(|path| !is_executable(path))
-        .map(|path| {
-            format!(
-                "{} (expected at {})",
-                path.file_name().unwrap_or_default().to_string_lossy(),
-                path.display()
-            )
-        })
-        .collect::<Vec<_>>();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "cannot build target {target}: app-local cross toolchain is incomplete\nmissing entries:\n  - {}\nhelp: run `rust-script --force <app-root>/resources/vapor/tools/production/app_setup/setup_development.rs`",
-            missing.join("\n  - ")
-        ))
-    }
 }
 
 fn zig_executable(root: &Path) -> PathBuf {
@@ -190,21 +163,6 @@ fn linux_cc_compiler(root: &Path) -> PathBuf {
     root.join("bin")
         .join(host_runtime_target())
         .join(executable("vapor-linux-cc"))
-}
-
-fn cargo_linker_env(target: &str) -> String {
-    format!(
-        "CARGO_TARGET_{}_LINKER",
-        target.replace('-', "_").to_ascii_uppercase()
-    )
-}
-
-fn cargo_compiler_env(target: &str) -> String {
-    format!("CC_{target}")
-}
-
-fn cargo_archiver_env(target: &str) -> String {
-    format!("AR_{target}")
 }
 
 fn executable(name: &str) -> String {
