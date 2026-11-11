@@ -111,6 +111,16 @@ pub fn uninstall_installation_for(
     })
 }
 
+/// Verify that first-party source under the active Superworkspace is clean
+/// and fully published before a full Vapor Home erasure.
+pub fn validate_superworkspace_for_erasure(
+    installation: &VaporInstallation,
+) -> Result<PathBuf, UninstallError> {
+    let root = active_superworkspace(installation)?;
+    ensure_superworkspace_purge_safe(&root)?;
+    Ok(root)
+}
+
 #[derive(Debug)]
 struct UninstallPreflight {
     superworkspace_purge_root: Option<PathBuf>,
@@ -126,13 +136,10 @@ fn preflight_uninstall(
     preflight_machine_integration_removal()?;
 
     let superworkspace_purge_root = if let Some(superworkspace) = superworkspace_root {
-        let root = preflight_owned_tree(
-            superworkspace,
-            &[installation.root.as_path(), data_root],
-        )?
-        .ok_or_else(|| UninstallError::UnsafePurgeRoot {
-            path: superworkspace.to_path_buf(),
-        })?;
+        let root = preflight_owned_tree(superworkspace, &[installation.root.as_path(), data_root])?
+            .ok_or_else(|| UninstallError::UnsafePurgeRoot {
+                path: superworkspace.to_path_buf(),
+            })?;
 
         ensure_superworkspace_purge_safe(&root)?;
         Some(root)
@@ -417,38 +424,72 @@ fn remove_managed_profile_block(
 }
 
 fn remove_windows_user_path(installation: &VaporInstallation) -> Result<bool, UninstallError> {
-    let target = if cfg!(all(
-        target_arch = "x86_64",
-        target_os = "windows",
-        target_env = "msvc"
-    )) {
-        "x86_64-pc-windows-msvc"
-    } else {
-        return Ok(false);
-    };
-
-    let bin = installation.root.join("bin").join(target);
-    let legacy = format!(r"%VAPOR_HOME%\bin\{target}");
+    let targets = ["x86_64-pc-windows-msvc", "x86_64-pc-windows-gnullvm"];
+    let bins = targets
+        .iter()
+        .map(|target| {
+            installation
+                .root
+                .join("bin")
+                .join(target)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    let legacy = targets
+        .iter()
+        .map(|target| format!(r"%VAPOR_HOME%\bin\{target}"))
+        .collect::<Vec<_>>()
+        .join("|");
     let script = r#"
-$bin = $args[0]
-$legacy = $args[1]
+param([string]$binsEncoded, [string]$legacyEncoded)
+$ErrorActionPreference = 'Stop'
 $path = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($null -eq $path) { exit 0 }
 $entries = @($path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+$managed = @($binsEncoded -split '\|') + @($legacyEncoded -split '\|')
 $filtered = @($entries | Where-Object {
-    -not [string]::Equals($_, $bin, [StringComparison]::OrdinalIgnoreCase) -and
-    -not [string]::Equals($_, $legacy, [StringComparison]::OrdinalIgnoreCase)
+    $entry = $_
+    try { $entry = [IO.Path]::GetFullPath($_).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)) } catch { }
+    $match = $false
+    foreach ($candidate in $managed) {
+        $normalized = $candidate
+        try { $normalized = [IO.Path]::GetFullPath($candidate).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)) } catch { }
+        if ([string]::Equals($entry, $normalized, [StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($_, $candidate, [StringComparison]::OrdinalIgnoreCase)) { $match = $true; break }
+    }
+    -not $match
 })
 if ($filtered.Count -ne $entries.Count) {
     [Environment]::SetEnvironmentVariable('Path', ($filtered -join ';'), 'User')
+    try {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class VaporEnvironmentBroadcast {
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, UInt32 message, IntPtr wParam, string lParam, UInt32 flags, UInt32 timeout, out IntPtr result);
+}
+'@
+        $result = [IntPtr]::Zero
+        $sent = [VaporEnvironmentBroadcast]::SendMessageTimeout([IntPtr](-1), 0x001A, [IntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result)
+        if ($sent -eq [IntPtr]::Zero) { Write-Warning 'PATH was removed, but Windows did not notify open applications.' }
+    } catch { Write-Warning "PATH was removed, but Windows did not notify open applications: $_" }
     Write-Output 'removed'
+} else {
+    Write-Output 'unchanged'
 }
 "#;
 
+    let command = format!(
+        "& {{ {script} }} {} {}",
+        powershell_literal(&bins),
+        powershell_literal(&legacy),
+    );
     let output = crate::managed_process::background_command("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .arg(&bin)
-        .arg(&legacy)
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg(command)
         .output()
         .map_err(|source| UninstallError::CommandStart {
             command: "PowerShell user PATH cleanup".to_owned(),
@@ -465,13 +506,17 @@ if ($filtered.Count -ne $entries.Count) {
     Ok(String::from_utf8_lossy(&output.stdout).contains("removed"))
 }
 
+fn powershell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 fn remove_windows_user_environment(
     variable: &str,
     installation_root: &Path,
 ) -> Result<bool, UninstallError> {
     let script = r#"
-$name = $args[0]
-$expected = [IO.Path]::GetFullPath($args[1])
+param([string]$name, [string]$installationRoot)
+$expected = [IO.Path]::GetFullPath($installationRoot)
 $current = [Environment]::GetEnvironmentVariable($name, 'User')
 if ([string]::IsNullOrWhiteSpace($current)) { exit 0 }
 try { $actual = [IO.Path]::GetFullPath($current) } catch { exit 0 }
@@ -480,10 +525,14 @@ if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase))
     Write-Output 'removed'
 }
 "#;
+    let command = format!(
+        "& {{ {script} }} {} {}",
+        powershell_literal(variable),
+        powershell_literal(&installation_root.to_string_lossy()),
+    );
     let output = crate::managed_process::background_command("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .arg(variable)
-        .arg(installation_root)
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg(command)
         .output()
         .map_err(|source| UninstallError::CommandStart {
             command: format!("PowerShell user environment cleanup for {variable}"),

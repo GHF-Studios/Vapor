@@ -699,15 +699,13 @@ fn managed_rust_environment_from_toolchain_home(
     let rustup_home = toolchain_home
         .ancestors()
         .find(|ancestor| {
-            ancestor
-                .file_name()
-                .is_some_and(|name| {
-                    name == "home"
-                        && ancestor
-                            .parent()
-                            .and_then(Path::file_name)
-                            .is_some_and(|name| name == "rustup")
-                })
+            ancestor.file_name().is_some_and(|name| {
+                name == "home"
+                    && ancestor
+                        .parent()
+                        .and_then(Path::file_name)
+                        .is_some_and(|name| name == "rustup")
+            })
         })?
         .to_path_buf();
 

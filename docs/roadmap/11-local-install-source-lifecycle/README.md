@@ -13,7 +13,7 @@ This ledger captures the clean-machine workflow that must work before Vapor infr
 ```text
 Install Loo Cast through Steam
 vapor-installer install
-vapor-installer role promote ecosystem-developer
+vapor-installer role promote developer
 vapor source acquire first-party-all
 ```
 
@@ -71,7 +71,7 @@ Local deployment, Steam staging, activation and machine integration must use the
 
 ## Remaining clean-machine limitation
 
-Composer-or-higher Role promotion still requires Git on `PATH`; Vapor does not yet provision Git. Until that is fixed or explicitly declared a prerequisite, a truly blank machine is not fully self-hosting.
+Developer Role promotion still requires Git on `PATH`; Vapor does not yet provision Git. Until that is fixed or explicitly declared a prerequisite, a truly blank machine is not fully self-hosting.
 
 ## Execution ledger
 

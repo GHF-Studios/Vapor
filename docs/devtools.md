@@ -9,13 +9,11 @@ other Vapor development workflow.
 
 ## Developer experience
 
-A normal developer setup is:
+A normal Developer setup is:
 
 ```text
-install Vapor through Steam
-run the Vapor installer
-vapor role promote content-developer
-# or ecosystem-developer
+install Vapor
+open Vapor Installer and choose Developer
 ```
 
 Promotion reconciles the complete developer toolset. There is no separate Tracy

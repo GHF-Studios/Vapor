@@ -7,11 +7,11 @@ their own installation flows.
 
 ## Role ownership
 
-`Composer` and higher currently require the pinned Vapor-managed
+`Developer` requires the pinned Vapor-managed
 Rust/Cargo toolchain, Rust Analyzer/components, the pinned managed Tracy
 profiler, and Tracy's managed saved-trace analysis utility.
 
-Composer also receives the pinned Windows `gnullvm` Rust target and matching
+Developer also receives the pinned Windows `gnullvm` Rust target and matching
 UCRT-based LLVM-MinGW linker/runtime bundle, so Windows package builds are
 available from supported developer installations without a second ad-hoc
 setup path. Player installations remain free of these authoring tools.

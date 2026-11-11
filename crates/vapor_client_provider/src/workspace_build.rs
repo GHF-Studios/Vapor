@@ -149,6 +149,9 @@ pub fn run_selected_with_structured_events_cancellable(
         Option<String>,
     ),
 ) -> Result<BuildReport, String> {
+    if mode == BuildMode::BuildRelease {
+        vapor_core::distribution::require_distribution_job("release-profile builds")?;
+    }
     validate_targets(runtime_targets)?;
     if is_cancelled() {
         return Err("operation cancelled".to_owned());

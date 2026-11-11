@@ -74,6 +74,7 @@ pub fn build_application_release_with_structured_events(
         Option<String>,
     ),
 ) -> Result<ReleaseBuildReport, String> {
+    vapor_core::distribution::require_distribution_job("release-profile builds")?;
     if runtime_targets.is_empty() {
         return Err("application release needs at least one runtime target".to_owned());
     }
@@ -159,10 +160,19 @@ impl BuildStep {
             Self::Fmt => vec!["fmt", "--all"],
             Self::Check => vec!["check", "--workspace", "--all-targets", "--locked"],
             Self::Test if target == host_rust_target() => {
-                vec!["test", "--workspace", "--all-targets", "--locked"]
+                vec![
+                    "test",
+                    "--profile",
+                    "dev",
+                    "--workspace",
+                    "--all-targets",
+                    "--locked",
+                ]
             }
             Self::Test => vec![
                 "test",
+                "--profile",
+                "dev",
                 "--workspace",
                 "--all-targets",
                 "--locked",
@@ -200,10 +210,7 @@ fn run_step(
             source_manifest.display()
         )
     })?;
-    let target_directory = installation
-        .root()
-        .join("cache/build")
-        .join(target);
+    let target_directory = installation.root().join("cache/build").join(target);
     let mut command = toolchain.command();
     command.args(step.cargo_args(target));
     if !matches!(step, BuildStep::Fmt) {

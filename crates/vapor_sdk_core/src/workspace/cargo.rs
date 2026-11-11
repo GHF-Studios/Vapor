@@ -9,8 +9,6 @@ use super::error::WorkspaceCommandError;
 use super::identity::{WorkspaceIdentity, discover_workspace_identity};
 use super::report::WorkspaceCargoReport;
 
-const DEV_OUTPUT_DIR: &str = "dev";
-
 #[derive(Debug, Clone)]
 pub(super) struct VaporCargo {
     pub(super) toolchain: ToolchainStatus,
@@ -24,10 +22,10 @@ impl VaporCargo {
         let toolchain = checked_toolchain_status()?;
         let identity = discover_workspace_identity(globals)?;
         let cargo_home = toolchain.cargo_home.clone();
-        let target_dir = toolchain
-            .output_root
-            .join(DEV_OUTPUT_DIR)
-            .join(workspace_output_name(&identity));
+        let target = vapor_core::HostTarget::current()
+            .map_err(|error| WorkspaceCommandError::UnsupportedHost(error.to_string()))?
+            .triple();
+        let target_dir = toolchain.vapor_home.join("cache/build").join(target);
 
         Ok(Self {
             toolchain,
@@ -72,29 +70,6 @@ impl VaporCargo {
             cargo_args: args.iter().map(|arg| (*arg).to_owned()).collect(),
             status,
         })
-    }
-}
-
-fn workspace_output_name(identity: &WorkspaceIdentity) -> String {
-    let raw = identity.id.as_str();
-
-    let name = raw
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_owned();
-
-    if name.is_empty() {
-        "workspace".to_owned()
-    } else {
-        name
     }
 }
 

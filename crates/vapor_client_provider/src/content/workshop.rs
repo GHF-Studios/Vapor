@@ -530,7 +530,6 @@ fn publish_workshop_items_for_targets_checked(
             "real Workshop publication requires --yes after reviewing --dry-run".to_owned(),
         );
     }
-
     let mut staged = Vec::new();
     let mut reviewed_stages = Vec::new();
     for selector in selectors {
@@ -737,6 +736,7 @@ fn run_steamcmd_workshop_builds(
     if scripts.is_empty() {
         return Err("at least one Workshop build script is required".to_owned());
     }
+    vapor_core::distribution::require_distribution_job("Steam Workshop uploads")?;
     let steamcmd = steam::executable(paths)?;
     let mut command = vapor_core::managed_process::background_command(&steamcmd);
     command.args(["+login", account]);

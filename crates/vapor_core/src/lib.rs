@@ -9,6 +9,7 @@ pub mod content;
 pub mod cross_target_toolchain;
 pub mod developer_environment;
 pub mod development;
+pub mod distribution;
 pub mod ecosystem;
 pub mod host;
 pub mod ide;
@@ -30,6 +31,7 @@ pub mod run;
 pub mod source;
 pub mod steam;
 pub mod superworkspace;
+pub mod target;
 pub mod toolchain;
 pub mod tracy;
 pub mod uninstall;
@@ -48,7 +50,8 @@ pub use cargo_reconciliation::{
 };
 
 pub use cross_target_toolchain::{
-    CrossTargetToolchainError, WINDOWS_GNU_LINKER_VERSION, install_windows_gnu_linker,
+    CrossTargetToolchainError, WINDOWS_GNU_LINKER_VERSION,
+    configure_runtime_target_linker_env, install_windows_gnu_linker,
     windows_gnu_linker_installed,
 };
 
@@ -95,8 +98,7 @@ pub use install::{
 };
 
 pub use installation::{
-    InstallationError, InstallationRootSource, VAPOR_HOME_ENV, VAPOR_HOME_MARKER,
-    VaporInstallation,
+    InstallationError, InstallationRootSource, VAPOR_HOME_ENV, VAPOR_HOME_MARKER, VaporInstallation,
 };
 
 pub use local::{
@@ -176,7 +178,7 @@ pub use tracy::{ManagedTracyRepair, ManagedTracyToolset, TRACY_PROFILER_VERSION,
 
 pub use uninstall::{
     UninstallError, UninstallOptions, UninstallReport, uninstall_installation,
-    uninstall_installation_for,
+    uninstall_installation_for, validate_superworkspace_for_erasure,
 };
 
 pub use workspace::{

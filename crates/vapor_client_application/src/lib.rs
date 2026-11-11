@@ -283,11 +283,11 @@ mod installation_role_snapshot_tests {
     #[test]
     fn readiness_failure_does_not_erase_the_installed_role() {
         let snapshot = installation_role_snapshot_for(
-            "ecosystem-developer",
+            "developer",
             Err("packaged toolchain pin is missing".to_owned()),
         );
 
-        assert_eq!(snapshot.role, "ecosystem-developer");
+        assert_eq!(snapshot.role, "developer");
         assert!(!snapshot.rust_ready);
         assert_eq!(
             snapshot.error.as_deref(),

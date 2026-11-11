@@ -4106,7 +4106,7 @@ mod tests {
     fn fixture_sessions_reject_installation_role_mutations() {
         for action in [
             DeveloperAction::PromoteInstallationRole {
-                target: "composer".to_owned(),
+                target: "developer".to_owned(),
             },
             DeveloperAction::DemoteInstallationRole {
                 target: "player".to_owned(),

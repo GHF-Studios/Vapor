@@ -146,6 +146,7 @@ pub fn publish(
             fingerprint,
         });
     }
+    vapor_core::distribution::require_distribution_job("SteamPipe uploads")?;
     let steamcmd = executable(paths)?;
     let output = vapor_core::managed_process::background_command(&steamcmd)
         .args(["+login", options.account, "+run_app_build"])

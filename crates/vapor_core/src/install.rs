@@ -200,35 +200,80 @@ fn remove_profile_block(source: &str, path: &Path) -> Result<String, InstallErro
 
 fn install_windows_user_integration(root: &Path, bin: &Path) -> Result<(), InstallError> {
     let script = r#"
-$root = $args[0]
-$bin = $args[1]
+param([string]$root, [string]$bin)
+$ErrorActionPreference = 'Stop'
 [Environment]::SetEnvironmentVariable('VAPOR_HOME', $root, 'User')
 $path = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($null -eq $path) { $path = '' }
 $entries = @($path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-$present = $entries | Where-Object { [string]::Equals($_, $bin, [StringComparison]::OrdinalIgnoreCase) }
+$canonicalBin = [IO.Path]::GetFullPath($bin).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
+$present = $entries | Where-Object {
+    try {
+        $entry = [IO.Path]::GetFullPath($_).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
+        [string]::Equals($entry, $canonicalBin, [StringComparison]::OrdinalIgnoreCase)
+    } catch { $false }
+}
 if (-not $present) { $entries += $bin }
 [Environment]::SetEnvironmentVariable('Path', ($entries -join ';'), 'User')
+$storedHome = [Environment]::GetEnvironmentVariable('VAPOR_HOME', 'User')
+$storedPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$hasBin = @($storedPath -split ';' | Where-Object {
+    try {
+        $entry = [IO.Path]::GetFullPath($_).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
+        [string]::Equals($entry, $canonicalBin, [StringComparison]::OrdinalIgnoreCase)
+    } catch { $false }
+}).Count -gt 0
+if (-not [string]::Equals([IO.Path]::GetFullPath($storedHome), [IO.Path]::GetFullPath($root), [StringComparison]::OrdinalIgnoreCase) -or -not $hasBin) {
+    throw 'Windows user environment did not retain VAPOR_HOME and the Vapor command directory.'
+}
+try {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class VaporEnvironmentBroadcast {
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, UInt32 message, IntPtr wParam, string lParam, UInt32 flags, UInt32 timeout, out IntPtr result);
+}
+'@
+    $result = [IntPtr]::Zero
+    $sent = [VaporEnvironmentBroadcast]::SendMessageTimeout([IntPtr](-1), 0x001A, [IntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result)
+    if ($sent -eq [IntPtr]::Zero) { Write-Warning 'PATH was saved, but Windows did not notify open applications.' }
+} catch {
+    Write-Warning "The user PATH was saved, but Windows could not broadcast the environment change: $_"
+}
+Write-Output 'registered'
 "#;
 
-    let status = crate::managed_process::background_command("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .arg(root)
-        .arg(bin)
-        .status()
+    let command = format!(
+        "& {{ {script} }} {} {}",
+        powershell_literal(&root.to_string_lossy()),
+        powershell_literal(&bin.to_string_lossy()),
+    );
+    let output = crate::managed_process::background_command("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg(command)
+        .output()
         .map_err(|source| InstallError::CommandStart {
             command: "PowerShell user environment setup".to_owned(),
             source,
         })?;
 
-    if !status.success() {
+    if !output.status.success() {
         return Err(InstallError::CommandFailed {
             command: "PowerShell user environment setup".to_owned(),
-            status: status.to_string(),
+            status: format!(
+                "{}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
         });
     }
 
     Ok(())
+}
+
+fn powershell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 #[derive(Debug)]

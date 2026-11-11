@@ -15,16 +15,14 @@ use std::io;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-const ROLE_STATE_SCHEMA: u32 = 1;
+const ROLE_STATE_SCHEMA: u32 = 2;
 const ROLE_STATE_FILE_NAME: &str = "role.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum VaporRole {
     Player,
-    Composer,
-    ContentDeveloper,
-    EcosystemDeveloper,
+    Developer,
 }
 
 impl VaporRole {
@@ -34,27 +32,20 @@ impl VaporRole {
     /// Keep this policy centralized so promotion, diagnosis, and repair cannot
     /// disagree about which roles own developer tools.
     pub const fn requires_developer_environment(self) -> bool {
-        matches!(
-            self,
-            Self::Composer | Self::ContentDeveloper | Self::EcosystemDeveloper
-        )
+        matches!(self, Self::Developer)
     }
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Player => "player",
-            Self::Composer => "composer",
-            Self::ContentDeveloper => "content-developer",
-            Self::EcosystemDeveloper => "ecosystem-developer",
+            Self::Developer => "developer",
         }
     }
 
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Player => "Player",
-            Self::Composer => "Composer",
-            Self::ContentDeveloper => "Content Developer",
-            Self::EcosystemDeveloper => "Ecosystem Developer",
+            Self::Developer => "Developer",
         }
     }
 }
@@ -71,9 +62,7 @@ impl FromStr for VaporRole {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "player" => Ok(Self::Player),
-            "composer" => Ok(Self::Composer),
-            "content-developer" => Ok(Self::ContentDeveloper),
-            "ecosystem-developer" => Ok(Self::EcosystemDeveloper),
+            "developer" => Ok(Self::Developer),
 
             _ => Err(ParseVaporRoleError {
                 value: value.to_owned(),
@@ -132,12 +121,12 @@ pub fn installed_role(installation: &VaporInstallation) -> Result<VaporRole, Rol
 
 /// Promote the active Vapor Installation.
 ///
-/// Every ordinary Vapor Role through Ecosystem Developer is locally attainable.
+/// Both local Vapor roles are directly attainable.
 ///
 /// External authorization is evaluated separately when a particular operation
 /// targets a protected official resource.
 ///
-/// Composer-or-higher promotion reconciles tools against the selected Vapor
+/// Developer promotion reconciles tools against the selected Vapor
 /// Installation. Source workspaces may provide the toolchain pin during local
 /// development, while installed releases use their packaged pin metadata.
 pub fn promote_role(
@@ -276,7 +265,7 @@ impl fmt::Display for ParseVaporRoleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "unknown Vapor role `{}`; expected player, composer, content-developer, or ecosystem-developer",
+            "unknown Vapor role `{}`; expected player or developer",
             self.value
         )
     }
@@ -385,10 +374,8 @@ mod tests {
     use super::VaporRole;
 
     #[test]
-    fn developer_environment_begins_at_composer_and_is_inherited() {
+    fn developer_role_always_requires_developer_environment() {
         assert!(!VaporRole::Player.requires_developer_environment());
-        assert!(VaporRole::Composer.requires_developer_environment());
-        assert!(VaporRole::ContentDeveloper.requires_developer_environment());
-        assert!(VaporRole::EcosystemDeveloper.requires_developer_environment());
+        assert!(VaporRole::Developer.requires_developer_environment());
     }
 }
