@@ -1,4 +1,4 @@
-//! Installation of app-owned scripts, developer tools, and launch shims.
+//! Installation of Vapor-owned scripts and tools, plus Steam launch shims.
 
 use crate::{
     discovery::{EnvironmentPaths, ensure_contained},
@@ -6,18 +6,18 @@ use crate::{
 };
 use std::{collections::BTreeSet, fs, path::Path};
 
-/// Counts of source-owned files copied into the app installation.
+/// Counts of source-owned files synchronized for release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootAssetReport {
     /// Vapor-owned interactive shell scripts installed.
     pub scripts: usize,
-    /// App-root tool payload files installed.
+    /// Vapor tool source files installed in User Data.
     pub tools: usize,
     /// Platform-specific launch scripts installed.
     pub launch_scripts: usize,
 }
 
-/// Synchronize source-owned launch assets into the app installation.
+/// Synchronize Vapor tools into User Data and launch shims into the Steam app.
 pub fn sync_release_assets(
     paths: &EnvironmentPaths,
     targets: &[String],
@@ -46,8 +46,8 @@ fn sync_source_tree(
     clear_when_missing: bool,
 ) -> Result<usize, String> {
     let source = paths.source().root().join(source_relative);
-    let target = paths.installation().root().join(target_relative);
-    ensure_contained(paths.installation().root(), &target)?;
+    let target = paths.installation().user_data_root().join(target_relative);
+    ensure_contained(paths.installation().user_data_root(), &target)?;
     if source.is_dir() {
         let canonical =
             fs::canonicalize(&source).map_err(|error| path_error("resolve", &source, error))?;

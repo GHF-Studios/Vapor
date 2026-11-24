@@ -799,6 +799,53 @@ fn run_installed_composition_inner(
 ) -> Result<CompositionRunResult, String> {
     let installation = InstallationPaths::from_application_executable(application_executable)?;
     let installed = content::has_installed_artifact(&installation, selector)?;
+    // A fresh Steam installation has no mutable Library index. Its default
+    // App is a read-only depot payload, not a Workshop item to auto-install.
+    if !installed {
+        if let Some((graph, plan)) = content::prepare_depot_default_launch(&installation, selector)?
+        {
+            let composition = InstalledComposition {
+                graph: snapshot_installed_graph(&graph),
+                artifacts: graph
+                    .nodes()
+                    .iter()
+                    .map(|node| InstalledArtifact {
+                        id: node.artifact_id().to_owned(),
+                        version: node.version().map(ToOwned::to_owned),
+                        root: node.installed_root().to_path_buf(),
+                        fingerprint: format!(
+                            "{}:{}",
+                            node.fingerprint().algorithm(),
+                            node.fingerprint().hash()
+                        ),
+                    })
+                    .collect(),
+            };
+            // A saved first-party graph may have been resolved from Workshop
+            // before this App shipped its own default closure. Preserve exact
+            // content identities and dependency edges, then let the depot own
+            // the refreshed fingerprints and source paths.
+            let composition_graph_matches = expected_graph.is_none_or(|expected| {
+                crate::resolved_graph_content_matches(expected, &composition.graph)
+            });
+            let launch_error = if composition_graph_matches {
+                run_launch_plan(&plan, arguments, context).err()
+            } else {
+                Some("The depot App has a different content graph; review and update this composition before playing.".to_owned())
+            };
+            return Ok(CompositionRunResult {
+                composition,
+                composition_graph_matches,
+                launch_error,
+            });
+        }
+        if expected_graph.is_some() {
+            return Err(
+                "The selected depot App is missing; repair the Steam installation before playing."
+                    .to_owned(),
+            );
+        }
+    }
     let composition = if installed {
         match installed_composition(&installation, selector) {
             Ok(composition) => composition,
@@ -828,24 +875,7 @@ fn run_installed_composition_inner(
         .is_none_or(|expected| crate::resolved_graph_matches(expected, &composition.graph));
     let launch_error = if composition_graph_matches {
         content::prepare_packagepack_launch(&installation, selector)
-            .and_then(|plan| match context {
-                Some(context) => content::run_packagepack_launch_with_output(
-                    &plan,
-                    "studio-composition",
-                    arguments,
-                    |stream, text| {
-                        context.report_output(vapor_core::OperationOutput {
-                            stream,
-                            level: vapor_core::ConsoleLevel::Info,
-                            process: Some("launched-composition".to_owned()),
-                            diagnostic: None,
-                            raw_payload: None,
-                            text: text.to_owned(),
-                        });
-                    },
-                ),
-                None => content::run_packagepack_launch(&plan, "studio-composition", arguments),
-            })
+            .and_then(|plan| run_launch_plan(&plan, arguments, context))
             .err()
     } else {
         Some(
@@ -858,6 +888,31 @@ fn run_installed_composition_inner(
         composition_graph_matches,
         launch_error,
     })
+}
+
+fn run_launch_plan(
+    plan: &content::PackagepackLaunchPlan,
+    arguments: &[String],
+    context: Option<&vapor_core::OperationContext>,
+) -> Result<(), String> {
+    match context {
+        Some(context) => content::run_packagepack_launch_with_output(
+            plan,
+            "studio-composition",
+            arguments,
+            |stream, text| {
+                context.report_output(vapor_core::OperationOutput {
+                    stream,
+                    level: vapor_core::ConsoleLevel::Info,
+                    process: Some("launched-composition".to_owned()),
+                    diagnostic: None,
+                    raw_payload: None,
+                    text: text.to_owned(),
+                });
+            },
+        ),
+        None => content::run_packagepack_launch(plan, "studio-composition", arguments),
+    }
 }
 
 /// Install source changes for one composition, then launch that exact installed graph.

@@ -13,13 +13,15 @@ use std::{
 /// Build Rustdoc for every workspace declared by the source manifest.
 pub fn build(paths: &EnvironmentPaths, manifest: &WorkspaceManifest) -> Result<PathBuf, String> {
     let cargo = ApplicationCargo::discover(paths)?;
-    let installation_root = paths.installation().root();
-    let docs_root = installation_root.join("docs");
-    ensure_contained(paths.installation().root(), &docs_root)?;
-    let staged_docs = TemporaryDirectory::create(installation_root, "docs-staging")?;
+    let user_data_root = paths.installation().user_data_root();
+    let docs_root = user_data_root.join("docs");
+    ensure_contained(user_data_root, &docs_root)?;
+    fs::create_dir_all(user_data_root).map_err(|error| error.to_string())?;
+    let staged_docs = TemporaryDirectory::create(user_data_root, "docs-staging")?;
     let staged_root = &staged_docs.path;
-    let target = documentation_target_root(paths.installation().root());
-    ensure_contained(paths.installation().root(), &target)?;
+    let output = paths.installation().output_root();
+    let target = documentation_target_root(&output);
+    ensure_contained(&output, &target)?;
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
 
     for section in manifest
@@ -63,31 +65,12 @@ pub fn build(paths: &EnvironmentPaths, manifest: &WorkspaceManifest) -> Result<P
             )
         })?;
     }
-    for section in manifest
-        .cargo_projects()
-        .iter()
-        .filter(|project| project.documentation())
-    {
-        let legacy_target = paths
-            .installation()
-            .root()
-            .join("output/docs")
-            .join(section.name());
-        if legacy_target.is_dir() {
-            fs::remove_dir_all(&legacy_target).map_err(|error| {
-                format!(
-                    "failed to remove obsolete docs cache '{}': {error}",
-                    legacy_target.display()
-                )
-            })?;
-        }
-    }
-    install_documentation_site(staged_root, &docs_root, installation_root)?;
+    install_documentation_site(staged_root, &docs_root, user_data_root)?;
     Ok(docs_root)
 }
 
-fn documentation_target_root(installation_root: &Path) -> PathBuf {
-    installation_root.join("output/docs/target")
+fn documentation_target_root(output_root: &Path) -> PathBuf {
+    output_root.join("docs/target")
 }
 
 struct TemporaryDirectory {
@@ -331,8 +314,8 @@ mod tests {
     #[test]
     fn documentation_projects_share_one_cargo_target_root() {
         assert_eq!(
-            documentation_target_root(Path::new("/vapor")),
-            Path::new("/vapor/output/docs/target")
+            documentation_target_root(Path::new("/vapor/user/output")),
+            Path::new("/vapor/user/output/docs/target")
         );
     }
 }

@@ -16,6 +16,9 @@
 //! declared by their `.gitmodules`. Vapor does not recursively scan arbitrary
 //! filesystem descendants looking for repositories.
 //!
+//! Repositories may be direct children of a Superworkspace or direct children
+//! of its explicit `sources/` directory. No other descendants are scanned.
+//!
 //! A Superworkspace-local `.vaporignore` may exclude checked-out repositories
 //! from the active local development view. This is local development-storage
 //! configuration only; it does not define canonical ecosystem membership,
@@ -30,6 +33,7 @@ use std::path::{Path, PathBuf};
 
 const GITMODULES_FILE: &str = ".gitmodules";
 const VAPOR_IGNORE_FILE: &str = ".vaporignore";
+const SOURCES_DIRECTORY: &str = "sources";
 pub const SUPERWORKSPACE_MANIFEST_FILE_NAME: &str = "Superworkspace.vapor.toml";
 
 #[derive(Debug, Clone)]
@@ -171,7 +175,8 @@ impl VaporSuperworkspace {
     ///
     /// - is not itself a Container Repo;
     /// - is not itself a Vapor Workspace;
-    /// - directly contains at least one Container Repo or Vapor Workspace.
+    /// - directly contains a Container Repo or Vapor Workspace, or declares a
+    ///   Superworkspace manifest and contains one under `sources/`.
     ///
     /// Container Repo members are subsequently discovered through their
     /// declared `.gitmodules` paths.
@@ -209,12 +214,17 @@ impl VaporSuperworkspace {
 
     fn load_candidate(root: &Path) -> Result<Option<Self>, SuperworkspaceError> {
         let explicit = root.join(SUPERWORKSPACE_MANIFEST_FILE_NAME).is_file();
+        if !explicit
+            && root
+                .file_name()
+                .is_some_and(|name| name == SOURCES_DIRECTORY)
+            && root
+                .parent()
+                .is_some_and(|parent| parent.join(SUPERWORKSPACE_MANIFEST_FILE_NAME).is_file())
+        {
+            return Ok(None);
+        }
         let ignore = VaporIgnore::load(root)?;
-
-        let entries = fs::read_dir(root).map_err(|source| SuperworkspaceError::Io {
-            path: root.to_path_buf(),
-            source,
-        })?;
 
         let mut repositories = Vec::new();
 
@@ -222,14 +232,31 @@ impl VaporSuperworkspace {
 
         let mut seen_roots = BTreeSet::new();
 
-        for entry in entries {
-            let entry = entry.map_err(|source| SuperworkspaceError::Io {
-                path: root.to_path_buf(),
+        let mut candidate_roots = Vec::new();
+        for directory in [
+            Some(root),
+            explicit.then(|| root.join(SOURCES_DIRECTORY)).as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !directory.is_dir() {
+                continue;
+            }
+            let entries = fs::read_dir(directory).map_err(|source| SuperworkspaceError::Io {
+                path: directory.to_path_buf(),
                 source,
             })?;
+            for entry in entries {
+                let entry = entry.map_err(|source| SuperworkspaceError::Io {
+                    path: directory.to_path_buf(),
+                    source,
+                })?;
+                candidate_roots.push(entry.path());
+            }
+        }
 
-            let repository_root = entry.path();
-
+        for repository_root in candidate_roots {
             if !repository_root.is_dir() {
                 continue;
             }
@@ -547,6 +574,33 @@ impl std::error::Error for SuperworkspaceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn explicit_sources_directory_is_discovered_without_scanning_other_descendants() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("vapor-superworkspace-sources-{stamp}"));
+        fs::create_dir_all(root.join("sources/container")).unwrap();
+        fs::create_dir_all(root.join("other/hidden")).unwrap();
+        fs::write(
+            root.join(SUPERWORKSPACE_MANIFEST_FILE_NAME),
+            "schema = 1\n\n[superworkspace]\n",
+        )
+        .unwrap();
+        fs::write(root.join("sources/container/.gitmodules"), "").unwrap();
+        fs::write(root.join("other/hidden/.gitmodules"), "").unwrap();
+
+        let workspace =
+            VaporSuperworkspace::discover_from(&root.join("sources/container")).unwrap();
+        assert_eq!(workspace.root, root);
+        assert_eq!(workspace.repositories.len(), 1);
+        assert_eq!(workspace.repositories[0].name, "sources/container");
+
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn vapor_ignore_matches_repository_and_descendants() {

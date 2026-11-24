@@ -210,8 +210,7 @@ fn run_step(
         "dev"
     };
     let target_directory = installation
-        .root()
-        .join("output")
+        .output_root()
         .join(output_profile)
         .join(project.name());
     let mut command = toolchain.command();
@@ -227,7 +226,11 @@ fn run_step(
     if matches!(step, BuildStep::Fmt) {
         command.args(["--", "--check"]);
     } else if target != host_runtime_target() {
-        cross_toolchain::configure_linker_env(&mut command, installation.root(), target)?;
+        cross_toolchain::configure_linker_env(
+            &mut command,
+            paths.installation().user_data_root(),
+            target,
+        )?;
         command.args(cargo_target_args(target));
     }
     if matches!(step, BuildStep::Clippy) {
@@ -284,10 +287,11 @@ fn promote_release_outputs(
     runtime_targets: &[String],
 ) -> Result<usize, String> {
     let installation = paths.installation().root();
+    let output = paths.installation().output_root();
     let mut promoted = 0;
     for project in projects {
         for target in runtime_targets {
-            let output_root = release_output_root(installation, project.name(), target);
+            let output_root = release_output_root(&output, project.name(), target);
             for binary in project.binaries() {
                 let name = if target.contains("windows") && !binary.ends_with(".exe") {
                     format!("{binary}.exe")
@@ -295,7 +299,7 @@ fn promote_release_outputs(
                     binary.clone()
                 };
                 let source = output_root.join(&name);
-                ensure_contained(installation, &source)?;
+                ensure_contained(&output, &source)?;
                 if !source.is_file() {
                     return Err(format!(
                         "release binary for '{}' target '{target}' is missing: {}",
@@ -308,13 +312,16 @@ fn promote_release_outputs(
                 let parent = destination.parent().ok_or_else(|| {
                     format!("promoted binary has no parent: {}", destination.display())
                 })?;
-                promoted +=
-                    cross_toolchain::copy_windows_runtime_dlls(installation, target, parent)?;
+                promoted += cross_toolchain::copy_windows_runtime_dlls(
+                    paths.installation().user_data_root(),
+                    target,
+                    parent,
+                )?;
                 promoted += 1;
             }
             for library in project.libraries(target) {
                 let source = output_root.join(library);
-                ensure_contained(installation, &source)?;
+                ensure_contained(&output, &source)?;
                 if !source.is_file() {
                     return Err(format!(
                         "release runtime library for '{}' target '{target}' is missing: {}",
@@ -333,8 +340,8 @@ fn promote_release_outputs(
     Ok(promoted)
 }
 
-fn release_output_root(installation: &Path, project: &str, target: &str) -> PathBuf {
-    let root = installation.join("output/release").join(project);
+fn release_output_root(output: &Path, project: &str, target: &str) -> PathBuf {
+    let root = output.join("release").join(project);
     if target == host_runtime_target() {
         root.join("release")
     } else {
@@ -419,11 +426,11 @@ mod target_tests {
         let host = crate::host_runtime_target();
         assert_eq!(
             release_output_root(installation, "vapor", &host),
-            Path::new("/vapor/output/release/vapor/release")
+            Path::new("/vapor/release/vapor/release")
         );
         assert_eq!(
             release_output_root(installation, "vapor", "x86_64-pc-windows-gnullvm"),
-            Path::new("/vapor/output/release/vapor/x86_64-pc-windows-gnullvm/release")
+            Path::new("/vapor/release/vapor/x86_64-pc-windows-gnullvm/release")
         );
     }
 }

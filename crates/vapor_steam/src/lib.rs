@@ -426,6 +426,24 @@ pub fn unsubscribe_items(app_id: u32, published_file_ids: &[u64]) -> Result<(), 
     change_subscriptions(app_id, published_file_ids, false)
 }
 
+/// Permanently remove one owned Workshop publication through SteamUGC.
+/// Steam verifies publisher authority; a successful callback is required.
+pub fn delete_item(app_id: u32, published_file_id: u64) -> Result<(), String> {
+    if published_file_id == 0 {
+        return Err("Workshop item ID must be nonzero".to_owned());
+    }
+    let client = initialize_client(app_id)?;
+    let (sender, receiver) = mpsc::channel();
+    client
+        .ugc()
+        .delete_item(PublishedFileId(published_file_id), move |result| {
+            let _ = sender.send(
+                result.map_err(|error| format!("Steam rejected Workshop deletion: {error:?}")),
+            );
+        });
+    pump_callbacks(&client, receiver)
+}
+
 fn change_subscriptions(
     app_id: u32,
     published_file_ids: &[u64],

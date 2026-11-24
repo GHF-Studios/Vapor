@@ -432,6 +432,23 @@ pub fn resolved_graph_matches(
     expected: &ResolvedCompositionGraph,
     actual: &ResolvedCompositionGraph,
 ) -> bool {
+    resolved_graph_matches_with_provenance(expected, actual, true)
+}
+
+/// Compare the exact content/version/dependency closure while allowing the
+/// depot to replace a stale Workshop or source package representation.
+pub fn resolved_graph_content_matches(
+    expected: &ResolvedCompositionGraph,
+    actual: &ResolvedCompositionGraph,
+) -> bool {
+    resolved_graph_matches_with_provenance(expected, actual, false)
+}
+
+fn resolved_graph_matches_with_provenance(
+    expected: &ResolvedCompositionGraph,
+    actual: &ResolvedCompositionGraph,
+    require_provenance: bool,
+) -> bool {
     if expected.root != actual.root
         || expected.effective_engine != actual.effective_engine
         || expected.effective_game != actual.effective_game
@@ -465,12 +482,13 @@ pub fn resolved_graph_matches(
                         })
                 },
             )
-            && expected
-                .fingerprint
-                .is_none_or(|fingerprint| actual.fingerprint == Some(fingerprint))
-            && expected
-                .source
-                .is_none_or(|source| actual.source == Some(source))
+            && (!require_provenance
+                || (expected
+                    .fingerprint
+                    .is_none_or(|fingerprint| actual.fingerprint == Some(fingerprint))
+                    && expected
+                        .source
+                        .is_none_or(|source| actual.source == Some(source))))
     })
 }
 

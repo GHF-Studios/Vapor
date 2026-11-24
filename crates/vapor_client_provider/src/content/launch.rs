@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::target::host_runtime_target;
-use vapor_content::RuntimePresentation;
+use vapor_content::{RuntimePresentation, VaporId};
 
 /// Installed Packagepack graph resolved by the Vapor local provider.
 #[derive(Debug, Clone)]
@@ -47,6 +47,7 @@ pub struct PackagepackLaunchPlan {
     engine_root: PathBuf,
     game_id: String,
     game_root: PathBuf,
+    user_data_root: PathBuf,
     runtime_target: String,
     binary: PathBuf,
     #[cfg(target_os = "linux")]
@@ -119,12 +120,98 @@ pub fn installed_packagepack_graph(
     let layout = ContentLayout::new(installation);
     let index = load_index(&layout)?;
     let packagepack_id = resolve_installed_selector(&index, selector)?;
-    inspect_installed_packagepack(&index, &packagepack_id)
+    inspect_installed_packagepack(&index, &packagepack_id, true)
+}
+
+/// Resolve the depot-owned default App without importing it into mutable
+/// Library state. Returns `None` for older depots with no default App bundle.
+pub fn depot_default_packagepack_graph(
+    installation: &InstallationPaths,
+    selector: &str,
+) -> Result<Option<InstalledPackagepackGraph>, String> {
+    let default_id = default_packagepack_id(installation, "default")?;
+    let (requested_id, requested_version) = selector
+        .rsplit_once('@')
+        .map_or((selector, None), |(id, version)| (id, Some(version)));
+    if requested_id != default_id {
+        return Ok(None);
+    }
+    let bundle = installation.root().join("content/default");
+    if !bundle.is_dir() {
+        return Ok(None);
+    }
+    let mut index = ContentIndex::default();
+    collect_depot_artifact(&bundle, &default_id, &mut index)?;
+    if let Some(version) = requested_version {
+        let packaged_version = index
+            .installed
+            .get(&default_id)
+            .and_then(|record| record.version.as_deref());
+        if packaged_version != Some(version) {
+            return Err(format!(
+                "the depot default App is version {}, but this composition requires {version}; review and update the composition",
+                packaged_version.unwrap_or("unknown")
+            ));
+        }
+    }
+    inspect_installed_packagepack(&index, &default_id, false).map(Some)
+}
+
+fn collect_depot_artifact(bundle: &Path, id: &str, index: &mut ContentIndex) -> Result<(), String> {
+    if index.installed.contains_key(id) {
+        return Ok(());
+    }
+    let parsed = id
+        .parse::<VaporId>()
+        .map_err(|error| format!("invalid depot content ID '{id}': {error}"))?;
+    let root = bundle.join(parsed.as_str());
+    let canonical_bundle =
+        fs::canonicalize(bundle).map_err(io("resolve default App bundle", bundle))?;
+    let canonical_root =
+        fs::canonicalize(&root).map_err(io("resolve default App artifact", &root))?;
+    if !canonical_root.starts_with(&canonical_bundle) || canonical_root == canonical_bundle {
+        return Err(format!(
+            "default App artifact escapes its depot bundle: {}",
+            root.display()
+        ));
+    }
+    let artifact = read_deployed_manifest(&canonical_root)?;
+    if artifact.id() != id {
+        return Err(format!(
+            "default App artifact '{}' declares ID '{}'",
+            root.display(),
+            artifact.id()
+        ));
+    }
+    let fingerprint = fingerprint_tree(&canonical_root)?;
+    let record = InstalledRecord {
+        artifact_id: id.to_owned(),
+        kind: artifact.kind().to_string(),
+        version: artifact.version().map(ToOwned::to_owned),
+        workshop_id: artifact.workshop().published_file_id.clone(),
+        enabled: true,
+        installed_root: canonical_root,
+        fingerprint,
+        dependencies: artifact.dependencies().to_vec(),
+        conflicts: artifact.conflicts().to_vec(),
+        installed_at: 0,
+        source: "depot".to_owned(),
+    };
+    let dependencies = record.dependencies.clone();
+    index.installed.insert(id.to_owned(), record);
+    for dependency in dependencies
+        .into_iter()
+        .filter(|dependency| !dependency.optional())
+    {
+        collect_depot_artifact(bundle, dependency.id(), index)?;
+    }
+    Ok(())
 }
 
 fn inspect_installed_packagepack(
     index: &ContentIndex,
     packagepack_id: &str,
+    verify_fingerprints: bool,
 ) -> Result<InstalledPackagepackGraph, String> {
     let packagepack = index
         .installed
@@ -138,7 +225,13 @@ fn inspect_installed_packagepack(
     }
     let mut visiting = BTreeSet::new();
     let mut verified = BTreeSet::new();
-    verify_launch_closure(index, packagepack_id, &mut visiting, &mut verified)?;
+    verify_launch_closure(
+        index,
+        packagepack_id,
+        &mut visiting,
+        &mut verified,
+        verify_fingerprints,
+    )?;
 
     let dependencies = launch_dependencies(&packagepack.installed_root)?;
     let engine_id = resolve_composed_role(
@@ -219,6 +312,26 @@ pub fn prepare_packagepack_launch(
     selector: &str,
 ) -> Result<PackagepackLaunchPlan, String> {
     let graph = installed_packagepack_graph(installation, selector)?;
+    prepare_launch_from_graph(installation, graph)
+}
+
+/// Prepare the depot-owned default App using the same composition and binary
+/// checks as an installed Packagepack, without writing a Library index.
+pub fn prepare_depot_default_launch(
+    installation: &InstallationPaths,
+    selector: &str,
+) -> Result<Option<(InstalledPackagepackGraph, PackagepackLaunchPlan)>, String> {
+    depot_default_packagepack_graph(installation, selector)?
+        .map(|graph| {
+            prepare_launch_from_graph(installation, graph.clone()).map(|plan| (graph, plan))
+        })
+        .transpose()
+}
+
+fn prepare_launch_from_graph(
+    installation: &InstallationPaths,
+    graph: InstalledPackagepackGraph,
+) -> Result<PackagepackLaunchPlan, String> {
     let runtime_target = host_runtime_target();
     let binary = packagepack_launch_binary(graph.root.installed_root(), &runtime_target)?;
     let presentation = engine_presentation(graph.engine.installed_root())?;
@@ -233,6 +346,7 @@ pub fn prepare_packagepack_launch(
         engine_root: graph.engine.installed_root().to_path_buf(),
         game_id: graph.game.artifact_id().to_owned(),
         game_root: graph.game.installed_root().to_path_buf(),
+        user_data_root: installation.user_data_root().to_path_buf(),
         runtime_target,
         binary,
         #[cfg(target_os = "linux")]
@@ -317,6 +431,7 @@ pub fn run_packagepack_launch_with_output(
         .env("VAPOR_RUNTIME_TARGET", &plan.runtime_target)
         .env("VAPOR_GAME_ID", &plan.game_id)
         .env("VAPOR_GAME_ROOT", &plan.game_root);
+    command.env("VAPOR_USER_DATA_ROOT", &plan.user_data_root);
     let status = vapor_core::managed_process::run(&mut command, report_output)
         .map_err(|error| format!("failed to launch '{}': {error}", plan.binary.display()))?;
     if status.success() {
@@ -349,6 +464,7 @@ fn verify_launch_closure(
     artifact_id: &str,
     visiting: &mut BTreeSet<String>,
     verified: &mut BTreeSet<String>,
+    verify_fingerprints: bool,
 ) -> Result<(), String> {
     if verified.contains(artifact_id) {
         return Ok(());
@@ -366,12 +482,14 @@ fn verify_launch_closure(
         if !record.enabled {
             return Err(format!("required content is disabled: {artifact_id}"));
         }
-        let report = verify_one(index, artifact_id);
-        if !report.ok() {
-            return Err(format!(
-                "installed content needs repair: {artifact_id}: {}",
-                report.detail()
-            ));
+        if verify_fingerprints {
+            let report = verify_one(index, artifact_id);
+            if !report.ok() {
+                return Err(format!(
+                    "installed content needs repair: {artifact_id}: {}",
+                    report.detail()
+                ));
+            }
         }
         let artifact = read_deployed_manifest(&record.installed_root)?;
         validate_artifact_dependency_roles(&artifact)?;
@@ -419,7 +537,13 @@ fn verify_launch_closure(
             }
             let child_artifact = read_deployed_manifest(&child.installed_root)?;
             validate_dependency_edge(artifact.kind(), dependency.relationship(), &child_artifact)?;
-            verify_launch_closure(index, dependency.id(), visiting, verified)?;
+            verify_launch_closure(
+                index,
+                dependency.id(),
+                visiting,
+                verified,
+                verify_fingerprints,
+            )?;
         }
         Ok(())
     })();
@@ -610,6 +734,64 @@ struct LaunchRuntime {
     target: String,
     #[serde(default)]
     binaries: Vec<String>,
+}
+
+#[cfg(test)]
+mod depot_tests {
+    use super::prepare_depot_default_launch;
+    use crate::discovery::InstallationPaths;
+    use std::{fs, path::Path};
+
+    fn write(path: &Path, contents: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn depot_default_launch_resolves_without_a_mutable_content_index() {
+        let root = std::env::temp_dir().join(format!(
+            "vapor-depot-launch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let target = "x86_64-unknown-linux-gnu";
+        let command = root.join("bin").join(target).join("vapor");
+        write(&command, "runtime");
+        write(
+            &root.join("App.vapor.toml"),
+            "schema = 1\n[root]\nname = \"vapor-client\"\norganization = \"ghf-studios\"\nversion = \"1.0.0\"\n[[root.content]]\nid = \"ghf-studios/loo-cast/pack\"\nkind = \"packagepack\"\napp-id = 1\nworkshop-id = \"1\"\ndefault-launch = \"default\"\n",
+        );
+        let bundle = root.join("content/default/ghf-studios/loo-cast");
+        write(
+            &bundle.join("engine/Engine.vapor.toml"),
+            "schema = 1\n[engine]\nid = \"ghf-studios/loo-cast/engine\"\nname = \"engine\"\nversion = \"1.0.0\"\n",
+        );
+        write(
+            &bundle.join("game/Game.vapor.toml"),
+            "schema = 1\n[game]\nid = \"ghf-studios/loo-cast/game\"\nname = \"game\"\nversion = \"1.0.0\"\n[[game.dependencies]]\nid = \"ghf-studios/loo-cast/engine\"\nrelationship = \"engine\"\n",
+        );
+        write(
+            &bundle.join("pack/Packagepack.vapor.toml"),
+            "schema = 1\n[packagepack]\nid = \"ghf-studios/loo-cast/pack\"\nname = \"pack\"\nversion = \"1.0.0\"\n[[packagepack.runtime]]\ntarget = \"x86_64-unknown-linux-gnu\"\nbinaries = [\"game\"]\n[[packagepack.dependencies]]\nid = \"ghf-studios/loo-cast/engine\"\nrelationship = \"engine\"\n[[packagepack.dependencies]]\nid = \"ghf-studios/loo-cast/game\"\nrelationship = \"game\"\n",
+        );
+        let binary = bundle.join("pack/bin").join(target).join("game");
+        write(&binary, "runtime");
+
+        let installation = InstallationPaths::from_executable(&command).unwrap();
+        let (graph, plan) =
+            prepare_depot_default_launch(&installation, "ghf-studios/loo-cast/pack")
+                .unwrap()
+                .expect("depot default App");
+        assert_eq!(graph.nodes().len(), 3);
+        assert_eq!(plan.binary(), binary);
+        assert!(!root.join(".vapor/state/content/index.toml").exists());
+        fs::remove_file(&binary).unwrap();
+        assert!(prepare_depot_default_launch(&installation, "ghf-studios/loo-cast/pack").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -65,9 +65,8 @@ Local deployment, Steam staging, activation and machine integration must use the
 ## Uninstall
 
 - `vapor-installer uninstall` removes machine integration and obsolete App-local mutable directories.
-- `--purge-app-external` additionally deletes Vapor User Data.
-- `--purge-superworkspace` independently deletes the canonical authored-source root.
-- Destructive purge flags require confirmation unless `--yes` is supplied.
+- The Installer UI's separate **Erase all Vapor data** action and `vapor-installer erase-all --confirm` combine the user-data and source purge after validating both. The CLI first prints the exact affected paths and refuses to proceed without `--confirm`.
+- Erase all removes every repository discovered in the registered canonical Superworkspace, including dirty checkouts, plus Vapor User Data (including game-specific saves, caches, and logs). Unknown neighboring files in a shared `~/Vapor` folder are preserved. The Steam-owned Loo-Cast depot is never removed.
 
 ## Remaining clean-machine limitation
 

@@ -10,10 +10,11 @@ not be treated as one folder.
 | Player Library item | Workshop or local source | Local content cache | acquire / download |
 | Installed Composition | Selected Packagepack and resolved dependencies | Installed content roots | install / update / repair |
 
-The root application contains Vapor frontends and resources; it does not embed
-Loo-Cast Workshop content in its depot. A Packagepack is a content artifact,
-not an app depot. Players install Packagepacks and their dependency closure
-through the content lifecycle.
+The root application contains Vapor frontends, resources, and the built default
+Loo-Cast App runtime closure. The default closure is staged from reviewed content
+packages into `content/default/`; it contains the Packagepack executable,
+required manifests, and runtime assets, without source trees or mutable Library
+state. Other Packagepacks and their dependency closures use the content lifecycle.
 
 For either remote destination, Vapor validates and stages the exact files
 before upload. The root app uses a split common/Linux/Windows depot model. A

@@ -59,8 +59,28 @@ impl ClientSession {
                 retryable: false,
             });
         };
-        self.refresh_catalog();
-        self.refresh_workspace_content();
+        // Publication must validate one current source/catalog snapshot. The
+        // ordinary UI refreshes these asynchronously; scheduling those here
+        // and immediately reading their loading state rejects a valid project.
+        if !self.bootstrap.fixture_mode {
+            let entries =
+                super::catalog::discover_catalog_entries(&self.bootstrap.application_executable)
+                    .map_err(|message| ServiceError {
+                        code: ServiceErrorCode::ProviderFailure,
+                        message,
+                        retryable: true,
+                    })?;
+            self.catalog.replace(entries);
+            self.workspace_content = super::catalog::discover_workspace_content(
+                &self.bootstrap.application_executable,
+                Some(&workspace_root),
+                false,
+                None,
+            );
+        } else {
+            self.refresh_catalog();
+            self.refresh_workspace_content();
+        }
         if let Some(error) = self.catalog.status().error.as_ref() {
             return Err(ServiceError {
                 code: ServiceErrorCode::ProviderFailure,

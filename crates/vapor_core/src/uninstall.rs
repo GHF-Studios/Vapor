@@ -26,6 +26,9 @@ const MANAGED_SUPERWORKSPACE_REPOSITORIES: &[&str] =
 pub struct UninstallOptions {
     pub purge_app_external: bool,
     pub purge_superworkspace: bool,
+    /// Permanently erase Vapor User Data and registered source checkouts.
+    /// Unknown neighboring files in a shared Superworkspace are preserved.
+    pub erase_all: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +40,7 @@ pub struct UninstallReport {
     pub legacy_app_state_removed: Vec<PathBuf>,
     pub app_external_purged: bool,
     pub superworkspace_purged: bool,
+    pub preserved_superworkspace_entries: Vec<PathBuf>,
 }
 
 pub fn uninstall_installation(
@@ -53,7 +57,16 @@ pub fn uninstall_installation_for(
 ) -> Result<UninstallReport, UninstallError> {
     let user_data_root = installation.user_data_root();
 
-    let superworkspace_root = if options.purge_superworkspace {
+    let erase_all = options.erase_all;
+    let purge_superworkspace = options.purge_superworkspace || erase_all;
+    let purge_app_external = options.purge_app_external || erase_all;
+    let superworkspace_root = if erase_all {
+        match registered_superworkspace(installation) {
+            Ok(root) => root,
+            Err(UninstallError::NoActiveSuperworkspace { .. }) => None,
+            Err(error) => return Err(error),
+        }
+    } else if purge_superworkspace {
         Some(active_superworkspace(installation)?)
     } else {
         None
@@ -65,10 +78,11 @@ pub fn uninstall_installation_for(
         installation,
         &user_data_root,
         superworkspace_root.as_deref(),
-        options,
+        purge_app_external,
+        erase_all,
     )?;
 
-    if !options.purge_app_external && installation.root.join("state").is_dir() {
+    if !purge_app_external && installation.root.join("state").is_dir() {
         installation
             .ensure_state_root()
             .map_err(UninstallError::Installation)?;
@@ -78,9 +92,16 @@ pub fn uninstall_installation_for(
 
     let mut app_external_purged = false;
     let mut superworkspace_purged = false;
+    let mut preserved_superworkspace_entries = Vec::new();
 
     if let Some(superworkspace) = &preflight.superworkspace_purge_root {
-        superworkspace_purged = remove_preflighted_tree(superworkspace)?;
+        if erase_all {
+            let (removed, preserved) = erase_registered_superworkspace(superworkspace)?;
+            superworkspace_purged = removed;
+            preserved_superworkspace_entries = preserved;
+        } else {
+            superworkspace_purged = remove_preflighted_tree(superworkspace)?;
+        }
     }
 
     if let Some(app_external) = &preflight.app_external_purge_root {
@@ -108,6 +129,7 @@ pub fn uninstall_installation_for(
         legacy_app_state_removed,
         app_external_purged,
         superworkspace_purged,
+        preserved_superworkspace_entries,
     })
 }
 
@@ -121,9 +143,14 @@ fn preflight_uninstall(
     installation: &VaporInstallation,
     user_data_root: &Path,
     superworkspace_root: Option<&Path>,
-    options: UninstallOptions,
+    purge_app_external: bool,
+    erase_all: bool,
 ) -> Result<UninstallPreflight, UninstallError> {
     preflight_machine_integration_removal()?;
+    for name in LEGACY_APP_MUTABLE_DIRS {
+        let path = installation.root.join(name);
+        preflight_owned_tree(&path, &[user_data_root])?;
+    }
 
     let superworkspace_purge_root = if let Some(superworkspace) = superworkspace_root {
         let root = preflight_owned_tree(
@@ -134,13 +161,17 @@ fn preflight_uninstall(
             path: superworkspace.to_path_buf(),
         })?;
 
-        ensure_superworkspace_purge_safe(&root)?;
+        if erase_all {
+            preflight_registered_superworkspace(&root, installation, user_data_root)?;
+        } else {
+            ensure_superworkspace_purge_safe(&root)?;
+        }
         Some(root)
     } else {
         None
     };
 
-    let app_external_purge_root = if options.purge_app_external {
+    let app_external_purge_root = if purge_app_external {
         preflight_owned_tree(user_data_root, &[installation.root.as_path()])?
     } else {
         None
@@ -152,12 +183,128 @@ fn preflight_uninstall(
     })
 }
 
+fn preflight_registered_superworkspace(
+    root: &Path,
+    installation: &VaporInstallation,
+    user_data_root: &Path,
+) -> Result<(), UninstallError> {
+    for name in [".idea", ".run"] {
+        preflight_owned_tree(&root.join(name), &[installation.root.as_path(), user_data_root])?;
+    }
+    let workspace = VaporSuperworkspace::discover_from(root)
+        .map_err(UninstallError::Superworkspace)?;
+    for repository in workspace.repositories {
+        let repository_root = fs::canonicalize(&repository.root).map_err(|source| {
+            UninstallError::Io {
+                path: repository.root.clone(),
+                source,
+            }
+        })?;
+        if repository_root == root || !repository_root.starts_with(root) {
+            return Err(UninstallError::UnsafePurgeRoot {
+                path: repository_root,
+            });
+        }
+        preflight_owned_tree(
+            &repository_root,
+            &[installation.root.as_path(), user_data_root],
+        )?;
+    }
+    Ok(())
+}
+
+/// Remove all repositories Vapor recognizes in this registered Superworkspace,
+/// while preserving unrelated files and directories beside them.
+fn erase_registered_superworkspace(
+    root: &Path,
+) -> Result<(bool, Vec<PathBuf>), UninstallError> {
+    let root = fs::canonicalize(root).map_err(|source| UninstallError::Io {
+        path: root.to_path_buf(),
+        source,
+    })?;
+    let workspace = VaporSuperworkspace::discover_from(&root)
+        .map_err(UninstallError::Superworkspace)?;
+    let repositories = workspace.repositories;
+    let owned_metadata = [SUPERWORKSPACE_MANIFEST_FILE_NAME, ".vaporignore"];
+    let mut removed = false;
+    for repository in repositories {
+        let repo = fs::canonicalize(&repository.root).map_err(|source| UninstallError::Io {
+            path: repository.root.clone(),
+            source,
+        })?;
+        if repo == root || !repo.starts_with(&root) {
+            return Err(UninstallError::UnsafePurgeRoot { path: repo });
+        }
+        remove_preflighted_tree(&repo)?;
+        removed = true;
+    }
+    for name in owned_metadata {
+        let path = root.join(name);
+        if path.is_file() {
+            fs::remove_file(&path).map_err(|source| UninstallError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            removed = true;
+        }
+    }
+    for name in [".idea", ".run"] {
+        let path = root.join(name);
+        if path.is_dir() {
+            let owned_directory = fs::canonicalize(&path).map_err(|source| UninstallError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            if owned_directory != root && owned_directory.starts_with(&root) {
+                remove_preflighted_tree(&owned_directory)?;
+                removed = true;
+            }
+        }
+    }
+    for name in ["sources"] {
+        let path = root.join(name);
+        if path.is_dir() && fs::read_dir(&path).is_ok_and(|mut entries| entries.next().is_none()) {
+            fs::remove_dir(&path).map_err(|source| UninstallError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        }
+    }
+    let preserved = fs::read_dir(&root)
+        .map_err(|source| UninstallError::Io {
+            path: root.clone(),
+            source,
+        })?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|source| UninstallError::Io {
+                    path: root.clone(),
+                    source,
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((removed, preserved))
+}
+
 fn preflight_owned_tree(
     path: &Path,
     protected: &[&Path],
 ) -> Result<Option<PathBuf>, UninstallError> {
-    if !path.exists() {
-        return Ok(None);
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(UninstallError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(UninstallError::UnsafePurgeRoot {
+            path: path.to_path_buf(),
+        });
     }
 
     let path = fs::canonicalize(path).map_err(|source| UninstallError::Io {
@@ -225,24 +372,37 @@ fn validate_managed_profile_block(path: &Path) -> Result<(), UninstallError> {
 }
 
 fn active_superworkspace(installation: &VaporInstallation) -> Result<PathBuf, UninstallError> {
+    if let Some(root) = registered_superworkspace(installation)? {
+        return Ok(root);
+    }
     let state = source_state(installation).map_err(UninstallError::Source)?;
-
-    if let Some(configured) = state.superworkspace.as_deref()
-        && let Ok(superworkspace) = VaporSuperworkspace::discover_from(configured)
-    {
-        return Ok(superworkspace.root);
-    }
-
-    if let Some(active) = state.active.as_deref()
-        && let Ok(superworkspace) = VaporSuperworkspace::discover_from(active)
-    {
-        return Ok(superworkspace.root);
-    }
 
     if let Ok(current) = env::current_dir()
         && let Ok(superworkspace) = VaporSuperworkspace::discover_from(&current)
     {
         return Ok(superworkspace.root);
+    }
+
+    Err(UninstallError::NoActiveSuperworkspace {
+        state_path: state.state_path,
+    })
+}
+
+fn registered_superworkspace(
+    installation: &VaporInstallation,
+) -> Result<Option<PathBuf>, UninstallError> {
+    let state = source_state(installation).map_err(UninstallError::Source)?;
+
+    if let Some(configured) = state.superworkspace.as_deref()
+        && let Ok(superworkspace) = VaporSuperworkspace::discover_from(configured)
+    {
+        return Ok(Some(superworkspace.root));
+    }
+
+    if let Some(active) = state.active.as_deref()
+        && let Ok(superworkspace) = VaporSuperworkspace::discover_from(active)
+    {
+        return Ok(Some(superworkspace.root));
     }
 
     let mut known = BTreeSet::new();
@@ -253,12 +413,15 @@ fn active_superworkspace(installation: &VaporInstallation) -> Result<PathBuf, Un
     }
 
     if known.len() == 1 {
-        return Ok(known.into_iter().next().expect("length checked"));
+        return Ok(known.into_iter().next());
     }
 
-    Err(UninstallError::NoActiveSuperworkspace {
-        state_path: state.state_path,
-    })
+    if known.len() > 1 {
+        return Err(UninstallError::NoActiveSuperworkspace {
+            state_path: state.state_path,
+        });
+    }
+    Ok(None)
 }
 
 fn remove_legacy_app_mutable_state(
@@ -851,7 +1014,7 @@ impl std::error::Error for UninstallError {
 mod tests {
     use super::{
         PROFILE_BLOCK_END, PROFILE_BLOCK_START, anchor_contents_target_installation,
-        managed_profile_block_targets,
+        erase_registered_superworkspace, managed_profile_block_targets, preflight_owned_tree,
     };
     use crate::VAPOR_HOME_ENV;
     use std::path::Path;
@@ -882,5 +1045,61 @@ mod tests {
             "/opt/vapor-primary\n",
             other
         ));
+    }
+
+    #[test]
+    fn erase_all_removes_registered_sources_but_preserves_unrelated_neighbors() {
+        let root = std::env::temp_dir().join(format!(
+            "vapor-erase-all-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after epoch")
+                .as_nanos()
+        ));
+        let sources = root.join("sources");
+        let repo = sources.join("sample-source");
+        std::fs::create_dir_all(&repo).expect("create source checkout");
+        std::fs::create_dir_all(root.join(".aws")).expect("create unrelated neighbor");
+        std::fs::write(root.join("Superworkspace.vapor.toml"), "schema = 1\n\n[superworkspace]\n")
+            .expect("write superworkspace manifest");
+        std::fs::write(repo.join("Workspace.vapor.toml"), "schema = 1\n\n[workspace]\n")
+            .expect("mark source checkout");
+        std::fs::write(root.join(".aws/credentials"), "preserve me")
+            .expect("write unrelated file");
+
+        let (removed, preserved) = erase_registered_superworkspace(&root).expect("erase sources");
+
+        assert!(removed);
+        assert!(!repo.exists());
+        assert!(root.join(".aws/credentials").is_file());
+        assert!(preserved.contains(&root.join(".aws")));
+        assert!(!root.join("Superworkspace.vapor.toml").exists());
+        std::fs::remove_dir_all(root).expect("clean fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn destructive_preflight_refuses_a_symlink_root_without_following_it() {
+        let base = std::env::temp_dir().join(format!(
+            "vapor-erase-symlink-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after epoch")
+                .as_nanos()
+        ));
+        let target = base.join("target");
+        let link = base.join("registered-root");
+        std::fs::create_dir_all(&target).expect("create target");
+        std::fs::write(target.join("keep"), "data").expect("create protected data");
+        std::os::unix::fs::symlink(&target, &link).expect("create root symlink");
+
+        assert!(matches!(
+            preflight_owned_tree(&link, &[]),
+            Err(super::UninstallError::UnsafePurgeRoot { .. })
+        ));
+        assert!(target.join("keep").is_file());
+        std::fs::remove_dir_all(base).expect("clean fixture");
     }
 }

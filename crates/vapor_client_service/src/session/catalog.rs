@@ -303,7 +303,7 @@ impl ClientSession {
     }
 }
 
-fn discover_workspace_content(
+pub(super) fn discover_workspace_content(
     executable: &Path,
     root: Option<&Path>,
     fixture_mode: bool,
@@ -389,7 +389,7 @@ fn discover_workspace_content(
     snapshot
 }
 
-fn discover_catalog_entries(executable: &Path) -> Result<Vec<CatalogEntry>, String> {
+pub(super) fn discover_catalog_entries(executable: &Path) -> Result<Vec<CatalogEntry>, String> {
     discover_local_content_catalog(executable)
         .map(|catalog| catalog.into_iter().map(catalog_entry).collect())
 }

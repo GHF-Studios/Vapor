@@ -2,7 +2,7 @@
 //!
 //! The module keeps SteamUGC and filesystem staging behind Vapor content
 //! operations. Authored intent is read from source role-specific manifests; generated
-//! app-owned state is written under the Steam installation/app root.
+//! mutable state is written under Vapor User Data outside the Steam app root.
 
 use crate::{
     discovery::{EnvironmentPaths, InstallationPaths, ensure_contained},
@@ -52,7 +52,7 @@ use workshop::{
 const CONTENT_STATE_SCHEMA: u32 = 1;
 const FINGERPRINT_ALGORITHM: &str = "vapor-fnv1a-64-v1";
 
-/// Canonical app-root layout for generated content state.
+/// Canonical Vapor User Data layout for generated content state.
 #[derive(Debug, Clone)]
 pub struct ContentLayout {
     app_content: PathBuf,
@@ -72,9 +72,9 @@ pub struct ContentLayout {
 }
 
 impl ContentLayout {
-    /// Build layout paths under the Steam installation/app root.
+    /// Build mutable content paths outside the replaceable Steam installation.
     pub fn new(installation: &InstallationPaths) -> Self {
-        let app_content = installation.root().join("content");
+        let app_content = installation.user_data_root().join("content");
         let state = installation.state_dir().join("content");
         Self {
             steam_downloads: app_content.join("workshop/downloads"),
@@ -82,9 +82,9 @@ impl ContentLayout {
             installed: app_content.join("installed"),
             disabled: app_content.join("disabled"),
             quarantine: app_content.join("quarantine"),
-            output_packages: installation.root().join("output/content/packages"),
-            output_temporary: installation.root().join("output/content/temporary"),
-            output_scripts: installation.root().join("output/content/scripts"),
+            output_packages: installation.output_root().join("content/packages"),
+            output_temporary: installation.output_root().join("content/temporary"),
+            output_scripts: installation.output_root().join("content/scripts"),
             app_content,
             locks: state.join("locks"),
             receipts: state.join("receipts"),
@@ -174,6 +174,49 @@ use packaging::{
     validate_runtime_output_names,
 };
 pub use packaging::{package, package_for_target, package_for_targets};
+
+/// Read a staged content package through the same deployed-manifest parser
+/// used by install and launch. Distribution uses this for release validation.
+pub(crate) fn read_depot_artifact(root: &Path) -> Result<ContentArtifact, String> {
+    read_deployed_manifest(root)
+}
+
+/// Project a Workshop package's role manifest onto the files the default App
+/// actually ships, keeping static developer archives out of the Player depot.
+pub(crate) fn project_depot_runtime_manifest(
+    root: &Path,
+    kind: ContentKind,
+    targets: &[String],
+) -> Result<(), String> {
+    packaging::project_depot_runtime_manifest(root, kind, targets)
+}
+
+/// Required target-specific files declared by a depot role manifest.
+pub(crate) fn depot_runtime_files(root: &Path, target: &str) -> Result<Vec<PathBuf>, String> {
+    let artifact = read_deployed_manifest(root)?;
+    let runtime = artifact
+        .runtime()
+        .iter()
+        .find(|payload| payload.target == target);
+    if runtime.is_none() && (!artifact.binaries().is_empty() || !artifact.libraries().is_empty()) {
+        return Err(format!(
+            "default App artifact '{}' has no runtime declaration for {target}",
+            artifact.id()
+        ));
+    }
+    let mut files = Vec::new();
+    if let Some(runtime) = runtime {
+        for name in &runtime.binaries {
+            validate_runtime_output_names("default App binary", std::slice::from_ref(name))?;
+            files.push(PathBuf::from("bin").join(target).join(name));
+        }
+        for name in &runtime.libraries {
+            validate_runtime_output_names("default App library", std::slice::from_ref(name))?;
+            files.push(PathBuf::from("lib").join(target).join(name));
+        }
+    }
+    Ok(files)
+}
 
 /// Validate content dependency, conflict, and Workshop metadata.
 ///
@@ -322,7 +365,7 @@ pub fn acquire(
                 .published_file_id()
                 .map_or_else(|| slug(artifact.id()), ToOwned::to_owned);
             let cache_root = layout.cache().join("packages").join(cache_key);
-            reset_directory(installation.root(), &cache_root)?;
+            reset_directory(installation.user_data_root(), &cache_root)?;
             copy_tree(package.root(), &cache_root, package.root(), &[])?;
             let receipt = write_receipt(
                 installation,
@@ -373,8 +416,10 @@ pub fn acquire(
         });
     }
 
-    if let Some(seed) = root_content_seed(installation, selector)? {
-        return acquire_workshop_item(installation, seed.app_id, &seed.workshop_id, account);
+    if let Some(seed) = root_content_seed(installation, selector)?
+        && let Some(workshop_id) = seed.workshop_id
+    {
+        return acquire_workshop_item(installation, seed.app_id, &workshop_id, account);
     }
 
     if is_published_file_id(selector) {
@@ -543,7 +588,7 @@ fn import_workshop_item_with_constraints(
         .steam_downloads()
         .join(app_id.to_string())
         .join(published_file_id);
-    reset_directory(installation.root(), &observed_root)?;
+    reset_directory(installation.user_data_root(), &observed_root)?;
     copy_tree(provider_root, &observed_root, provider_root, &[])?;
     let artifact = read_deployed_manifest(&observed_root)?;
     if let Some(requirements) = constraints.and_then(|all| all.get(artifact.id())) {
@@ -714,15 +759,17 @@ pub fn root_content_seed_workshop_items(
         let Some(seed) = root_content_seed(installation, selector)? else {
             continue;
         };
-        let published_file_id = seed
-            .workshop_id
+        let Some(workshop_id) = seed.workshop_id.as_deref() else {
+            continue;
+        };
+        let published_file_id = workshop_id
             .parse::<u64>()
             .ok()
             .filter(|id| *id != 0)
             .ok_or_else(|| {
                 format!(
                     "root seed for '{}' has invalid Workshop item ID '{}'",
-                    seed.id, seed.workshop_id
+                    seed.id, workshop_id
                 )
             })?;
         downloads.insert((seed.app_id, published_file_id));
@@ -931,7 +978,7 @@ pub fn uninstall(
         layout.disabled().join(&artifact_id),
     ] {
         if root.exists() {
-            remove_directory(installation.root(), &root)?;
+            remove_directory(installation.user_data_root(), &root)?;
             removed = true;
         }
     }
@@ -1541,11 +1588,14 @@ impl vapor_client_domain::InstallContentProvider for LocalInstallProvider<'_> {
             return self.retain_artifact(artifact, InstallPlanSource::Installed, true);
         }
 
-        if let Some(seed) = root_content_seed(self.installation, selector)? {
+        if let Some(seed) = root_content_seed(self.installation, selector)?
+            && seed.workshop_id.is_some()
+        {
             return Ok(InstallCandidateAvailability::Unavailable {
                 message: Some(format!(
                     "{} is supplied by Workshop item {}, but its manifest must be acquired before its dependencies can be resolved",
-                    seed.id, seed.workshop_id,
+                    seed.id,
+                    seed.workshop_id.as_deref().unwrap_or_default(),
                 )),
                 warning: false,
                 seed: Some(seed_plan_node(seed)),
@@ -1690,12 +1740,14 @@ impl vapor_client_domain::InstallContentProvider for LocalInstallProvider<'_> {
             None if seed_selector != id => root_content_seed(self.installation, id)?,
             None => None,
         };
-        if let Some(seed) = seed {
+        if let Some(seed) = seed.filter(|seed| seed.workshop_id.is_some()) {
             if seed.id != id {
                 return Ok(InstallCandidateAvailability::Unavailable {
                     message: Some(format!(
                         "Workshop seed {} resolves to '{}', but dependency identity must be '{}'",
-                        seed.workshop_id, seed.id, id,
+                        seed.workshop_id.as_deref().unwrap_or_default(),
+                        seed.id,
+                        id,
                     )),
                     warning: false,
                     seed: None,
@@ -1730,7 +1782,7 @@ fn seed_plan_node(seed: RootContentSeed) -> InstallPlanNode {
         id: seed.id,
         version: None,
         kind: seed.kind,
-        published_file_id: Some(seed.workshop_id),
+        published_file_id: seed.workshop_id,
         source: InstallPlanSource::RootSeed,
         already_installed: false,
         dependencies: Vec::new(),
@@ -1908,18 +1960,19 @@ fn install_selector(
 
     if state.index.cache_by_selector(selector).is_none()
         && let Some(seed) = root_content_seed(context.installation, selector)?
+        && let Some(workshop_id) = seed.workshop_id
     {
         let acquired = acquire_workshop_item(
             context.installation,
             seed.app_id,
-            &seed.workshop_id,
+            &workshop_id,
             context.account,
         )?;
         state.index.caches.insert(
             acquired.artifact_id().to_owned(),
             CacheRecord {
                 artifact_id: acquired.artifact_id().to_owned(),
-                workshop_id: Some(seed.workshop_id),
+                workshop_id: Some(workshop_id),
                 version: read_deployed_manifest(acquired.cache_root())?
                     .version()
                     .map(ToOwned::to_owned),
@@ -2099,7 +2152,7 @@ fn install_package(
     source: &str,
 ) -> Result<InstallReport, String> {
     let target = layout.installed().join(artifact.id());
-    reset_directory(installation.root(), &target)?;
+    reset_directory(installation.user_data_root(), &target)?;
     fs::create_dir_all(&target).map_err(io("create installed content", &target))?;
     copy_tree(artifact_root, &target, artifact_root, &[])?;
     let fingerprint = fingerprint_tree(&target)?;
@@ -2182,7 +2235,7 @@ fn move_enabled_state(
         fs::create_dir_all(parent).map_err(io("create content state parent", parent))?;
     }
     if to_root.exists() {
-        remove_directory(installation.root(), &to_root)?;
+        remove_directory(installation.user_data_root(), &to_root)?;
     }
     fs::rename(&from_root, &to_root).map_err(io("move content artifact root", &from_root))?;
     let fingerprint = fingerprint_tree(&to_root)?;
@@ -2309,7 +2362,7 @@ struct RootContentSeed {
     id: String,
     kind: String,
     app_id: u32,
-    workshop_id: String,
+    workshop_id: Option<String>,
     default_launch: Option<String>,
 }
 
@@ -2352,7 +2405,7 @@ fn root_content_seed_matches(seed: &RootContentSeed, selector: &str) -> bool {
             .rsplit('/')
             .next()
             .is_some_and(|name| name == identity)
-        || seed.workshop_id == selector
+        || seed.workshop_id.as_deref() == Some(selector)
         || seed
             .default_launch
             .as_deref()
@@ -2553,7 +2606,7 @@ title = "Movement"
             id: "ghf-studios/loo-cast/loo-cast-packagepack".to_owned(),
             kind: "packagepack".to_owned(),
             app_id: 2122620,
-            workshop_id: "3762162548".to_owned(),
+            workshop_id: Some("3762162548".to_owned()),
             default_launch: Some("default".to_owned()),
         };
 
@@ -2646,7 +2699,8 @@ title = "Movement"
         .unwrap();
 
         let installation = InstallationPaths::from_executable(&installation_root.join("bin/vapor"))
-            .expect("test installation is valid");
+            .expect("test installation is valid")
+            .with_test_user_data_root(root.join("user-data"));
         let paths = EnvironmentPaths::from_installation_and_source_path(
             installation.clone(),
             &workspace_root,
@@ -2753,7 +2807,8 @@ title = "Movement"
         )
         .unwrap();
         let installation = InstallationPaths::from_executable(&installation_root.join("bin/vapor"))
-            .expect("test installation is valid");
+            .expect("test installation is valid")
+            .with_test_user_data_root(root.join("user-data"));
         let layout = ContentLayout::new(&installation);
         let content_id = "publisher/project/cache-me";
         let cache_root = layout.cache().join("packages/3762162550");
@@ -2805,7 +2860,8 @@ title = "Movement"
         )
         .unwrap();
         let installation = InstallationPaths::from_executable(&installation_root.join("bin/vapor"))
-            .expect("test installation is valid");
+            .expect("test installation is valid")
+            .with_test_user_data_root(root.join("user-data"));
         let layout = ContentLayout::new(&installation);
         let content_id = "publisher/project/versioned";
         let published_file_id = "3762162551";

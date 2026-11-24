@@ -7,7 +7,7 @@ use std::{
 };
 use vapor_core::RustToolchainCommandEnvironment;
 
-/// Cargo from the installed Vapor app, with its pinned Rust environment.
+/// Cargo from persistent Vapor User Data, with the app's pinned Rust environment.
 ///
 /// Its output directory remains operation-owned: callers select the target
 /// directory that matches the workspace and build purpose.
@@ -23,7 +23,7 @@ impl ApplicationCargo {
         let installation = paths.installation();
         let cargo = installation
             .try_bundled_cargo()?
-            .ok_or_else(|| "Vapor installation has no bundled Cargo executable".to_owned())?;
+            .ok_or_else(|| "Vapor User Data has no managed Cargo executable".to_owned())?;
         let toolchain_bin = cargo
             .parent()
             .ok_or_else(|| format!("managed Cargo has no parent: {}", cargo.display()))?;
@@ -41,16 +41,18 @@ impl ApplicationCargo {
             .ok_or_else(|| "managed Rust toolchain has no stable directory name".to_owned())?
             .to_os_string();
         let root = installation.root();
+        let tools_root = installation.user_data_root();
         let environment = RustToolchainCommandEnvironment::new(
             root,
-            root.join("cargo-home"),
-            root.join("rustup-home"),
+            tools_root.join("cargo-home"),
+            tools_root.join("rustup-home"),
             toolchain,
             rustc,
             rustdoc,
         );
         let path = application_path(
             root,
+            tools_root,
             installation.binaries(),
             toolchain_bin,
             env::var_os("PATH").as_deref(),
@@ -63,12 +65,12 @@ impl ApplicationCargo {
         })
     }
 
-    /// The selected app-packaged Cargo executable.
+    /// The selected Vapor-managed Cargo executable.
     pub fn cargo_path(&self) -> &Path {
         &self.cargo
     }
 
-    /// Create a child command with Vapor's selected app-packaged toolchain.
+    /// Create a child command with Vapor's selected managed toolchain.
     pub fn command(&self) -> Command {
         let mut command = vapor_core::managed_process::background_command(&self.cargo);
         self.environment.apply_to(&mut command);
@@ -79,6 +81,7 @@ impl ApplicationCargo {
 
 fn application_path(
     root: &Path,
+    tools_root: &Path,
     binaries: &Path,
     toolchain_bin: &Path,
     inherited: Option<&OsStr>,
@@ -89,8 +92,9 @@ fn application_path(
         root.join("bin"),
     ];
     if let Some(inherited) = inherited {
-        entries
-            .extend(env::split_paths(inherited).filter(|entry| !is_raw_app_tool_path(root, entry)));
+        entries.extend(
+            env::split_paths(inherited).filter(|entry| !is_raw_tool_path(root, tools_root, entry)),
+        );
     }
     #[cfg(unix)]
     for host_tools in [
@@ -109,19 +113,21 @@ fn application_path(
     env::join_paths(entries).map_err(|error| format!("failed to construct managed PATH: {error}"))
 }
 
-fn is_raw_app_tool_path(root: &Path, entry: &Path) -> bool {
-    [
-        root.join("cargo-home/bin"),
-        root.join("rustup/bin"),
-        root.join("tools/steamcmd"),
-        root.join("tools/zig"),
-        root.join("tools/cross/bin"),
-        root.join("tools/llvm-mingw/bin"),
-    ]
-    .iter()
-    .any(|raw_path| entry == raw_path)
-        || (entry.starts_with(root.join("rustup-home/toolchains"))
-            && entry.file_name().is_some_and(|name| name == "bin"))
+fn is_raw_tool_path(root: &Path, tools_root: &Path, entry: &Path) -> bool {
+    [root, tools_root].iter().any(|base| {
+        [
+            "cargo-home/bin",
+            "rustup/bin",
+            "tools/steamcmd",
+            "tools/zig",
+            "tools/cross/bin",
+            "tools/llvm-mingw/bin",
+        ]
+        .iter()
+        .any(|relative| entry == base.join(relative))
+            || (entry.starts_with(base.join("rustup-home/toolchains"))
+                && entry.file_name().is_some_and(|name| name == "bin"))
+    })
 }
 
 fn executable(name: &str) -> String {
@@ -137,6 +143,7 @@ mod tests {
     fn application_path_keeps_host_linker_dirs_when_service_path_is_missing() {
         let path = super::application_path(
             Path::new("/app"),
+            Path::new("/vapor-data"),
             Path::new("/app/bin/x86_64-linux"),
             Path::new("/app/rustup-home/toolchains/1.97.0/bin"),
             None,
@@ -160,6 +167,7 @@ mod tests {
 
         let path = super::application_path(
             Path::new("/app"),
+            Path::new("/vapor-data"),
             Path::new("/app/bin/x86_64-linux"),
             Path::new("/app/rustup-home/toolchains/1.97.0/bin"),
             Some(&inherited),

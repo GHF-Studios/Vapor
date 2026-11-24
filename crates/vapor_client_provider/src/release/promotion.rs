@@ -45,15 +45,16 @@ fn promote_for_targets_in_profile(
 ) -> Result<usize, String> {
     let targets = RuntimeTarget::many(target_triples)?;
     let installation = paths.installation().root();
+    let output = paths.installation().output_root();
     let mut promoted = 0;
     for project in manifest.cargo_projects() {
         for binary in project.binaries() {
             for target in &targets {
                 let filename = target.binary_file_name(binary);
                 let source = target
-                    .build_output_root(installation, project.name(), profile)
+                    .build_output_root(&output, project.name(), profile)
                     .join(&filename);
-                ensure_contained(installation, &source)?;
+                ensure_contained(&output, &source)?;
                 if !source.is_file() {
                     return Err(format!(
                         "built binary is missing for project '{}' target '{}': {}",
@@ -75,7 +76,7 @@ fn promote_for_targets_in_profile(
                     )
                 })?;
                 cross_toolchain::copy_windows_runtime_dlls(
-                    installation,
+                    paths.installation().user_data_root(),
                     target.triple(),
                     destination_root,
                 )?;
@@ -85,9 +86,9 @@ fn promote_for_targets_in_profile(
         for target in &targets {
             for library in project.libraries(target.triple()) {
                 let source = target
-                    .build_output_root(installation, project.name(), profile)
+                    .build_output_root(&output, project.name(), profile)
                     .join(library);
-                ensure_contained(installation, &source)?;
+                ensure_contained(&output, &source)?;
                 if !source.is_file() {
                     return Err(format!(
                         "built runtime library is missing for project '{}' target '{}': {}",
@@ -160,9 +161,9 @@ impl RuntimeTarget {
         &self.triple
     }
 
-    fn build_output_root(&self, installation: &Path, project: &str, profile: &str) -> PathBuf {
+    fn build_output_root(&self, output: &Path, project: &str, profile: &str) -> PathBuf {
         let cargo_profile = if profile == "dev" { "debug" } else { profile };
-        let root = installation.join("output").join(profile).join(project);
+        let root = output.join(profile).join(project);
         if self.explicit {
             root.join(self.triple()).join(cargo_profile)
         } else {
@@ -228,14 +229,14 @@ mod tests {
             triple: "x86_64-unknown-linux-gnu".to_owned(),
             explicit: true,
         };
-        let installation = Path::new("/vapor");
+        let output = Path::new("/vapor/user/output");
         assert_eq!(
-            target.build_output_root(installation, "vapor", "dev"),
-            Path::new("/vapor/output/dev/vapor/x86_64-unknown-linux-gnu/debug")
+            target.build_output_root(output, "vapor", "dev"),
+            Path::new("/vapor/user/output/dev/vapor/x86_64-unknown-linux-gnu/debug")
         );
         assert_eq!(
-            target.build_output_root(installation, "vapor", "release"),
-            Path::new("/vapor/output/release/vapor/x86_64-unknown-linux-gnu/release")
+            target.build_output_root(output, "vapor", "release"),
+            Path::new("/vapor/user/output/release/vapor/x86_64-unknown-linux-gnu/release")
         );
     }
 
@@ -245,8 +246,8 @@ mod tests {
             .expect("host target")
             .remove(0);
         assert_eq!(
-            target.build_output_root(Path::new("/vapor"), "vapor", "dev"),
-            Path::new("/vapor/output/dev/vapor/debug")
+            target.build_output_root(Path::new("/vapor/user/output"), "vapor", "dev"),
+            Path::new("/vapor/user/output/dev/vapor/debug")
         );
     }
 }

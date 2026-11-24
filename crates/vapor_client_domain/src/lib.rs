@@ -29,7 +29,8 @@ pub use composition::{
     CompositionDocument, InstallationState, InstalledArtifactRecord, LaunchSettings,
     ResolvedCompositionGraph, ResolvedDependencyIdentity, ResolvedNodeIdentity,
     WorkspaceAssociation, add_composition, apply_composition_action, duplicate_composition,
-    fingerprint_resolved_graph, remove_composition, rename_composition, resolved_graph_matches,
+    fingerprint_resolved_graph, remove_composition, rename_composition,
+    resolved_graph_content_matches, resolved_graph_matches,
 };
 pub use console_command::{
     ConsoleCommand, ConsoleCommandError, ConsoleCommandOutcome, ConsoleCommandScope,

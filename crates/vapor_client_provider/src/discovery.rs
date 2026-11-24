@@ -150,6 +150,7 @@ fn configured_source(installation: &InstallationPaths) -> Result<Option<PathBuf>
 pub struct InstallationPaths {
     executable: PathBuf,
     root: PathBuf,
+    user_data_root: PathBuf,
     binaries: PathBuf,
     libraries: Option<PathBuf>,
     cargo: Option<PathBuf>,
@@ -157,6 +158,12 @@ pub struct InstallationPaths {
 }
 
 impl InstallationPaths {
+    #[cfg(test)]
+    pub(crate) fn with_test_user_data_root(mut self, root: PathBuf) -> Self {
+        self.user_data_root = root;
+        self
+    }
+
     /// Discover an installation from any packaged application executable that
     /// shares a directory with the app-owned `vapor` command.
     ///
@@ -243,15 +250,19 @@ impl InstallationPaths {
             ));
         }
         let identity_id = require_installation_marker(&marker, &root)?;
+        let user_data_root = VaporInstallation::from_explicit_root(root.clone())
+            .map_err(|error| error.to_string())?
+            .user_data_root();
 
         let libraries = optional_directory(&root, LIBRARY_DIR)?;
-        let cargo = bundled_cargo_candidates(&root)?
+        let cargo = bundled_cargo_candidates(&root, &user_data_root)?
             .into_iter()
             .find(|candidate| candidate.is_file());
 
         Ok(Self {
             executable,
             root,
+            user_data_root,
             binaries,
             libraries,
             cargo,
@@ -269,6 +280,17 @@ impl InstallationPaths {
         &self.root
     }
 
+    /// Disposable build, package, documentation, and Steam staging output.
+    /// The App Instance remains the source of shipped files, not a cache root.
+    pub fn output_root(&self) -> PathBuf {
+        self.user_data_root.join("output")
+    }
+
+    /// Persistent Vapor data, independent of the replaceable Steam App Instance.
+    pub fn user_data_root(&self) -> &Path {
+        &self.user_data_root
+    }
+
     /// Directory containing the running Vapor executable.
     pub fn binaries(&self) -> &Path {
         &self.binaries
@@ -279,9 +301,9 @@ impl InstallationPaths {
         self.root.join(".vapor")
     }
 
-    /// App-local mutable Vapor state directory.
+    /// Persistent Vapor state directory.
     pub fn state_dir(&self) -> PathBuf {
-        self.vapor_dir().join("state")
+        self.user_data_root.join("state")
     }
 
     /// Conventional `lib` directory, when installed.
@@ -301,7 +323,7 @@ impl InstallationPaths {
 
     /// Rescan the app instance for Cargo and report an invalid installed pin.
     pub fn try_bundled_cargo(&self) -> Result<Option<PathBuf>, String> {
-        bundled_cargo_candidates(&self.root)
+        bundled_cargo_candidates(&self.root, &self.user_data_root)
             .map(|candidates| candidates.into_iter().find(|candidate| candidate.is_file()))
     }
 
@@ -564,11 +586,11 @@ fn optional_directory(root: &Path, name: &str) -> Result<Option<PathBuf>, String
     Ok(Some(canonical))
 }
 
-fn bundled_cargo_candidates(root: &Path) -> Result<Vec<PathBuf>, String> {
+fn bundled_cargo_candidates(root: &Path, tools_root: &Path) -> Result<Vec<PathBuf>, String> {
     let executable = format!("cargo{}", env::consts::EXE_SUFFIX);
-    let toolchains_root = root.join("rustup-home").join("toolchains");
     let installation = VaporInstallation::from_explicit_root(root.to_path_buf())
         .map_err(|error| error.to_string())?;
+    let toolchains_root = tools_root.join("rustup-home/toolchains");
     let pin =
         ManagedToolchain::installation_pin(&installation).map_err(|error| error.to_string())?;
     let mut toolchains = fs::read_dir(&toolchains_root)
@@ -602,7 +624,7 @@ fn bundled_cargo_candidates(root: &Path) -> Result<Vec<PathBuf>, String> {
         .into_iter()
         .map(|entry| entry.path().join("bin").join(&executable))
         .collect::<Vec<_>>();
-    candidates.push(root.join("cargo-home").join("bin").join(&executable));
+    candidates.push(tools_root.join("cargo-home/bin").join(&executable));
     candidates.push(root.join("bin").join(executable));
     Ok(candidates)
 }
@@ -631,7 +653,8 @@ mod tests {
                 .expect("system clock after epoch")
                 .as_nanos()
         ));
-        let toolchains = root.join("rustup-home/toolchains");
+        let tools_root = root.join("user-data");
+        let toolchains = tools_root.join("rustup-home/toolchains");
         let pinned = toolchains.join("1.97.0-x86_64-unknown-linux-gnu/bin/cargo");
         let ambient = toolchains.join("1.83.0-x86_64-unknown-linux-gnu/bin/cargo");
         fs::create_dir_all(pinned.parent().expect("pinned cargo parent"))
@@ -650,7 +673,8 @@ mod tests {
         .expect("write installed pin");
         fs::write(root.join("App.vapor.toml"), "[root]\n").expect("write app installation marker");
 
-        let candidates = bundled_cargo_candidates(&root).expect("discover bundled Cargo");
+        let candidates =
+            bundled_cargo_candidates(&root, &tools_root).expect("discover bundled Cargo");
 
         assert_eq!(candidates.first(), Some(&pinned));
         assert!(!candidates.iter().any(|candidate| candidate == &ambient));

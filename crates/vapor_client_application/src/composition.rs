@@ -4,14 +4,15 @@ pub use vapor_client_domain::{
     CURRENT_SCHEMA_VERSION, Composition, CompositionDocument, ContentReference, InstallationState,
     InstalledArtifactRecord, LaunchSettings, ResolvedCompositionGraph, ResolvedDependencyIdentity,
     ResolvedNodeIdentity, WorkspaceAssociation, add_composition, duplicate_composition,
-    fingerprint_resolved_graph, remove_composition, rename_composition, resolved_graph_matches,
+    fingerprint_resolved_graph, remove_composition, rename_composition,
+    resolved_graph_content_matches, resolved_graph_matches,
 };
 
 #[cfg(test)]
 mod resolved_graph_tests {
     use super::{
         ContentReference, InstallationState, ResolvedCompositionGraph, ResolvedDependencyIdentity,
-        ResolvedNodeIdentity, resolved_graph_matches,
+        ResolvedNodeIdentity, resolved_graph_content_matches, resolved_graph_matches,
     };
 
     fn identity(id: &str, version: &str) -> ContentReference {
@@ -93,6 +94,19 @@ mod resolved_graph_tests {
             &duplicate_binding,
             &duplicate_binding
         ));
+    }
+
+    #[test]
+    fn depot_handoff_keeps_content_graph_identity_while_replacing_provenance() {
+        let saved = graph("sha256:old-engine");
+        let mut depot = graph("sha256:depot-engine");
+        for node in &mut depot.nodes {
+            node.source = Some("depot".to_owned());
+        }
+        assert!(!resolved_graph_matches(&saved, &depot));
+        assert!(resolved_graph_content_matches(&saved, &depot));
+        depot.nodes[1].dependencies[1].content = identity("org.other-game", "3.0.0");
+        assert!(!resolved_graph_content_matches(&saved, &depot));
     }
 
     #[test]

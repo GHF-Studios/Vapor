@@ -3,9 +3,11 @@
 The root app is Vapor's Steam application and launcher/runtime installation.
 Its source manifest declares the Steam AppID, development branch, depot IDs,
 runtime target matrix, and explicit file membership. The packaged runtime
-contains launch entrypoints, binaries, resources, and installed docs. It does
-not contain source checkouts, Cargo caches, SteamCMD credentials, generated
-state, or game Workshop payloads.
+contains launch entrypoints, binaries, resources, installed docs, and the
+depot-owned default Loo-Cast App runtime. It does not contain source checkouts,
+Cargo caches, SteamCMD credentials, generated state, or a mutable Workshop
+Library. The default App's content packages must be prepared for the release
+target matrix before root staging; missing runtime inputs fail the package.
 
 Use a local package to inspect the staged app without upload:
 

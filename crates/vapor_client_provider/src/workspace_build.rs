@@ -248,7 +248,7 @@ pub fn clean_development_cache(
         ));
     }
 
-    let cache_root = paths.installation().root().join("output").join("dev");
+    let cache_root = paths.installation().output_root().join("dev");
     let total = projects.len();
     for (index, project) in projects.iter().enumerate() {
         if is_cancelled() {
@@ -440,14 +440,14 @@ fn run_step(
             source_manifest.display()
         )
     })?;
-    let installation = paths.installation().root();
     let profile = if step == CargoStep::BuildRelease {
         "release"
     } else {
         "dev"
     };
-    let target_directory = installation
-        .join("output")
+    let target_directory = paths
+        .installation()
+        .output_root()
         .join(profile)
         .join(project.name());
     let mut command = cargo.command();
@@ -465,7 +465,11 @@ fn run_step(
         && let Some(target) = target
         && target != host_runtime_target()
     {
-        cross_toolchain::configure_linker_env(&mut command, installation, target)?;
+        cross_toolchain::configure_linker_env(
+            &mut command,
+            paths.installation().user_data_root(),
+            target,
+        )?;
     }
     if step == CargoStep::Doc {
         command.env("RUSTDOCFLAGS", "-D warnings");

@@ -1,4 +1,4 @@
-//! Installation-owned native tools required to build declared foreign targets.
+//! Vapor User Data-owned native tools required to build foreign targets.
 
 use crate::{ManagedToolError, VaporInstallation, managed_tool::verify_sha256_file};
 use reqwest::blocking::Client;
@@ -22,10 +22,10 @@ const TOOLCHAIN_MARKER: &str = "vapor-toolchain.toml";
 /// Whether the selected installation has the linker and archiver Vapor uses
 /// for `x86_64-pc-windows-gnullvm` builds.
 pub fn windows_gnu_linker_installed(installation: &VaporInstallation) -> bool {
-    is_supported_ucrt_bundle(&installation.root.join("tools/llvm-mingw"))
+    is_supported_ucrt_bundle(&installation.user_data_root().join("tools/llvm-mingw"))
 }
 
-/// Install the pinned LLVM MinGW release into the selected app installation.
+/// Install the pinned LLVM MinGW release into Vapor User Data.
 ///
 /// A previous unmarked bundle is moved aside after the replacement has been
 /// downloaded, verified, extracted, and checked. Failed installs leave the
@@ -56,10 +56,11 @@ pub fn install_windows_gnu_linker(
         return Err(CrossTargetToolchainError::UnsupportedHost);
     };
 
-    let final_root = installation.root.join("tools/llvm-mingw");
+    let data_root = installation.user_data_root();
+    let final_root = data_root.join("tools/llvm-mingw");
 
-    let tools_root = installation.root.join("tools");
-    let downloads = installation.root.join(".vapor/downloads");
+    let tools_root = data_root.join("tools");
+    let downloads = data_root.join("downloads");
     fs::create_dir_all(&tools_root).map_err(|error| CrossTargetToolchainError::Io {
         path: tools_root.clone(),
         message: error.to_string(),
@@ -362,8 +363,7 @@ impl std::error::Error for CrossTargetToolchainError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{is_supported_ucrt_bundle, promote_staged_bundle, windows_gnu_linker_installed};
-    use crate::{InstallationRootSource, VaporInstallation};
+    use super::{is_supported_ucrt_bundle, promote_staged_bundle};
     use std::{env, fs};
 
     #[test]
@@ -374,12 +374,8 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("tools/llvm-mingw/bin")).expect("create fake tool directory");
-        let installation = VaporInstallation {
-            root: root.clone(),
-            root_source: InstallationRootSource::Explicit,
-        };
-
-        assert!(!windows_gnu_linker_installed(&installation));
+        let bundle = root.join("tools/llvm-mingw");
+        assert!(!is_supported_ucrt_bundle(&bundle));
         let suffix = env::consts::EXE_SUFFIX;
         for tool in [
             "x86_64-w64-mingw32-clang",
@@ -392,7 +388,7 @@ mod tests {
                 "tool",
             )
             .expect("write fake cross tool");
-            assert!(!windows_gnu_linker_installed(&installation));
+            assert!(!is_supported_ucrt_bundle(&bundle));
         }
         fs::create_dir_all(root.join("tools/llvm-mingw/x86_64-w64-mingw32/bin"))
             .expect("create target runtime directory");
@@ -401,13 +397,13 @@ mod tests {
             "runtime",
         )
         .expect("write fake runtime");
-        assert!(!windows_gnu_linker_installed(&installation));
+        assert!(!is_supported_ucrt_bundle(&bundle));
         fs::write(
             root.join("tools/llvm-mingw/vapor-toolchain.toml"),
             "schema = 1\nversion = \"20260616\"\nruntime = \"ucrt\"\ntarget = \"x86_64-pc-windows-gnullvm\"\n",
         )
         .expect("write the managed target metadata");
-        assert!(windows_gnu_linker_installed(&installation));
+        assert!(is_supported_ucrt_bundle(&bundle));
         assert!(!is_supported_ucrt_bundle(&root.join("tools")));
 
         fs::remove_dir_all(root).expect("remove fake tool directory");

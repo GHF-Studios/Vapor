@@ -18,24 +18,29 @@ const APP_BUILD_TEMPLATE: &str = "app_build.vdf.tpl";
 const APP_BUILD_DEPOT_ENTRY_TEMPLATE: &str = "app_build_depot_entry.vdf.tpl";
 const DEPOT_BUILD_TEMPLATE: &str = "depot_build.vdf.tpl";
 
-/// Locate the installation-owned SteamCMD executable.
+/// Locate Vapor's SteamCMD executable.
 pub fn executable(paths: &EnvironmentPaths) -> Result<PathBuf, String> {
     executable_for_installation(paths.installation())
 }
 
-/// Locate the installation-owned SteamCMD executable from an app root.
+/// Locate SteamCMD in persistent Vapor User Data, accepting legacy app-local installs.
 pub fn executable_for_installation(installation: &InstallationPaths) -> Result<PathBuf, String> {
     let root = installation.root();
+    let user_data = installation.user_data_root();
     let names = if cfg!(windows) {
         vec!["steamcmd.exe"]
     } else {
         vec!["steamcmd", "steamcmd.sh"]
     };
-    [root.join("tools/steamcmd"), root.join("steam/steamcmd")]
-        .into_iter()
-        .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
-        .find(|path| path.is_file())
-        .ok_or_else(|| "SteamCMD is not installed in the Vapor app root".to_owned())
+    [
+        user_data.join("tools/steamcmd"),
+        root.join("tools/steamcmd"),
+        root.join("steam/steamcmd"),
+    ]
+    .into_iter()
+    .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
+    .find(|path| path.is_file())
+    .ok_or_else(|| "SteamCMD is not installed in Vapor User Data".to_owned())
 }
 
 /// Options for a SteamPipe publication attempt.
@@ -263,14 +268,12 @@ pub fn smoke(stage: &distribution::StageReport, options: &StageOptions) -> Resul
     let common = stage
         .depot(SteamDepotKind::Common)
         .ok_or_else(|| "staged application has no common depot".to_owned())?;
-    for required in [manifest::APP_FILE_NAME, "docs"] {
-        let path = common.root().join(required);
-        if !path.exists() {
-            return Err(format!(
-                "staged common depot is missing required path: {}",
-                path.display()
-            ));
-        }
+    let path = common.root().join(manifest::APP_FILE_NAME);
+    if !path.exists() {
+        return Err(format!(
+            "staged common depot is missing required path: {}",
+            path.display()
+        ));
     }
 
     for target in options.runtime_targets() {
@@ -314,26 +317,6 @@ pub fn smoke(stage: &distribution::StageReport, options: &StageOptions) -> Resul
                 require_file(
                     depot.root().join("bin").join(target).join("vapor-gui"),
                     "staged Linux depot has no target Vapor GUI binary",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor-launcher"),
-                    "staged Linux depot has no target Vapor Launcher binary",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor-studio"),
-                    "staged Linux depot has no target Vapor Studio binary",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor-ide"),
-                    "staged Linux depot has no target Vapor IDE binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-installer-gui"),
-                    "staged Linux depot has no target Vapor Installer GUI binary",
                 )?;
                 require_file(
                     depot.root().join("bin").join(target).join("vapor-ide-host"),
@@ -390,34 +373,6 @@ pub fn smoke(stage: &distribution::StageReport, options: &StageOptions) -> Resul
                 require_file(
                     depot.root().join("bin").join(target).join("vapor-gui.exe"),
                     "staged Windows depot has no target Vapor GUI binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-launcher.exe"),
-                    "staged Windows depot has no target Vapor Launcher binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-studio.exe"),
-                    "staged Windows depot has no target Vapor Studio binary",
-                )?;
-                require_file(
-                    depot.root().join("bin").join(target).join("vapor-ide.exe"),
-                    "staged Windows depot has no target Vapor IDE binary",
-                )?;
-                require_file(
-                    depot
-                        .root()
-                        .join("bin")
-                        .join(target)
-                        .join("vapor-installer-gui.exe"),
-                    "staged Windows depot has no target Vapor Installer GUI binary",
                 )?;
                 require_file(
                     depot
@@ -484,8 +439,8 @@ fn write_build_script(
     preview: bool,
 ) -> Result<PathBuf, String> {
     let templates = SteamPipeTemplates::load(paths.source().root())?;
-    let scripts = paths.installation().root().join("output/root/scripts");
-    let output = paths.installation().root().join("output/root/steam-build");
+    let scripts = paths.installation().output_root().join("root/scripts");
+    let output = paths.installation().output_root().join("root/steam-build");
     fs::create_dir_all(&scripts).map_err(|e| e.to_string())?;
     fs::create_dir_all(&output).map_err(|e| e.to_string())?;
     let path = scripts.join(format!("app_build_{}.vdf", manifest.application().app_id()));

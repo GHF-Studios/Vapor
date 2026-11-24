@@ -628,14 +628,11 @@ fn publish_workshop_items_for_targets_checked(
     Ok(reports)
 }
 
-/// Preview a Workshop delete operation.
-///
-/// Deletion needs a live SteamUGC provider; this build records the authority
-/// boundary and refuses real deletion.
+/// Delete one exact Workshop publication through the authenticated Steam client.
 ///
 /// # Errors
 ///
-/// Returns receipt errors or a provider diagnostic for real deletion.
+/// Returns Steam authority, callback, or receipt errors.
 pub fn delete_workshop_item(
     installation: &InstallationPaths,
     selector: &str,
@@ -645,25 +642,27 @@ pub fn delete_workshop_item(
     if !dry_run && !confirmed {
         return Err("real Workshop deletion requires --yes after reviewing --dry-run".to_owned());
     }
+    let published_file_id = selector
+        .parse::<u64>()
+        .ok()
+        .filter(|id| *id != 0)
+        .ok_or_else(|| "Workshop delete requires an exact nonzero PublishedFileId".to_owned())?;
     if !dry_run {
-        return Err(
-            "real Workshop deletion requires the controlled SteamUGC provider; this build can only preview deletion"
-                .to_owned(),
-        );
+        vapor_steam::delete_item(root_steam_app_id(installation)?, published_file_id)?;
     }
     let receipt = write_receipt(
         installation,
         "workshop-delete",
         selector,
-        "dry-run",
-        Some("would delete or retire the PublishedFileId through SteamUGC"),
+        if dry_run { "dry-run" } else { "deleted" },
+        Some("SteamUGC publication deletion"),
     )?;
     Ok(WorkshopOperationReport {
         artifact_id: selector.to_owned(),
         script: None,
         receipt,
-        uploaded: false,
-        published_file_id: None,
+        uploaded: !dry_run,
+        published_file_id: Some(selector.to_owned()),
     })
 }
 
@@ -708,7 +707,7 @@ fn write_workshop_script(
         preview_line,
         steam_escape(policy.published_file_id().unwrap_or("0")),
         steam_escape(&artifact_root.display().to_string()),
-        steam_escape(policy.visibility().unwrap_or("private")),
+        workshop_visibility(policy.visibility().unwrap_or("private"))?,
         steam_escape(policy.title().unwrap_or(artifact.name())),
         steam_escape(policy.description().unwrap_or("")),
         steam_escape(
@@ -719,6 +718,16 @@ fn write_workshop_script(
     );
     fs::write(&script, vdf).map_err(io("write Workshop script", &script))?;
     Ok(script)
+}
+
+fn workshop_visibility(visibility: &str) -> Result<&'static str, String> {
+    match visibility {
+        "public" => Ok("0"),
+        "friends-only" => Ok("1"),
+        "private" => Ok("2"),
+        "unlisted" => Ok("3"),
+        value => Err(format!("unsupported Workshop visibility '{value}'")),
+    }
 }
 
 fn run_steamcmd_workshop_build(
@@ -1018,10 +1027,12 @@ pub(super) fn resolve_live_workshop_download(
         }
     }
 
-    if let Some(seed) = root_content_seed(installation, selector)? {
+    if let Some(seed) = root_content_seed(installation, selector)?
+        && let Some(workshop_id) = seed.workshop_id
+    {
         return Ok(Some(WorkshopDownload {
             app_id: seed.app_id,
-            published_file_id: seed.workshop_id,
+            published_file_id: workshop_id,
         }));
     }
 

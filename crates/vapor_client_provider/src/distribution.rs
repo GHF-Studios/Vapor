@@ -78,6 +78,7 @@ pub struct DepotInclude {
 enum PayloadRoot {
     Installation,
     Source,
+    Output,
 }
 
 /// Completed staging summary.
@@ -401,8 +402,9 @@ pub fn stage_with_options(
     manifest: &DistributionManifest,
     options: StageOptions,
 ) -> Result<StageReport, String> {
-    let root = paths.installation().root().join("output/root/content");
-    ensure_contained(paths.installation().root(), &root)?;
+    let output = paths.installation().output_root();
+    let root = output.join("root/content");
+    ensure_contained(&output, &root)?;
     if root.exists() {
         fs::remove_dir_all(&root).map_err(io("reset staging", &root))?;
     }
@@ -426,11 +428,277 @@ pub fn stage_with_options(
         }
     }
 
+    project_default_app_manifests(&depots, options.runtime_targets())?;
+    validate_default_app_payload(&depots, options.runtime_targets())?;
+
     Ok(StageReport {
         root,
         depots,
         files,
     })
+}
+
+/// Workshop packages may include static Rust archives for creators. The
+/// depot's linked default Player only declares files actually shipped there.
+fn project_default_app_manifests(depots: &[DepotStage], targets: &[String]) -> Result<(), String> {
+    let common = depots
+        .iter()
+        .find(|depot| depot.kind == SteamDepotKind::Common)
+        .ok_or("staged depots have no common payload")?;
+    let manifest = common.root.join(crate::manifest::APP_FILE_NAME);
+    let source =
+        fs::read_to_string(&manifest).map_err(io("read staged app manifest", &manifest))?;
+    let app: toml::Value = toml::from_str(&source).map_err(|error| {
+        format!(
+            "failed to parse staged app manifest '{}': {error}",
+            manifest.display()
+        )
+    })?;
+    let Some(seeds) = app
+        .get("root")
+        .and_then(|root| root.get("content"))
+        .and_then(toml::Value::as_array)
+    else {
+        return Ok(());
+    };
+    for seed in seeds {
+        let id = seed
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .ok_or("default App seed has no content ID")?;
+        let kind = seed
+            .get("kind")
+            .and_then(toml::Value::as_str)
+            .ok_or("default App seed has no content kind")?;
+        let kind = match kind {
+            "engine" => crate::manifest::ContentKind::Engine,
+            "game" => crate::manifest::ContentKind::Game,
+            "packagepack" => crate::manifest::ContentKind::Packagepack,
+            other => return Err(format!("unsupported default App content kind '{other}'")),
+        };
+        let relative = checked_content_id_path(id)?;
+        let root = common.root.join("content/default").join(relative);
+        crate::content::project_depot_runtime_manifest(&root, kind, targets)?;
+    }
+    Ok(())
+}
+
+/// The default launch must be complete in the staged depots themselves. In
+/// particular, an app-root Workshop cache cannot satisfy this release gate.
+fn validate_default_app_payload(depots: &[DepotStage], targets: &[String]) -> Result<(), String> {
+    #[derive(Deserialize)]
+    struct AppManifest {
+        root: AppRoot,
+    }
+    #[derive(Deserialize)]
+    struct AppRoot {
+        #[serde(default)]
+        content: Vec<Seed>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    struct Seed {
+        id: String,
+        kind: String,
+        default_launch: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct PackagepackManifest {
+        packagepack: Packagepack,
+    }
+    #[derive(Deserialize)]
+    struct Packagepack {
+        id: String,
+        #[serde(default)]
+        runtime: Vec<Runtime>,
+    }
+    #[derive(Deserialize)]
+    struct Runtime {
+        target: String,
+        #[serde(default)]
+        binaries: Vec<String>,
+    }
+
+    let common = depots
+        .iter()
+        .find(|depot| depot.kind == SteamDepotKind::Common)
+        .ok_or("staged depots have no common payload")?;
+    let app_manifest = common.root.join(crate::manifest::APP_FILE_NAME);
+    let source = fs::read_to_string(&app_manifest).map_err(|error| {
+        format!(
+            "failed to read staged app manifest '{}': {error}",
+            app_manifest.display()
+        )
+    })?;
+    let app: AppManifest = toml::from_str(&source).map_err(|error| {
+        format!(
+            "failed to parse staged app manifest '{}': {error}",
+            app_manifest.display()
+        )
+    })?;
+    if app.root.content.is_empty() {
+        return Ok(());
+    }
+    let default = app
+        .root
+        .content
+        .iter()
+        .find(|seed| seed.default_launch.as_deref() == Some("default"))
+        .ok_or("staged app manifest has no default launch Packagepack")?;
+    if default.kind != "packagepack" {
+        return Err(format!(
+            "default launch '{}' is not a Packagepack",
+            default.id
+        ));
+    }
+    let mut staged_artifacts = std::collections::BTreeMap::new();
+    for seed in &app.root.content {
+        let relative = checked_content_id_path(&seed.id)?;
+        let manifest_name = match seed.kind.as_str() {
+            "engine" => "Engine.vapor.toml",
+            "game" => "Game.vapor.toml",
+            "packagepack" => "Packagepack.vapor.toml",
+            kind => {
+                return Err(format!(
+                    "unsupported default App content kind '{kind}' for {}",
+                    seed.id
+                ));
+            }
+        };
+        let staged_root = common.root.join("content/default").join(relative);
+        let staged = staged_root.join(manifest_name);
+        if !staged.is_file() {
+            return Err(format!(
+                "default App release is missing staged content manifest: {}",
+                staged.display()
+            ));
+        }
+        let artifact = crate::content::read_depot_artifact(&staged_root)?;
+        if artifact.id() != seed.id || artifact.kind().to_string() != seed.kind {
+            return Err(format!(
+                "staged default App artifact '{}' does not match its app seed",
+                staged.display()
+            ));
+        }
+        if artifact.version().is_none() {
+            return Err(format!(
+                "staged default App artifact '{}' has no exact version",
+                staged.display()
+            ));
+        }
+        staged_artifacts.insert(seed.id.clone(), artifact);
+    }
+    for artifact in staged_artifacts.values() {
+        for dependency in artifact
+            .dependencies()
+            .iter()
+            .filter(|dependency| !dependency.optional())
+        {
+            if !staged_artifacts.contains_key(dependency.id()) {
+                return Err(format!(
+                    "default App artifact '{}' requires '{}' outside the depot runtime closure",
+                    artifact.id(),
+                    dependency.id()
+                ));
+            }
+        }
+        let relative = checked_content_id_path(artifact.id())?;
+        let artifact_root = common.root.join("content/default").join(relative);
+        for target in targets {
+            let kind = SteamDepotKind::for_runtime_target(target)?;
+            let depot = depots
+                .iter()
+                .find(|depot| depot.kind == kind)
+                .ok_or_else(|| format!("staged depots have no {} payload", kind.label()))?;
+            for file in crate::content::depot_runtime_files(&artifact_root, target)? {
+                let staged = depot.root.join("content/default").join(relative).join(file);
+                if !staged.is_file() {
+                    return Err(format!(
+                        "default App release is missing declared runtime output: {}",
+                        staged.display()
+                    ));
+                }
+            }
+        }
+    }
+    let default_relative = checked_content_id_path(&default.id)?;
+    let packagepack_manifest = common
+        .root
+        .join("content/default")
+        .join(default_relative)
+        .join("Packagepack.vapor.toml");
+    let packagepack_source = fs::read_to_string(&packagepack_manifest).map_err(|error| {
+        format!(
+            "failed to read staged Packagepack '{}': {error}",
+            packagepack_manifest.display()
+        )
+    })?;
+    let packagepack: PackagepackManifest =
+        toml::from_str(&packagepack_source).map_err(|error| {
+            format!(
+                "failed to parse staged Packagepack '{}': {error}",
+                packagepack_manifest.display()
+            )
+        })?;
+    if packagepack.packagepack.id != default.id {
+        return Err(format!(
+            "staged default Packagepack declares '{}' instead of '{}'",
+            packagepack.packagepack.id, default.id
+        ));
+    }
+    for target in targets {
+        let kind = SteamDepotKind::for_runtime_target(target)?;
+        let depot = depots
+            .iter()
+            .find(|depot| depot.kind == kind)
+            .ok_or_else(|| format!("staged depots have no {} payload", kind.label()))?;
+        let binary_dir = depot
+            .root
+            .join("content/default")
+            .join(default_relative)
+            .join("bin")
+            .join(target);
+        let runtime = packagepack
+            .packagepack
+            .runtime
+            .iter()
+            .find(|runtime| runtime.target == *target)
+            .ok_or_else(|| {
+                format!("default App Packagepack has no runtime declaration for {target}")
+            })?;
+        if runtime.binaries.is_empty() {
+            return Err(format!(
+                "default App Packagepack declares no executable for {target}"
+            ));
+        }
+        for name in &runtime.binaries {
+            let path = Path::new(name);
+            if path.components().count() != 1 {
+                return Err(format!(
+                    "default App runtime binary name is invalid: {name}"
+                ));
+            }
+            let binary = binary_dir.join(path);
+            if !binary.is_file() {
+                return Err(format!(
+                    "default App release is missing executable for {target}: {}",
+                    binary.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn checked_content_id_path(id: &str) -> Result<&Path, String> {
+    id.parse::<vapor_content::VaporId>()
+        .map_err(|error| format!("invalid default App content ID '{id}': {error}"))?;
+    let path = Path::new(id);
+    validate_relative(path)?;
+    if path.components().count() < 2 {
+        return Err(format!("content ID is not namespaced: {id}"));
+    }
+    Ok(path)
 }
 
 fn copy_include(
@@ -446,9 +714,11 @@ fn copy_include(
         }
     }
 
+    let output_root = paths.installation().output_root();
     let base = match item.root {
         PayloadRoot::Installation => paths.installation().root(),
         PayloadRoot::Source => paths.source().root(),
+        PayloadRoot::Output => output_root.as_path(),
     };
     let source = base.join(&item.from);
     if !source.exists() {
@@ -547,4 +817,50 @@ fn validate_relative(path: &Path) -> Result<(), String> {
 
 fn io<'a>(action: &'a str, path: &'a Path) -> impl Fn(std::io::Error) -> String + 'a {
     move |error| format!("failed to {action} '{}': {error}", path.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DepotStage, SteamDepotKind, validate_default_app_payload};
+    use std::fs;
+
+    #[test]
+    fn default_app_release_requires_its_declared_runtime_binary() {
+        let root = std::env::temp_dir().join(format!(
+            "vapor-default-depot-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let common = root.join("common");
+        let linux = root.join("linux");
+        fs::create_dir_all(&common).unwrap();
+        fs::write(
+            common.join("App.vapor.toml"),
+            "[root]\n[[root.content]]\nid = \"ghf-studios/loo-cast/default\"\nkind = \"packagepack\"\ndefault-launch = \"default\"\n",
+        ).unwrap();
+        let packagepack = common.join("content/default/ghf-studios/loo-cast/default");
+        fs::create_dir_all(&packagepack).unwrap();
+        fs::write(
+            packagepack.join("Packagepack.vapor.toml"),
+            "schema = 1\n[packagepack]\nid = \"ghf-studios/loo-cast/default\"\nname = \"default\"\nversion = \"1.0.0\"\n[[packagepack.runtime]]\ntarget = \"x86_64-unknown-linux-gnu\"\nbinaries = [\"game\"]\n",
+        ).unwrap();
+        let depots = [
+            DepotStage {
+                kind: SteamDepotKind::Common,
+                root: common,
+            },
+            DepotStage {
+                kind: SteamDepotKind::Linux,
+                root: linux.clone(),
+            },
+        ];
+        let targets = ["x86_64-unknown-linux-gnu".to_owned()];
+        assert!(validate_default_app_payload(&depots, &targets).is_err());
+        let binary = linux
+            .join("content/default/ghf-studios/loo-cast/default/bin/x86_64-unknown-linux-gnu/game");
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, "runtime").unwrap();
+        assert!(validate_default_app_payload(&depots, &targets).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

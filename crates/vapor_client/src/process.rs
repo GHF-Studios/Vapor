@@ -161,6 +161,12 @@ impl ServiceHandshake {
 }
 
 impl Client {
+    /// Label actions with the product that opened this connection. A shared
+    /// GUI executable hosts several products, so its filename is insufficient.
+    pub fn set_origin(&mut self, origin: ClientOrigin) {
+        self.origin = origin;
+    }
+
     /// Connects to this installation's shared service, starting it once if needed.
     pub fn connect_or_start(
         service_path: &Path,
@@ -289,7 +295,7 @@ impl Client {
         let (sender, incoming) = mpsc::sync_channel(64);
         thread::Builder::new()
             .name("client-service-protocol".into())
-            .spawn(move || read_protocol(stdout, sender))
+            .spawn(move || read_protocol(BufReader::new(stdout), sender))
             .map_err(|error| ClientError::Spawn(error.to_string()))?;
         let mut client = Self::new(Some(child), Box::new(writer), incoming);
         client.await_ready()?;
@@ -341,7 +347,6 @@ impl Client {
                     .get_ref()
                     .set_timeout(None)
                     .map_err(|error| ClientError::Io(error.to_string()))?;
-                let read = reader.into_inner();
                 let (sender, incoming) = mpsc::sync_channel(64);
                 for frame in std::mem::take(&mut handshake.pending_events) {
                     sender
@@ -350,7 +355,7 @@ impl Client {
                 }
                 thread::Builder::new()
                     .name("client-service-protocol".into())
-                    .spawn(move || read_protocol(read, sender))
+                    .spawn(move || read_protocol(reader, sender))
                     .map_err(|error| ClientError::Spawn(error.to_string()))?;
                 let mut client = Self::new(None, Box::new(writer), incoming);
                 client.latest_snapshot = snapshot;
@@ -855,8 +860,7 @@ fn service_sibling_path_for(gui_executable: &Path, windows: bool) -> PathBuf {
         .join(filename)
 }
 
-fn read_protocol(input: impl Read, sender: SyncSender<Result<ProtocolFrame, ClientError>>) {
-    let mut input = BufReader::new(input);
+fn read_protocol(mut input: impl BufRead, sender: SyncSender<Result<ProtocolFrame, ClientError>>) {
     loop {
         match read_frame(&mut input) {
             Ok(Some(frame)) => {
@@ -919,12 +923,17 @@ fn empty_snapshot() -> ClientSnapshot {
 #[cfg(test)]
 mod tests {
     use super::{
-        Client, ClientError, ClientHostConfig, ServiceHandshake, empty_snapshot, service_log_path,
-        service_sibling_path_for, startup_diagnostics,
+        Client, ClientError, ClientHostConfig, ServiceHandshake, empty_snapshot, read_protocol,
+        service_log_path, service_sibling_path_for, startup_diagnostics,
     };
     #[cfg(unix)]
     use super::{ensure_service_with_timeout, resolve_host_context};
-    use std::path::Path;
+    use crate::transport::{encode_frame, read_frame};
+    use std::{
+        io::{BufReader, Cursor},
+        path::Path,
+        sync::mpsc,
+    };
     use vapor_client_protocol::{
         ClientEvent, ClientOrigin, ClientRevision, PROTOCOL_VERSION, ProtocolFrame,
     };
@@ -939,6 +948,27 @@ mod tests {
             legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
             state_directory: None,
         }
+    }
+
+    #[test]
+    fn protocol_reader_keeps_frames_prefetched_during_handshake() {
+        let ready = ProtocolFrame::Event(ClientEvent::ServiceReady {
+            protocol_version: PROTOCOL_VERSION,
+        });
+        let snapshot = ProtocolFrame::Event(ClientEvent::Snapshot(Box::new(empty_snapshot())));
+        let mut bytes = encode_frame(&ready).unwrap();
+        bytes.extend(encode_frame(&snapshot).unwrap());
+        let mut reader = BufReader::new(Cursor::new(bytes));
+        assert!(matches!(
+            read_frame(&mut reader).unwrap(),
+            Some(ProtocolFrame::Event(ClientEvent::ServiceReady { .. }))
+        ));
+        let (sender, incoming) = mpsc::sync_channel(2);
+        read_protocol(reader, sender);
+        assert!(matches!(
+            incoming.recv().unwrap().unwrap(),
+            ProtocolFrame::Event(ClientEvent::Snapshot(_))
+        ));
     }
 
     #[test]

@@ -19,8 +19,10 @@ root package --host-only
 The default release path builds the root applications, stages the common and
 platform depot contents, and checks required entrypoints and runtime files.
 Inspect the resulting package report before using it as a release candidate.
-This package contains Vapor's launcher/runtime tools and docs; game content
-such as Loo-Cast is published through its own content/Workshop lifecycle.
+Prepare the default Loo-Cast Engine, Game, and Packagepack content packages for
+the same release targets first. Root staging selects only their runtime
+manifests, Engine assets, and target executable under `content/default/`.
+Missing inputs fail packaging. Additional content uses the Workshop lifecycle.
 
 For an upload preview, use `root publish --dry-run`. Previewing is not an
 upload; see [Publish The Root App](publish-root-app.md) for the explicit

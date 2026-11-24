@@ -11,8 +11,11 @@ A Vapor Workspace has its own `Workspace.vapor.toml`, Cargo workspace, and
 registered projects. `source open PATH` selects it for a Shell session. A
 Vapor Superworkspace is the developer's collection of repositories; it is a
 place to discover, clone, and edit source, not a second semantic content
-registry. The app root remains the owner of installed runtimes, provider tools,
-downloads, and managed build artifacts.
+registry. Its canonical source directory is `~/Vapor/sources` on Linux and
+`%USERPROFILE%\Vapor\sources` on Windows. The replaceable Steam app owns only
+the shipped runtimes, app payload, and bootstrap entry points. Mutable Vapor
+tools, downloads, documentation, logs, and build output live in Vapor User Data
+(`~/.local/share/vapor` on Linux, `%LOCALAPPDATA%\Vapor` on Windows).
 
 Open a repository directly when you know its path:
 
@@ -29,8 +32,8 @@ current directory to guess which project you meant.
 ## Managed development operations
 
 Use Vapor Shell operations to format, check, test, build, and validate declared
-Cargo workspaces. Vapor selects the pinned toolchain and app-owned cache roots.
-The generated artifacts are stored under the application output area, not
+Cargo workspaces. Vapor selects the pinned toolchain and User Data cache roots.
+The generated artifacts are stored under the User Data output area, not
 inside the source repository. `clean` clears a selected development cache while
 preserving release outputs, documentation, installed content, and source.
 

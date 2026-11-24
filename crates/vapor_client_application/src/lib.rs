@@ -22,7 +22,8 @@ pub use composition::{
     ContentReference, InstallationState, InstalledArtifactRecord, LaunchSettings,
     ResolvedCompositionGraph, ResolvedDependencyIdentity, ResolvedNodeIdentity,
     WorkspaceAssociation, add_composition, decode_compositions, duplicate_composition,
-    fingerprint_resolved_graph, remove_composition, rename_composition, resolved_graph_matches,
+    fingerprint_resolved_graph, remove_composition, rename_composition,
+    resolved_graph_content_matches, resolved_graph_matches,
 };
 pub use content::{
     CompositionPreview, CompositionPreviewDependency, CompositionPreviewNode,

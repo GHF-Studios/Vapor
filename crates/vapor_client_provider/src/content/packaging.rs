@@ -106,7 +106,7 @@ pub(super) fn package_with_runtime_targets(
         });
     }
 
-    reset_directory(paths.installation().root(), &package_root)?;
+    reset_directory(&paths.installation().output_root(), &package_root)?;
     stage_deployed_artifact(paths, &package_root, artifact, &runtime_targets)?;
     let fingerprint = fingerprint_tree(&package_root)?;
     let receipt = write_receipt(
@@ -330,14 +330,14 @@ fn stage_runtime_outputs(
     }
     if !staged.binaries.is_empty() {
         cross_toolchain::copy_windows_runtime_dlls(
-            paths.installation().root(),
+            paths.installation().user_data_root(),
             runtime_target.triple(),
             &bin_root,
         )?;
     }
     if !staged.libraries.is_empty() {
         cross_toolchain::copy_windows_runtime_dlls(
-            paths.installation().root(),
+            paths.installation().user_data_root(),
             runtime_target.triple(),
             &lib_root,
         )?;
@@ -465,7 +465,7 @@ fn content_build_output_root(
                 path.display()
             )
         })?;
-    let root = paths.installation().root().join("output/dev").join(name);
+    let root = paths.installation().output_root().join("dev").join(name);
     if runtime_target.explicit {
         Ok(root.join(runtime_target.triple()).join("debug"))
     } else {
@@ -566,6 +566,61 @@ fn write_deployed_manifest(
         .map_err(|error| format!("failed to encode deployed content manifest: {error}"))?;
     let path = package_root.join(artifact.kind().manifest_file_name());
     fs::write(&path, encoded).map_err(io("write deployed content manifest", &path))
+}
+
+/// Project a packaged artifact into the replaceable depot's runtime contract.
+/// Rust static archives belong to Workshop/development packages; the linked
+/// Packagepack executable does not load them at Player runtime.
+pub(super) fn project_depot_runtime_manifest(
+    package_root: &Path,
+    kind: ContentKind,
+    targets: &[String],
+) -> Result<(), String> {
+    let path = package_root.join(kind.manifest_file_name());
+    let source = fs::read_to_string(&path).map_err(io("read depot content manifest", &path))?;
+    let mut manifest: DeployedManifest = toml::from_str(&source).map_err(|error| {
+        format!(
+            "failed to parse depot content manifest '{}': {error}",
+            path.display()
+        )
+    })?;
+    let content = match kind {
+        ContentKind::Engine => manifest.engine.as_mut(),
+        ContentKind::Game => manifest.game.as_mut(),
+        ContentKind::Packagepack => manifest.packagepack.as_mut(),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        format!(
+            "default App manifest '{}' has the wrong role",
+            path.display()
+        )
+    })?;
+    content
+        .runtime
+        .retain(|payload| targets.iter().any(|target| target == &payload.target));
+    for payload in &mut content.runtime {
+        payload
+            .libraries
+            .retain(|name| !name.ends_with(".rlib") && !name.ends_with(".a"));
+    }
+    content
+        .runtime
+        .retain(|payload| !payload.binaries.is_empty() || !payload.libraries.is_empty());
+    if content
+        .runtime
+        .iter()
+        .all(|payload| payload.libraries.is_empty())
+    {
+        content.libraries.clear();
+    }
+    let encoded = toml::to_string_pretty(&manifest).map_err(|error| {
+        format!(
+            "failed to encode depot content manifest '{}': {error}",
+            path.display()
+        )
+    })?;
+    fs::write(&path, encoded).map_err(io("write depot content manifest", &path))
 }
 
 pub(super) fn read_deployed_manifest(package_root: &Path) -> Result<ContentArtifact, String> {
@@ -724,11 +779,48 @@ impl Drop for TemporaryDirectory {
 
 #[cfg(test)]
 mod target_tests {
-    use super::{RuntimeTarget, TemporaryDirectory, library_file_names};
+    use super::{
+        ContentKind, RuntimeTarget, TemporaryDirectory, library_file_names,
+        project_depot_runtime_manifest,
+    };
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn depot_omits_static_archives_but_preserves_shared_library_contracts() {
+        let root = std::env::temp_dir().join(format!(
+            "vapor-depot-manifest-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("Engine.vapor.toml");
+        let source = "schema = 1\n[engine]\nid = \"ghf-studios/loo-cast/engine\"\nname = \"engine\"\nversion = \"1.0.0\"\nlibraries = [\"engine\"]\n[[engine.runtime]]\ntarget = \"x86_64-unknown-linux-gnu\"\nlibraries = [\"libengine.rlib\"]\n[[engine.runtime]]\ntarget = \"x86_64-pc-windows-gnullvm\"\nlibraries = [\"engine.dll\"]\n";
+        fs::write(&path, source).unwrap();
+        project_depot_runtime_manifest(
+            &root,
+            ContentKind::Engine,
+            &["x86_64-unknown-linux-gnu".to_owned()],
+        )
+        .unwrap();
+        let projected = fs::read_to_string(&path).unwrap();
+        assert!(!projected.contains("libraries"));
+        assert!(!projected.contains("engine.dll"));
+        fs::write(&path, source).unwrap();
+        project_depot_runtime_manifest(
+            &root,
+            ContentKind::Engine,
+            &["x86_64-pc-windows-gnullvm".to_owned()],
+        )
+        .unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("engine.dll"));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn explicit_host_target_uses_default_build_output_layout() {
