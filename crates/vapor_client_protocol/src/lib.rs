@@ -395,7 +395,7 @@ mod tests {
             ClientAction::Publishing(PublishingAction::DiscardRootReview),
             ClientAction::Developer(DeveloperAction::RefreshInstallationRole),
             ClientAction::Developer(DeveloperAction::PromoteInstallationRole {
-                target: "composer".into(),
+                target: "developer".into(),
             }),
             ClientAction::Developer(DeveloperAction::DemoteInstallationRole {
                 target: "player".into(),
@@ -917,7 +917,7 @@ mod tests {
     #[test]
     fn installation_role_snapshot_defaults_missing_rust_analyzer_readiness() {
         let snapshot: InstallationRoleSnapshot = serde_json::from_str(
-            r#"{"role":"composer","rust_ready":true,"windows_gnu_target_ready":true,"windows_gnu_linker_ready":true,"tracy_profiler_ready":true,"tracy_analysis_ready":true,"error":null}"#,
+            r#"{"role":"developer","rust_ready":true,"windows_gnu_target_ready":true,"windows_gnu_linker_ready":true,"tracy_profiler_ready":true,"tracy_analysis_ready":true,"error":null}"#,
         )
         .expect("prior role snapshot remains readable");
 

@@ -4049,9 +4049,17 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "vapor_product_layout",
  "vapor_console_core",
  "vapor_content",
  "vapor_telemetry",
+]
+
+[[package]]
+name = "vapor_product_layout"
+version = "0.5.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

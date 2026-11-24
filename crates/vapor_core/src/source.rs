@@ -71,12 +71,29 @@ pub fn source_state(installation: &VaporInstallation) -> Result<SourceState, Sou
     let state_path = source_state_path(installation);
     let persisted = load(&state_path)?;
 
-    Ok(SourceState {
+    Ok(source_state_from_persisted(state_path, persisted))
+}
+
+/// Inspect source registration directly from canonical Vapor User Data.
+///
+/// Standalone setup and removal tools may run after the installed App Instance
+/// has already been removed, so they cannot rely on installation discovery.
+pub fn source_state_at_user_data_root(user_data_root: &Path) -> Result<SourceState, SourceError> {
+    let state_path = user_data_root.join("state").join(SOURCE_STATE_FILE_NAME);
+    let persisted = load(&state_path)?;
+    Ok(source_state_from_persisted(state_path, persisted))
+}
+
+fn source_state_from_persisted(
+    state_path: PathBuf,
+    persisted: PersistedSourceState,
+) -> SourceState {
+    SourceState {
         superworkspace: persisted.superworkspace,
         active: persisted.active,
         known: persisted.known,
         state_path,
-    })
+    }
 }
 
 /// Configure the one canonical Superworkspace without changing the active

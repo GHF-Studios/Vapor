@@ -23,6 +23,7 @@ pub mod managed_tool;
 pub mod manifest;
 pub mod operation;
 pub mod profiling;
+pub mod product_layout;
 pub mod registry;
 pub mod resolution;
 pub mod role;
@@ -148,6 +149,11 @@ pub use profiling::{
     profile_library_path, resolve_profile_trace,
 };
 
+pub use product_layout::{
+    user_data_root, ACTIVE_VERSION_FILE, APPLICATION_DIRECTORY, ProductLayoutError,
+    RELEASES_DIRECTORY, StandaloneProductLayout,
+};
+
 pub use role::{
     ParseVaporRoleError, RoleError, RoleStatus, RoleTransitionReport, VaporRole, demote_role,
     git_available, installed_role, promote_role, promote_role_with_context, role_status,
@@ -156,7 +162,7 @@ pub use role::{
 pub use source::{
     ResolvedSourceContext, SourceContextSource, SourceError, SourceState, active_source,
     close_source, configure_superworkspace, forget_source, open_source, remember_source,
-    resolve_source_context, source_state,
+    resolve_source_context, source_state, source_state_at_user_data_root,
 };
 
 pub use steam::{
@@ -174,8 +180,11 @@ pub use toolchain::{ManagedToolchain, RustToolchainCommandEnvironment, Toolchain
 pub use tracy::{ManagedTracyRepair, ManagedTracyToolset, TRACY_PROFILER_VERSION, TracyError};
 
 pub use uninstall::{
-    UninstallError, UninstallOptions, UninstallReport, uninstall_installation,
-    uninstall_installation_for,
+    UninstallError, UninstallOptions, UninstallReport, VaporDataErasurePlan,
+    VaporDataErasureReport, erase_all_vapor_data, erase_all_vapor_data_from_plan,
+    plan_vapor_data_erasure,
+    remove_standalone_machine_integration,
+    uninstall_installation, uninstall_installation_for,
 };
 
 pub use workspace::{
