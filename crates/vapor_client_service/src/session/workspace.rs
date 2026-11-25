@@ -443,6 +443,7 @@ impl ClientSession {
                     WorkspaceOperationKind::RunTool(operation, _, _) => format!(
                         "Workspace {} completed.",
                         match operation {
+                            WorkspaceToolOperation::ResolveLockfile => "lockfile refresh",
                             WorkspaceToolOperation::Format => "formatting",
                             WorkspaceToolOperation::Check => "check",
                             WorkspaceToolOperation::Test => "tests",
@@ -612,6 +613,9 @@ fn workspace_operation_action_id(kind: &WorkspaceOperationKind) -> &'static str 
         WorkspaceOperationKind::BuildDocumentation => "workspace.build-documentation",
         WorkspaceOperationKind::PublishDocumentation => "workspace.publish-documentation",
         WorkspaceOperationKind::RunTool(WorkspaceToolOperation::Format, _, _) => "workspace.fmt",
+        WorkspaceOperationKind::RunTool(WorkspaceToolOperation::ResolveLockfile, _, _) => {
+            "workspace.resolve-lockfile"
+        }
         WorkspaceOperationKind::RunTool(WorkspaceToolOperation::Check, _, _) => "workspace.check",
         WorkspaceOperationKind::RunTool(WorkspaceToolOperation::Test, _, _) => "workspace.test",
         WorkspaceOperationKind::RunTool(WorkspaceToolOperation::Build, _, _) => "workspace.build",
@@ -774,6 +778,9 @@ fn execute_workspace_operation(
             context.set_phase(application::OperationPhase::Building);
             if fixture_mode {
                 let operation = match operation {
+                    WorkspaceToolOperation::ResolveLockfile => {
+                        return Err("Lockfile refresh is unavailable in fixture mode.".to_owned());
+                    }
                     WorkspaceToolOperation::Format => vapor_core::DevelopmentOperation::Fmt,
                     WorkspaceToolOperation::Check => vapor_core::DevelopmentOperation::Check,
                     WorkspaceToolOperation::Test => vapor_core::DevelopmentOperation::Test,

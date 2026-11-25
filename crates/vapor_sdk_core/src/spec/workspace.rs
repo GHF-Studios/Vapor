@@ -19,6 +19,13 @@ pub(super) fn describe(command: &WorkspaceCommand) -> CommandSpec {
             &["Workspace.vapor.toml declares [[workspace.projects]]"],
             &["create missing managed workspace files and directories"],
         ),
+        WorkspaceCommand::ResolveLockfile => spec(
+            "sdk workspace resolve-lockfile",
+            "Update workspace dependencies in Cargo.lock through Vapor-managed Cargo using the local cache only, preserving already locked registry versions.",
+            StateSurface::AuthoredSource,
+            &["Vapor-managed Cargo and rustc are present", "Workspace.vapor.toml exists at or above the invocation directory"],
+            &["run cargo update --workspace --offline in the selected workspace"],
+        ),
         WorkspaceCommand::Check => spec(
             "sdk check",
             "Check the current workspace through the Vapor-managed Cargo binary.",

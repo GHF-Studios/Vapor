@@ -1,5 +1,5 @@
 use crate::GlobalOptions;
-use crate::toolchain::{ToolchainInstallState, ToolchainStatus, toolchain_status};
+use crate::toolchain::{ToolchainStatus, toolchain_status};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -107,10 +107,10 @@ fn checked_toolchain_status() -> Result<ToolchainStatus, WorkspaceCommandError> 
         ));
     }
 
-    if !matches!(
-        toolchain.install_state,
-        ToolchainInstallState::PresentUnverified
-    ) {
+    // Rustup manages toolchain installation and targets, but Cargo and rustc
+    // remain usable from Vapor's pinned toolchain when the Rustup executable
+    // is absent. Keep workspace commands working without requiring system Rust.
+    if !toolchain.cargo_path.is_file() || !toolchain.rustc_path.is_file() {
         return Err(WorkspaceCommandError::ToolchainNotInstalled(
             toolchain.install_state,
         ));
