@@ -25,7 +25,15 @@ pub fn promote_for_targets(
     manifest: &WorkspaceManifest,
     target_triples: &[String],
 ) -> Result<usize, String> {
-    promote_for_targets_in_profile(paths, manifest, target_triples, "dev")
+    promote_for_targets_in_profile(
+        &paths.installation().output_root(),
+        paths.installation().user_data_root(),
+        manifest,
+        target_triples,
+        "dev",
+        paths.installation().root(),
+        true,
+    )
 }
 
 /// Promote configured release-profile artifacts for one or more targets.
@@ -34,27 +42,76 @@ pub fn promote_release_for_targets(
     manifest: &WorkspaceManifest,
     target_triples: &[String],
 ) -> Result<usize, String> {
-    promote_for_targets_in_profile(paths, manifest, target_triples, "release")
+    promote_for_targets_in_profile(
+        &paths.installation().output_root(),
+        paths.installation().user_data_root(),
+        manifest,
+        target_triples,
+        "release",
+        paths.installation().root(),
+        true,
+    )
 }
 
-fn promote_for_targets_in_profile(
+/// Copy release-profile artifacts into an explicit staged app root.
+///
+/// Unlike deployment, staging never writes into the active installation and
+/// does not remove retired files from it.
+pub fn stage_release_for_targets(
     paths: &EnvironmentPaths,
     manifest: &WorkspaceManifest,
     target_triples: &[String],
+    staged_root: &Path,
+) -> Result<usize, String> {
+    stage_release_for_targets_from_roots(
+        &paths.installation().output_root(),
+        paths.installation().user_data_root(),
+        manifest,
+        target_triples,
+        staged_root,
+    )
+}
+
+/// Copy built release artifacts from Vapor User Data into an explicit stage.
+/// This form is usable by the source-built release command without an App Instance.
+pub fn stage_release_for_targets_from_roots(
+    output_root: &Path,
+    user_data_root: &Path,
+    manifest: &WorkspaceManifest,
+    target_triples: &[String],
+    staged_root: &Path,
+) -> Result<usize, String> {
+    promote_for_targets_in_profile(
+        output_root,
+        user_data_root,
+        manifest,
+        target_triples,
+        "release",
+        staged_root,
+        false,
+    )
+}
+
+fn promote_for_targets_in_profile(
+    output_root: &Path,
+    user_data_root: &Path,
+    manifest: &WorkspaceManifest,
+    target_triples: &[String],
     profile: &str,
+    destination_root: &Path,
+    remove_legacy: bool,
 ) -> Result<usize, String> {
     let targets = RuntimeTarget::many(target_triples)?;
-    let installation = paths.installation().root();
-    let output = paths.installation().output_root();
+    let installation = destination_root;
     let mut promoted = 0;
     for project in manifest.cargo_projects() {
         for binary in project.binaries() {
             for target in &targets {
                 let filename = target.binary_file_name(binary);
                 let source = target
-                    .build_output_root(&output, project.name(), profile)
+                    .build_output_root(output_root, project.name(), profile)
                     .join(&filename);
-                ensure_contained(&output, &source)?;
+                ensure_contained(output_root, &source)?;
                 if !source.is_file() {
                     return Err(format!(
                         "built binary is missing for project '{}' target '{}': {}",
@@ -76,7 +133,7 @@ fn promote_for_targets_in_profile(
                     )
                 })?;
                 cross_toolchain::copy_windows_runtime_dlls(
-                    paths.installation().user_data_root(),
+                    user_data_root,
                     target.triple(),
                     destination_root,
                 )?;
@@ -86,9 +143,9 @@ fn promote_for_targets_in_profile(
         for target in &targets {
             for library in project.libraries(target.triple()) {
                 let source = target
-                    .build_output_root(&output, project.name(), profile)
+                    .build_output_root(output_root, project.name(), profile)
                     .join(library);
-                ensure_contained(&output, &source)?;
+                ensure_contained(output_root, &source)?;
                 if !source.is_file() {
                     return Err(format!(
                         "built runtime library is missing for project '{}' target '{}': {}",
@@ -104,22 +161,24 @@ fn promote_for_targets_in_profile(
             }
         }
     }
-    for target in &targets {
-        let bin_root = installation.join("bin").join(target.triple());
-        for legacy in [
-            "vapor-devtools",
-            "vapor-studio-service",
-            "vapor-monitor",
-            "vapor-profile",
-        ] {
-            let path = bin_root.join(target.binary_file_name(legacy));
-            if path.is_file() {
-                fs::remove_file(&path).map_err(|error| {
-                    format!(
-                        "failed to remove retired binary '{}': {error}",
-                        path.display()
-                    )
-                })?;
+    if remove_legacy {
+        for target in &targets {
+            let bin_root = installation.join("bin").join(target.triple());
+            for legacy in [
+                "vapor-devtools",
+                "vapor-studio-service",
+                "vapor-monitor",
+                "vapor-profile",
+            ] {
+                let path = bin_root.join(target.binary_file_name(legacy));
+                if path.is_file() {
+                    fs::remove_file(&path).map_err(|error| {
+                        format!(
+                            "failed to remove retired binary '{}': {error}",
+                            path.display()
+                        )
+                    })?;
+                }
             }
         }
     }
