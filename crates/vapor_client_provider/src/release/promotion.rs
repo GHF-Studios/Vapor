@@ -27,8 +27,8 @@ pub fn promote_for_targets(
 ) -> Result<usize, String> {
     promote_for_targets_in_profile(
         &paths.installation().output_root(),
-        paths.installation().user_data_root(),
         manifest,
+        paths.installation().user_data_root(),
         target_triples,
         "dev",
         paths.installation().root(),
@@ -44,8 +44,8 @@ pub fn promote_release_for_targets(
 ) -> Result<usize, String> {
     promote_for_targets_in_profile(
         &paths.installation().output_root(),
-        paths.installation().user_data_root(),
         manifest,
+        paths.installation().user_data_root(),
         target_triples,
         "release",
         paths.installation().root(),
@@ -58,33 +58,17 @@ pub fn promote_release_for_targets(
 /// Unlike deployment, staging never writes into the active installation and
 /// does not remove retired files from it.
 pub fn stage_release_for_targets(
-    paths: &EnvironmentPaths,
     manifest: &WorkspaceManifest,
     target_triples: &[String],
     staged_root: &Path,
 ) -> Result<usize, String> {
-    stage_release_for_targets_from_roots(
-        &paths.installation().output_root(),
-        paths.installation().user_data_root(),
-        manifest,
-        target_triples,
-        staged_root,
-    )
-}
-
-/// Copy built release artifacts from Vapor User Data into an explicit stage.
-/// This form is usable by the source-built release command without an App Instance.
-pub fn stage_release_for_targets_from_roots(
-    output_root: &Path,
-    user_data_root: &Path,
-    manifest: &WorkspaceManifest,
-    target_triples: &[String],
-    staged_root: &Path,
-) -> Result<usize, String> {
+    let user_data_root = vapor_core::product_layout::user_data_root()
+        .ok_or_else(|| "could not resolve the canonical Vapor User Data location".to_owned())?;
+    let output_root = user_data_root.join("output");
     promote_for_targets_in_profile(
-        output_root,
-        user_data_root,
+        &output_root,
         manifest,
+        &user_data_root,
         target_triples,
         "release",
         staged_root,
@@ -94,8 +78,8 @@ pub fn stage_release_for_targets_from_roots(
 
 fn promote_for_targets_in_profile(
     output_root: &Path,
-    user_data_root: &Path,
     manifest: &WorkspaceManifest,
+    user_data_root: &Path,
     target_triples: &[String],
     profile: &str,
     destination_root: &Path,

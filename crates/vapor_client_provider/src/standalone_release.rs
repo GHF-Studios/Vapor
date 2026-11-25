@@ -20,8 +20,6 @@ struct PackagedToolchainMetadata<'a> {
 /// the active Vapor installation.
 pub fn stage_standalone_release(
     source_root: &Path,
-    output_root: &Path,
-    user_data_root: &Path,
     manifest: &WorkspaceManifest,
     target_triples: &[String],
 ) -> Result<(PathBuf, usize), String> {
@@ -29,11 +27,14 @@ pub fn stage_standalone_release(
         return Err("standalone release staging needs at least one runtime target".to_owned());
     }
 
+    let user_data_root = vapor_core::product_layout::user_data_root()
+        .ok_or_else(|| "could not resolve the canonical Vapor User Data location".to_owned())?;
+    let output_root = user_data_root.join("output");
     let final_root = output_root.join("standalone/release");
     let parent = final_root
         .parent()
         .ok_or_else(|| "standalone staging root has no parent".to_owned())?;
-    fs::create_dir_all(output_root)
+    fs::create_dir_all(&output_root)
         .map_err(|error| format!("failed to create '{}': {error}", output_root.display()))?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("failed to create '{}': {error}", parent.display()))?;
@@ -51,14 +52,7 @@ pub fn stage_standalone_release(
     fs::create_dir(&staging_root)
         .map_err(|error| format!("failed to create '{}': {error}", staging_root.display()))?;
 
-    let promoted = match stage_into(
-        source_root,
-        output_root,
-        user_data_root,
-        manifest,
-        target_triples,
-        &staging_root,
-    ) {
+    let promoted = match stage_into(source_root, manifest, target_triples, &staging_root) {
         Ok(promoted) => promoted,
         Err(error) => {
             let _ = fs::remove_dir_all(&staging_root);
@@ -124,8 +118,6 @@ pub fn stage_standalone_release(
 
 fn stage_into(
     source_root: &Path,
-    output_root: &Path,
-    user_data_root: &Path,
     manifest: &WorkspaceManifest,
     targets: &[String],
     staging_root: &Path,
@@ -177,9 +169,7 @@ fn stage_into(
         }
     }
 
-    crate::release::promotion::stage_release_for_targets_from_roots(
-        output_root,
-        user_data_root,
+    crate::release::promotion::stage_release_for_targets(
         manifest,
         targets,
         staging_root,
