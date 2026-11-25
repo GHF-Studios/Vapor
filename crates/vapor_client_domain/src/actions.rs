@@ -149,6 +149,8 @@ pub enum WorkspaceAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkspaceToolOperation {
+    /// Refresh Cargo.lock from the Vapor-managed local registry cache.
+    ResolveLockfile,
     /// Format workspace Rust source.
     Format,
     /// Type-check the workspace.
@@ -566,6 +568,7 @@ impl ClientAction {
                 WorkspaceAction::PublishDocumentation => "workspace.publish-documentation",
                 WorkspaceAction::RunTool { operation, .. } => match operation {
                     WorkspaceToolOperation::Format => "workspace.fmt",
+                    WorkspaceToolOperation::ResolveLockfile => "workspace.resolve-lockfile",
                     WorkspaceToolOperation::Check => "workspace.check",
                     WorkspaceToolOperation::Test => "workspace.test",
                     WorkspaceToolOperation::Build => "workspace.build",

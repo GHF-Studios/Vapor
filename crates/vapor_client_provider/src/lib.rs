@@ -33,6 +33,8 @@ pub mod documentation;
 pub mod manifest;
 /// Managed Rust validation, release builds, and app-root promotion.
 pub mod release;
+/// Vapor-only standalone application release staging.
+pub mod standalone_release;
 /// SteamCMD-backed Steam operations.
 pub mod steam;
 /// Source workspace structure and policy.

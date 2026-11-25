@@ -4051,6 +4051,7 @@ dependencies = [
  "toml",
  "vapor_console_core",
  "vapor_content",
+ "vapor_product_layout",
  "vapor_telemetry",
 ]
 
@@ -4068,6 +4069,13 @@ dependencies = [
 [[package]]
 name = "vapor_macros"
 version = "0.5.0"
+
+[[package]]
+name = "vapor_product_layout"
+version = "0.5.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "vapor_sdk_core"

@@ -115,7 +115,8 @@ impl VaporInstallation {
 
     /// OS-owned mutable Vapor state, intentionally outside the Steam App Instance.
     pub fn user_data_root(&self) -> PathBuf {
-        platform_user_data_root().unwrap_or_else(|| env::temp_dir().join("vapor-user-data"))
+        vapor_product_layout::user_data_root()
+            .unwrap_or_else(|| env::temp_dir().join("vapor-user-data"))
     }
 
     /// Resolve persisted state while remaining compatible with the pre-userdata
@@ -199,27 +200,6 @@ fn explicit_vapor_home() -> Option<PathBuf> {
     env::var_os(VAPOR_HOME_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-}
-
-fn platform_user_data_root() -> Option<PathBuf> {
-    match env::consts::OS {
-        "windows" => env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .or_else(|| {
-                env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("AppData/Local"))
-            })
-            .map(|root| root.join("Vapor")),
-
-        "macos" => env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join("Library/Application Support/Vapor")),
-
-        _ => env::var_os("XDG_DATA_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-            .map(|root| root.join("vapor")),
-    }
 }
 
 fn copy_missing_tree(source: &Path, destination: &Path) -> Result<(), InstallationError> {

@@ -4,7 +4,7 @@
 //! data and authored source survive unless explicitly purged.
 
 use crate::installation::{InstallationError, VAPOR_HOME_ENV, VaporInstallation};
-use crate::source::{SourceError, source_state};
+use crate::source::{SourceError, SourceState, source_state, source_state_at_user_data_root};
 use crate::superworkspace::{
     SUPERWORKSPACE_MANIFEST_FILE_NAME, SuperworkspaceError, VaporSuperworkspace,
 };
@@ -41,6 +41,136 @@ pub struct UninstallReport {
     pub app_external_purged: bool,
     pub superworkspace_purged: bool,
     pub preserved_superworkspace_entries: Vec<PathBuf>,
+}
+
+/// Read-only preview of every Vapor-owned root the standalone full wipe will remove.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaporDataErasurePlan {
+    pub user_data_root: PathBuf,
+    pub superworkspace_root: Option<PathBuf>,
+    pub source_repositories: Vec<PathBuf>,
+    pub superworkspace_data: Vec<PathBuf>,
+    pub preserved_superworkspace_entries: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VaporDataErasureReport {
+    pub user_data_root: PathBuf,
+    pub superworkspace_root: Option<PathBuf>,
+    pub integration: Vec<String>,
+    pub preserved_superworkspace_entries: Vec<PathBuf>,
+}
+
+/// Preview a full Vapor wipe without requiring an installed App Instance.
+///
+/// This is the path used by the website bootstrap after a normal app removal,
+/// when only Vapor User Data and the registered Superworkspace remain.
+pub fn plan_vapor_data_erasure() -> Result<VaporDataErasurePlan, UninstallError> {
+    let user_data_root = vapor_product_layout::user_data_root().ok_or_else(|| {
+        UninstallError::Io {
+            path: PathBuf::from("Vapor User Data"),
+            source: io::Error::new(io::ErrorKind::NotFound, "canonical user-data root is unavailable"),
+        }
+    })?;
+    let user_data_to_remove = preflight_owned_tree(&user_data_root, &[])?;
+    let state = source_state_at_user_data_root(&user_data_root).map_err(UninstallError::Source)?;
+    let registered = registered_superworkspace_for_erasure(&state)?;
+    let superworkspace_root = match registered {
+        Some(root) => preflight_owned_tree(&root, &[user_data_root.as_path()])?,
+        None => None,
+    };
+    let (source_repositories, superworkspace_data, preserved_superworkspace_entries) = match &superworkspace_root {
+        Some(root) => preview_superworkspace_erasure(root)?,
+        None => (Vec::new(), Vec::new(), Vec::new()),
+    };
+
+    Ok(VaporDataErasurePlan {
+        user_data_root: user_data_to_remove.unwrap_or(user_data_root),
+        superworkspace_root,
+        source_repositories,
+        superworkspace_data,
+        preserved_superworkspace_entries,
+    })
+}
+
+/// Permanently erase Vapor User Data and registered source checkouts.
+///
+/// All roots and machine-integration files are validated before the first
+/// deletion. Unrecognized neighbors in the shared Superworkspace are kept.
+pub fn erase_all_vapor_data() -> Result<VaporDataErasureReport, UninstallError> {
+    let plan = plan_vapor_data_erasure()?;
+    erase_all_vapor_data_from_plan(&plan)
+}
+
+/// Execute the reviewed preview only if the registered removal boundary is
+/// still identical to what the caller showed the user.
+pub fn erase_all_vapor_data_from_plan(
+    reviewed_plan: &VaporDataErasurePlan,
+) -> Result<VaporDataErasureReport, UninstallError> {
+    let plan = plan_vapor_data_erasure()?;
+    if &plan != reviewed_plan {
+        return Err(UninstallError::UnsafeSource {
+            message: "registered Vapor paths changed after the erase preview; review the updated paths and confirm again".to_owned(),
+        });
+    }
+    preflight_machine_integration_removal()?;
+    let user_data_root = preflight_owned_tree(&plan.user_data_root, &[])?;
+    let superworkspace_root = match &plan.superworkspace_root {
+        Some(root) => {
+            preflight_registered_superworkspace_paths(root, &[plan.user_data_root.as_path()])?;
+            Some(root.clone())
+        }
+        None => None,
+    };
+
+    let mut preserved_superworkspace_entries = Vec::new();
+    if let Some(root) = &superworkspace_root {
+        let (_, preserved) = erase_registered_superworkspace(root)?;
+        preserved_superworkspace_entries = preserved;
+        if preserved_superworkspace_entries.is_empty() {
+            fs::remove_dir(root).map_err(|source| UninstallError::Io {
+                path: root.clone(),
+                source,
+            })?;
+        }
+    }
+    if let Some(root) = user_data_root {
+        remove_preflighted_tree(&root)?;
+    }
+    let integration = remove_all_vapor_user_integration(&plan.user_data_root)?;
+
+    Ok(VaporDataErasureReport {
+        user_data_root: plan.user_data_root,
+        superworkspace_root,
+        integration,
+        preserved_superworkspace_entries,
+    })
+}
+
+/// Remove shell/environment integration owned by the standalone product while
+/// preserving Vapor User Data and registered source checkouts.
+pub fn remove_standalone_machine_integration() -> Result<Vec<String>, UninstallError> {
+    let user_data_root = vapor_product_layout::user_data_root().ok_or_else(|| UninstallError::Io {
+        path: PathBuf::from("Vapor User Data"),
+        source: io::Error::new(io::ErrorKind::NotFound, "canonical user-data root is unavailable"),
+    })?;
+    preflight_machine_integration_removal()?;
+    let mut removed = Vec::new();
+    if cfg!(windows) {
+        if remove_windows_user_vapor_integration(&user_data_root)? {
+            removed.push("removed Vapor user PATH entries and environment roots".to_owned());
+        }
+    } else {
+        for profile in shell_profiles() {
+            if remove_managed_profile_blocks_under_root(&profile, &user_data_root)? {
+                removed.push(format!(
+                    "removed managed Vapor PATH block from {}",
+                    profile.display()
+                ));
+            }
+        }
+    }
+    Ok(removed)
 }
 
 pub fn uninstall_installation(
@@ -224,7 +354,13 @@ fn erase_registered_superworkspace(
     })?;
     let workspace = VaporSuperworkspace::discover_from(&root)
         .map_err(UninstallError::Superworkspace)?;
-    let repositories = workspace.repositories;
+    let mut repositories = workspace.repositories;
+    // Container repositories can contain registered source repositories as
+    // submodules. Remove deepest roots first so deleting the container cannot
+    // invalidate paths that the same transaction still needs to process.
+    repositories.sort_by_key(|repository| {
+        std::cmp::Reverse(repository.root.components().count())
+    });
     let owned_metadata = [SUPERWORKSPACE_MANIFEST_FILE_NAME, ".vaporignore"];
     let mut removed = false;
     for repository in repositories {
@@ -393,6 +529,12 @@ fn registered_superworkspace(
 ) -> Result<Option<PathBuf>, UninstallError> {
     let state = source_state(installation).map_err(UninstallError::Source)?;
 
+    registered_superworkspace_from_state(&state)
+}
+
+fn registered_superworkspace_from_state(
+    state: &SourceState,
+) -> Result<Option<PathBuf>, UninstallError> {
     if let Some(configured) = state.superworkspace.as_deref()
         && let Ok(superworkspace) = VaporSuperworkspace::discover_from(configured)
     {
@@ -418,10 +560,138 @@ fn registered_superworkspace(
 
     if known.len() > 1 {
         return Err(UninstallError::NoActiveSuperworkspace {
-            state_path: state.state_path,
+            state_path: state.state_path.clone(),
         });
     }
     Ok(None)
+}
+
+/// Resolve every still-present registered source path before a permanent wipe.
+/// A stale missing registration is harmless; an existing path that cannot be
+/// mapped to the registered Superworkspace blocks the wipe for explicit review.
+fn registered_superworkspace_for_erasure(
+    state: &SourceState,
+) -> Result<Option<PathBuf>, UninstallError> {
+    let mut roots = BTreeSet::new();
+    let mut registered_paths = Vec::new();
+    if let Some(path) = &state.superworkspace {
+        registered_paths.push(path);
+    }
+    if let Some(path) = &state.active {
+        registered_paths.push(path);
+    }
+    registered_paths.extend(state.known.iter());
+
+    for registered in registered_paths {
+        if !registered.exists() {
+            continue;
+        }
+        match VaporSuperworkspace::discover_from(registered) {
+            Ok(workspace) => {
+                roots.insert(workspace.root);
+            }
+            Err(error) => {
+                return Err(UninstallError::UnsafeSource {
+                    message: format!(
+                        "registered source path `{}` could not be assigned to a Superworkspace: {error}",
+                        registered.display()
+                    ),
+                });
+            }
+        }
+    }
+    if roots.len() > 1 {
+        return Err(UninstallError::NoActiveSuperworkspace {
+            state_path: state.state_path.clone(),
+        });
+    }
+    Ok(roots.into_iter().next())
+}
+
+fn preview_superworkspace_erasure(
+    root: &Path,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>), UninstallError> {
+    let workspace = VaporSuperworkspace::discover_from(root).map_err(UninstallError::Superworkspace)?;
+    let mut repositories = Vec::new();
+    for repository in workspace.repositories {
+        let canonical = fs::canonicalize(&repository.root).map_err(|source| UninstallError::Io {
+            path: repository.root.clone(),
+            source,
+        })?;
+        if canonical == root || !canonical.starts_with(root) {
+            return Err(UninstallError::UnsafePurgeRoot { path: canonical });
+        }
+        repositories.push(canonical);
+    }
+    repositories.sort();
+
+    let mut owned_data = Vec::new();
+    for name in [SUPERWORKSPACE_MANIFEST_FILE_NAME, ".vaporignore", ".idea", ".run"] {
+        let path = root.join(name);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(source) => return Err(UninstallError::Io { path, source }),
+        };
+        let valid_type = if matches!(name, ".idea" | ".run") {
+            metadata.is_dir()
+        } else {
+            metadata.is_file()
+        };
+        if metadata.file_type().is_symlink() || !valid_type {
+            return Err(UninstallError::UnsafeSuperworkspaceEntry { path });
+        }
+        preflight_owned_tree(&path, &[])?;
+        owned_data.push(path);
+    }
+    let mut preserved = Vec::new();
+    for entry in fs::read_dir(root).map_err(|source| UninstallError::Io {
+        path: root.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| UninstallError::Io {
+            path: root.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        let name = entry.file_name();
+        if matches!(name.to_str(), Some(SUPERWORKSPACE_MANIFEST_FILE_NAME | ".vaporignore" | ".idea" | ".run"))
+            || repositories.iter().any(|repository| repository == &path)
+        {
+            continue;
+        }
+        if name == "sources"
+            && fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir())
+            && fs::read_dir(&path).is_ok_and(|mut entries| entries.next().is_none())
+        {
+            continue;
+        }
+        preserved.push(path);
+    }
+    Ok((repositories, owned_data, preserved))
+}
+
+fn preflight_registered_superworkspace_paths(
+    root: &Path,
+    protected: &[&Path],
+) -> Result<(), UninstallError> {
+    for name in [".idea", ".run"] {
+        preflight_owned_tree(&root.join(name), protected)?;
+    }
+    let workspace = VaporSuperworkspace::discover_from(root).map_err(UninstallError::Superworkspace)?;
+    for repository in workspace.repositories {
+        let repository_root = fs::canonicalize(&repository.root).map_err(|source| {
+            UninstallError::Io {
+                path: repository.root.clone(),
+                source,
+            }
+        })?;
+        if repository_root == root || !repository_root.starts_with(root) {
+            return Err(UninstallError::UnsafePurgeRoot { path: repository_root });
+        }
+        preflight_owned_tree(&repository_root, protected)?;
+    }
+    Ok(())
 }
 
 fn remove_legacy_app_mutable_state(
@@ -492,6 +762,213 @@ fn remove_machine_integration(
     }
 
     Ok(removed)
+}
+
+fn remove_all_vapor_user_integration(
+    user_data_root: &Path,
+) -> Result<Vec<String>, UninstallError> {
+    let mut removed = Vec::new();
+    if cfg!(windows) {
+        if remove_windows_user_vapor_integration(user_data_root)? {
+            removed.push("removed Vapor user PATH entries and environment roots".to_owned());
+        }
+    } else {
+        for profile in shell_profiles() {
+            if remove_any_managed_profile_block(&profile)? {
+                removed.push(format!(
+                    "removed managed Vapor PATH block from {}",
+                    profile.display()
+                ));
+            }
+        }
+    }
+    Ok(removed)
+}
+
+fn remove_any_managed_profile_block(path: &Path) -> Result<bool, UninstallError> {
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => {
+            return Err(UninstallError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let mut inside = false;
+    let mut changed = false;
+    let mut output = String::new();
+    for line in source.lines() {
+        if line == PROFILE_BLOCK_START {
+            if inside {
+                return Err(UninstallError::MalformedProfileBlock {
+                    path: path.to_path_buf(),
+                });
+            }
+            inside = true;
+            changed = true;
+            continue;
+        }
+        if inside {
+            if line == PROFILE_BLOCK_END {
+                inside = false;
+            }
+            continue;
+        }
+        output.push_str(line);
+        output.push('\n');
+    }
+    if inside {
+        return Err(UninstallError::MalformedProfileBlock {
+            path: path.to_path_buf(),
+        });
+    }
+    if changed {
+        fs::write(path, output).map_err(|source| UninstallError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+    Ok(changed)
+}
+
+#[cfg(not(windows))]
+fn remove_managed_profile_blocks_under_root(
+    path: &Path,
+    user_data_root: &Path,
+) -> Result<bool, UninstallError> {
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => {
+            return Err(UninstallError::Io { path: path.to_path_buf(), source });
+        }
+    };
+    let canonical_root = fs::canonicalize(user_data_root).unwrap_or_else(|_| user_data_root.to_path_buf());
+    let mut output = String::new();
+    let mut block = Vec::new();
+    let mut inside = false;
+    let mut changed = false;
+    for line in source.lines() {
+        if line == PROFILE_BLOCK_START {
+            if inside {
+                return Err(UninstallError::MalformedProfileBlock { path: path.to_path_buf() });
+            }
+            inside = true;
+            block.clear();
+            block.push(line.to_owned());
+            continue;
+        }
+        if inside {
+            block.push(line.to_owned());
+            if line == PROFILE_BLOCK_END {
+                let targets_product = block.iter().any(|entry| {
+                    entry
+                        .strip_prefix(&format!("export {VAPOR_HOME_ENV}="))
+                        .is_some_and(|value| vapor_home_is_within(value, &canonical_root))
+                });
+                if targets_product {
+                    changed = true;
+                } else {
+                    for entry in &block {
+                        output.push_str(entry);
+                        output.push('\n');
+                    }
+                }
+                block.clear();
+                inside = false;
+            }
+            continue;
+        }
+        output.push_str(line);
+        output.push('\n');
+    }
+    if inside {
+        return Err(UninstallError::MalformedProfileBlock { path: path.to_path_buf() });
+    }
+    if changed {
+        fs::write(path, output).map_err(|source| UninstallError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+    Ok(changed)
+}
+
+#[cfg(not(windows))]
+fn vapor_home_is_within(value: &str, user_data_root: &Path) -> bool {
+    let value = value
+        .strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+        .unwrap_or(value)
+        .replace("'\\''", "'");
+    let path = PathBuf::from(value);
+    let path = fs::canonicalize(&path).unwrap_or(path);
+    path.starts_with(user_data_root)
+}
+
+#[cfg(windows)]
+fn remove_managed_profile_blocks_under_root(
+    _path: &Path,
+    _user_data_root: &Path,
+) -> Result<bool, UninstallError> {
+    Ok(false)
+}
+
+#[cfg(windows)]
+fn remove_windows_user_vapor_integration(
+    user_data_root: &Path,
+) -> Result<bool, UninstallError> {
+    let script = r#"
+$root = [IO.Path]::GetFullPath($args[0]).TrimEnd([IO.Path]::DirectorySeparatorChar)
+function Test-InVaporRoot($value) {
+    if ([string]::IsNullOrWhiteSpace($value)) { return $false }
+    try { $path = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($value)) } catch { return $false }
+    return [string]::Equals($path, $root, [StringComparison]::OrdinalIgnoreCase) -or
+        $path.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+}
+$changed = $false
+$current = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($null -ne $current) {
+    $entries = @($current -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $kept = @($entries | Where-Object { -not (Test-InVaporRoot $_) })
+    if ($kept.Count -ne $entries.Count) {
+        [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User')
+        $changed = $true
+    }
+}
+foreach ($name in @('VAPOR_HOME', 'LOO_CAST_APP_ROOT')) {
+    $value = [Environment]::GetEnvironmentVariable($name, 'User')
+    if (Test-InVaporRoot $value) {
+        [Environment]::SetEnvironmentVariable($name, $null, 'User')
+        $changed = $true
+    }
+}
+if ($changed) { Write-Output 'removed' }
+"#;
+    let output = crate::managed_process::background_command("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .arg(user_data_root)
+        .output()
+        .map_err(|source| UninstallError::CommandStart {
+            command: "PowerShell Vapor user integration cleanup".to_owned(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(UninstallError::CommandFailed {
+            command: "PowerShell Vapor user integration cleanup".to_owned(),
+            status: output.status.to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).contains("removed"))
+}
+
+#[cfg(not(windows))]
+fn remove_windows_user_vapor_integration(
+    _user_data_root: &Path,
+) -> Result<bool, UninstallError> {
+    Ok(false)
 }
 
 fn legacy_anchor_file() -> Option<PathBuf> {

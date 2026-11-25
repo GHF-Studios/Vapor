@@ -320,6 +320,7 @@ pub fn clean_workspace_build_cache_with_context(
 
 fn workspace_tool_build_mode(operation: vapor_client_domain::WorkspaceToolOperation) -> BuildMode {
     match operation {
+        vapor_client_domain::WorkspaceToolOperation::ResolveLockfile => BuildMode::ResolveLockfile,
         vapor_client_domain::WorkspaceToolOperation::Format => BuildMode::Format,
         vapor_client_domain::WorkspaceToolOperation::Check => BuildMode::Check,
         vapor_client_domain::WorkspaceToolOperation::Test => BuildMode::Test,

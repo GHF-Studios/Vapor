@@ -76,9 +76,34 @@ impl WorkspaceManifest {
     /// required Cargo manifests, duplicate project names, or an identity
     /// mismatch with startup discovery.
     pub fn load(paths: &EnvironmentPaths) -> Result<Self, String> {
-        let source_root = paths.source().root();
-        let marker = manifest::source_root_marker(source_root)?;
-        let entity = manifest::read(&marker, source_root)?;
+        let workspace = Self::load_from_source_root(paths.source().root())?;
+        if workspace.id != paths.source().identity_id() {
+            return Err(format!(
+                "source identity changed during startup: discovered '{}' but loaded '{}'",
+                paths.source().identity_id(),
+                workspace.id
+            ));
+        }
+        Ok(workspace)
+    }
+
+    /// Load source-root policy without requiring an installed App Instance.
+    /// Standalone release staging uses this path before deployment to Steam.
+    pub fn load_from_source_root(source_root: &Path) -> Result<Self, String> {
+        let source_root = fs::canonicalize(source_root).map_err(|error| {
+            format!(
+                "failed to resolve source root '{}': {error}",
+                source_root.display()
+            )
+        })?;
+        if !source_root.is_dir() {
+            return Err(format!(
+                "source root is not a directory: {}",
+                source_root.display()
+            ));
+        }
+        let marker = manifest::source_root_marker(&source_root)?;
+        let entity = manifest::read(&marker, &source_root)?;
         let (kind, id, name, organization) = match entity {
             VaporEntity::Root {
                 id,
@@ -98,23 +123,15 @@ impl WorkspaceManifest {
             }
         };
 
-        if id != paths.source().identity_id() {
-            return Err(format!(
-                "source identity changed during startup: discovered '{}' but loaded '{}'",
-                paths.source().identity_id(),
-                id
-            ));
-        }
-
         let runtime_targets = source_runtime_targets(&marker, kind)?;
         let cargo = match kind {
-            SourceRootKind::Root => discover_root_cargo_workspaces(source_root)?,
-            SourceRootKind::Workspace => discover_workspace_cargo(source_root, &name)?,
+            SourceRootKind::Root => discover_root_cargo_workspaces(&source_root)?,
+            SourceRootKind::Workspace => discover_workspace_cargo(&source_root, &name)?,
         };
         validate_projects(&cargo)?;
         let projects = match kind {
             SourceRootKind::Root => Vec::new(),
-            SourceRootKind::Workspace => discover_workspace_projects(source_root)?,
+            SourceRootKind::Workspace => discover_workspace_projects(&source_root)?,
         };
         validate_workspace_projects(&projects)?;
 

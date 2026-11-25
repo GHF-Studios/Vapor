@@ -17,6 +17,8 @@ const MAX_CARGO_JSON_LINE_BYTES: usize = 256 * 1024;
 /// Build policy for an authored workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildMode {
+    /// Refresh Cargo lockfiles from the managed local registry cache.
+    ResolveLockfile,
     /// Apply Rustfmt to all Cargo projects.
     Format,
     /// Type-check all workspace targets.
@@ -173,7 +175,7 @@ pub fn run_selected_with_structured_events_cancellable(
             manifest.id(),
         ));
     }
-    let targets = if runtime_targets.is_empty() {
+    let targets = if runtime_targets.is_empty() || mode == BuildMode::ResolveLockfile {
         vec![None]
     } else {
         runtime_targets
@@ -182,6 +184,7 @@ pub fn run_selected_with_structured_events_cancellable(
             .collect()
     };
     let steps = match mode {
+        BuildMode::ResolveLockfile => vec![CargoStep::ResolveLockfile],
         BuildMode::Format => vec![CargoStep::Format],
         BuildMode::Check => vec![CargoStep::Check],
         BuildMode::Test => vec![CargoStep::Test],
@@ -323,6 +326,7 @@ fn run_plan_steps(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CargoStep {
+    ResolveLockfile,
     Format,
     FmtCheck,
     Check,
@@ -336,6 +340,7 @@ enum CargoStep {
 impl CargoStep {
     fn label(self) -> &'static str {
         match self {
+            Self::ResolveLockfile => "lockfile refresh",
             Self::Format => "formatting",
             Self::FmtCheck => "format check",
             Self::Check => "check",
@@ -371,6 +376,7 @@ fn validation_steps_with_build() -> &'static [CargoStep] {
 
 fn cargo_args(step: CargoStep, target: Option<&str>) -> Vec<String> {
     let mut args = match step {
+        CargoStep::ResolveLockfile => vec!["update", "--workspace", "--offline"],
         CargoStep::Format | CargoStep::FmtCheck => vec!["fmt", "--all"],
         CargoStep::Check => vec!["check", "--workspace", "--all-targets", "--locked"],
         CargoStep::Test => {
@@ -388,10 +394,10 @@ fn cargo_args(step: CargoStep, target: Option<&str>) -> Vec<String> {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    if !matches!(step, CargoStep::Format | CargoStep::FmtCheck) {
+    if !matches!(step, CargoStep::Format | CargoStep::FmtCheck | CargoStep::ResolveLockfile) {
         args.extend(["--message-format".to_owned(), "json".to_owned()]);
     }
-    if !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
+    if !matches!(step, CargoStep::Format | CargoStep::FmtCheck | CargoStep::ResolveLockfile)
         && let Some(target) = target
         && target != host_runtime_target()
     {
@@ -481,7 +487,10 @@ fn run_step(
         MAX_CARGO_JSON_LINE_BYTES,
         |stream, line| {
             let parsed = if stream == OperationOutputStream::Stdout
-                && !matches!(step, CargoStep::Format | CargoStep::FmtCheck)
+                && !matches!(
+                    step,
+                    CargoStep::Format | CargoStep::FmtCheck | CargoStep::ResolveLockfile
+                )
             {
                 super::cargo_output::parse_cargo_output_line(line)
             } else {
@@ -523,6 +532,7 @@ fn is_foreign_target(target: Option<&str>) -> bool {
 
 fn step_label(step: CargoStep, target: Option<&str>) -> &'static str {
     match step {
+        CargoStep::ResolveLockfile => "update --workspace --offline",
         CargoStep::Format => "fmt",
         CargoStep::FmtCheck => "fmt --check",
         CargoStep::Check => "check",

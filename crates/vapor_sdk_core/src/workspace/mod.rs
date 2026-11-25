@@ -20,6 +20,8 @@ pub enum WorkspaceCommand {
     Status,
     /// Create or update SDK-managed workspace structure.
     Sync,
+    /// Update workspace dependencies in Cargo.lock using Vapor's local registry cache.
+    ResolveLockfile,
     /// Run `cargo check` through the Vapor-managed Cargo binary.
     Check,
     /// Run `cargo fmt` through the Vapor-managed Cargo binary.
@@ -44,6 +46,13 @@ pub fn workspace_sync(
     globals: &GlobalOptions,
 ) -> Result<WorkspaceSyncReport, WorkspaceCommandError> {
     manage::workspace_sync(globals)
+}
+
+/// Update the current workspace lockfile from Vapor-managed Cargo's local index/cache.
+pub fn workspace_resolve_lockfile(
+    globals: &GlobalOptions,
+) -> Result<WorkspaceCargoReport, WorkspaceCommandError> {
+    cargo::VaporCargo::new(globals)?.run(&["update", "--workspace", "--offline"])
 }
 
 /// Run `cargo check --workspace` through Vapor-owned Rustup/Cargo state.
