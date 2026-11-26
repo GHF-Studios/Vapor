@@ -106,8 +106,8 @@ pub fn configure_superworkspace(
 ) -> Result<VaporSuperworkspace, SourceError> {
     let installation_root =
         fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
-    let user_data = installation.user_data_root();
-    let user_data_root = fs::canonicalize(&user_data).unwrap_or(user_data);
+    let data = installation.data_root();
+    let data_root = fs::canonicalize(&data).unwrap_or(data);
     let candidate = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let managed_sources_root = installation_root.join("sources");
     let is_managed_sources_root = candidate == managed_sources_root;
@@ -117,7 +117,7 @@ pub fn configure_superworkspace(
         return Err(SourceError::UnsafeSuperworkspace {
             path: candidate,
             installation: installation_root,
-            user_data: user_data_root,
+            user_data: data_root,
         });
     }
 
@@ -239,6 +239,36 @@ pub fn open_source(
     save(installation, &persisted)?;
 
     source_state(installation)
+}
+
+/// Validate that an authored source root does not overlap Vapor Home, except
+/// when the source is a proper descendant of Vapor Home's managed `sources/`
+/// directory. This keeps the app/runtime directories out of the source graph
+/// while allowing the canonical Vapor-owned superworkspace layout.
+pub fn validate_source_location(
+    installation: &VaporInstallation,
+    source: &Path,
+) -> Result<(), SourceError> {
+    let installation_root =
+        fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
+    if !roots_overlap(source, &installation_root) {
+        return Ok(());
+    }
+
+    let sources_root = installation.sources_root();
+    let sources_root = fs::canonicalize(&sources_root).unwrap_or(sources_root);
+    if sources_root.starts_with(&installation_root)
+        && sources_root != installation_root
+        && source != sources_root
+        && source.starts_with(&sources_root)
+    {
+        return Ok(());
+    }
+
+    Err(SourceError::OverlapsInstallation {
+        source: source.to_path_buf(),
+        installation: installation_root,
+    })
 }
 
 /// Clear the active authoring source without unregistering it.

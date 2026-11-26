@@ -17,7 +17,7 @@ Make the Steam-distributed app root able to maintain and publish itself.
 - Steam DepotID: `2122621`.
 - The SDK has root package and root publish flows through SteamCMD.
 - The current root package includes app-root CLI surfaces and activation scripts.
-- The current root package excludes `rustup-home`, `cargo-home`, and `output`.
+- The current root package excludes `tools/rustup/home`, `tools/cargo/home`, and `data/output`.
 
 ## Needed Next
 

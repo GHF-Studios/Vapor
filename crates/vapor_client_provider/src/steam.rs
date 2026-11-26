@@ -1,8 +1,8 @@
 //! SteamCMD-backed beta-branch SteamPipe publishing.
 
 use crate::{
-    discovery::{EnvironmentPaths, InstallationPaths, ensure_contained},
-    distribution::{self, DistributionManifest, StageOptions, SteamDepotKind},
+    discovery::{EnvironmentPaths, InstallationPaths},
+    distribution::{self, DistributionManifest, StageOptions, SteamDepotKind, SteamProductKind},
     manifest,
 };
 use std::{
@@ -13,10 +13,12 @@ use std::{
     process::Stdio,
 };
 
-const STEAMPIPE_TEMPLATE_ROOT: &str = "resources/steam/steampipe-templates";
-const APP_BUILD_TEMPLATE: &str = "app_build.vdf.tpl";
-const APP_BUILD_DEPOT_ENTRY_TEMPLATE: &str = "app_build_depot_entry.vdf.tpl";
-const DEPOT_BUILD_TEMPLATE: &str = "depot_build.vdf.tpl";
+const APP_BUILD_TEMPLATE_TEXT: &str =
+    include_str!("../../../../resources/steam/steampipe-templates/app_build.vdf.tpl");
+const APP_BUILD_DEPOT_ENTRY_TEMPLATE_TEXT: &str =
+    include_str!("../../../../resources/steam/steampipe-templates/app_build_depot_entry.vdf.tpl");
+const DEPOT_BUILD_TEMPLATE_TEXT: &str =
+    include_str!("../../../../resources/steam/steampipe-templates/depot_build.vdf.tpl");
 
 /// Locate Vapor's SteamCMD executable.
 pub fn executable(paths: &EnvironmentPaths) -> Result<PathBuf, String> {
@@ -145,6 +147,7 @@ pub fn publish(
             fingerprint,
         });
     }
+    vapor_core::distribution::require_distribution_job("SteamPipe uploads")?;
     let steamcmd = executable(paths)?;
     let output = vapor_core::managed_process::background_command(&steamcmd)
         .args(["+login", options.account, "+run_app_build"])

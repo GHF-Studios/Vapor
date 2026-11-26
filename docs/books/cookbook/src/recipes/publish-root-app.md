@@ -19,7 +19,10 @@ account and explicit confirmation:
 root publish --account ACCOUNT --branch vapor-dev --yes
 ```
 
-Use the actual configured beta branch for the project. Real publication
+The distribution workflow sets `VAPOR_DISTRIBUTION_JOB=steam-release-v1`. Keep
+Steam credentials in that workflow only; the marker is an operational guard,
+not an authentication boundary. Use the actual configured beta branch for the
+project. Real publication
 rejects host-only or custom target subsets because a release must include the
 full declared runtime matrix. Engine, Game, Mod, and Packagepack community
 artifacts use `content publish` only when their configured content source is

@@ -10,6 +10,7 @@ pub enum SteamCommandError {
     ToolchainStatus(ToolchainStatusError),
     SteamCmdIo(std::io::Error),
     SteamCmdUnavailable(PathBuf),
+    DistributionJobRequired(String),
     MissingAccount,
 }
 
@@ -31,6 +32,7 @@ impl fmt::Display for SteamCommandError {
                     path.display()
                 )
             }
+            Self::DistributionJobRequired(operation) => write!(formatter, "{operation}"),
             Self::MissingAccount => write!(formatter, "Steam account must not be empty"),
         }
     }
@@ -41,7 +43,9 @@ impl Error for SteamCommandError {
         match self {
             Self::ToolchainStatus(error) => Some(error),
             Self::SteamCmdIo(error) => Some(error),
-            Self::SteamCmdUnavailable(_) | Self::MissingAccount => None,
+            Self::SteamCmdUnavailable(_)
+            | Self::DistributionJobRequired(_)
+            | Self::MissingAccount => None,
         }
     }
 }

@@ -74,6 +74,7 @@ pub fn build_application_release_with_structured_events(
         Option<String>,
     ),
 ) -> Result<ReleaseBuildReport, String> {
+    vapor_core::distribution::require_distribution_job("release-profile builds")?;
     if runtime_targets.is_empty() {
         return Err("application release needs at least one runtime target".to_owned());
     }
@@ -163,6 +164,8 @@ impl BuildStep {
             }
             Self::Test => vec![
                 "test",
+                "--profile",
+                "dev",
                 "--workspace",
                 "--all-targets",
                 "--locked",

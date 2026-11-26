@@ -28,6 +28,7 @@ pub struct DistributionManifest {
 pub struct Application {
     app_id: u32,
     development_branch: String,
+    product: SteamProductKind,
     depots: Option<SteamDepots>,
 }
 
@@ -279,6 +280,10 @@ impl Application {
     /// Automatically activated development beta branch.
     pub fn development_branch(&self) -> &str {
         &self.development_branch
+    }
+    /// Product-specific payload contract for this Steam application.
+    pub fn product(&self) -> SteamProductKind {
+        self.product
     }
     /// Platform-split Steam depots.
     pub fn depots(&self) -> &SteamDepots {

@@ -469,8 +469,15 @@ fn content_build_output_root(
     if runtime_target.explicit {
         Ok(root.join(runtime_target.triple()).join("debug"))
     } else {
-        Ok(root.join("debug"))
-    }
+        crate::target::host_runtime_target()
+    };
+    let _ = name;
+    Ok(paths
+        .installation()
+        .root()
+        .join("cache/build")
+        .join(target)
+        .join("debug"))
 }
 
 fn find_built_binary(build_root: &Path, name: &str, target: &str) -> Result<PathBuf, String> {

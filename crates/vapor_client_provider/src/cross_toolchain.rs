@@ -5,10 +5,7 @@ use std::{
     process::Command,
 };
 
-/// Linux target supported by Vapor's bundled Zig cross linker.
-pub const LINUX_GNU_TARGET: &str = "x86_64-unknown-linux-gnu";
-/// Windows target supported by the bundled LLVM-MinGW toolchain.
-pub const WINDOWS_GNU_TARGET: &str = "x86_64-pc-windows-gnullvm";
+pub use crate::target::{LINUX_GNU_TARGET, WINDOWS_GNU_TARGET};
 const WINDOWS_RUNTIME_DLLS: &[&str] = &["libunwind.dll"];
 
 /// Availability of Vapor's managed cross-compilation tools.
@@ -53,8 +50,15 @@ pub fn inspect(root: &Path) -> CrossToolchainStatus {
     let linker = zig_linker_path(vapor_home, LINUX_GNU_TARGET);
     if !is_executable(&linker) {
         missing.push(format!(
-            "{LINUX_GNU_TARGET} linker wrapper (expected at {})",
-            linker.display()
+            "LLVM archiver for {LINUX_GNU_TARGET} (expected at {})",
+            archiver.display()
+        ));
+    }
+    let compiler = linux_cc_compiler(root);
+    if !is_executable(&compiler) {
+        missing.push(format!(
+            "Vapor Zig C compiler adapter for {LINUX_GNU_TARGET} (expected at {})",
+            compiler.display()
         ));
     }
     if !llvm_mingw_bin(vapor_home).parent().is_some_and(|bundle| {
@@ -82,8 +86,9 @@ pub fn inspect(root: &Path) -> CrossToolchainStatus {
 
 /// Configure the Vapor-owned linker, compiler, and archiver for a Cargo target.
 ///
-/// Host targets need no cross toolchain. Unsupported cross targets retain
-/// Cargo's normal lookup rules so installed target providers can be used.
+/// Selects the Vapor-managed toolchain from the requested target, even when it
+/// matches the host. This keeps host and cross builds on the same ABI/tool path.
+/// Unsupported targets are rejected before Cargo is invoked.
 pub fn configure_linker_env(
     command: &mut Command,
     vapor_home: &Path,

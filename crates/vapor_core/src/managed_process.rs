@@ -4,6 +4,7 @@ use crate::OperationOutputStream;
 use std::{
     ffi::OsStr,
     io::{self, BufRead, BufReader, Read, Write},
+    path::PathBuf,
     process::{Command, ExitStatus, Stdio},
     sync::mpsc,
     thread,
@@ -11,6 +12,16 @@ use std::{
 };
 
 const MAX_OPERATION_OUTPUT_LINE_BYTES: usize = 8 * 1024;
+
+pub(crate) fn windows_powershell_executable() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe")
+}
 
 /// Construct a child-process command that never opens a separate Windows console.
 ///

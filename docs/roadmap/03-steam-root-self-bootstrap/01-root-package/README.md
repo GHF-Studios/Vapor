@@ -9,7 +9,7 @@ Status: partially implemented in SDK.
 - It includes `sdk_cli`, `launcher_cli`, their binaries under `bin/`, and the activation script.
 - It writes a SteamPipe app build VDF.
 - It rejects AppID/DepotID zero.
-- It does not include `cargo-home`, `rustup-home`, or `output`.
+- It does not include `tools/cargo/home`, `tools/rustup/home`, or `data/output`.
 
 ## Needed Next
 

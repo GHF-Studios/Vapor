@@ -5,8 +5,9 @@ Status: partially implemented.
 ## Exists Now
 
 - Toolchain pin comes from `Vapor/Vapor.toml`: nightly `2026-01-30`.
-- SDK status computes `VAPOR_HOME`, `rustup-home`, `cargo-home`, `toolchain-bootstrap`, and `output`.
-- SDK prefers `$VAPOR_HOME/rustup/bin/rustup`.
+- SDK status reads Rustup from `VAPOR_HOME/tools/rustup/bin`, Rustup state from `VAPOR_HOME/tools/rustup/home`, and Cargo state from `VAPOR_HOME/tools/cargo/home`.
+- SDK output and bootstrap state are owned under `VAPOR_HOME/data`.
+- SDK prefers `$VAPOR_HOME/tools/rustup/bin/rustup`.
 - If app-local Rustup is missing, SDK may use Rustup from PATH.
 - `toolchain install` invokes Rustup with Vapor-owned `RUSTUP_HOME` and `CARGO_HOME`.
 - Install verification checks the expected toolchain root plus `cargo` and `rustc` files.

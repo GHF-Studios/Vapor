@@ -151,6 +151,9 @@ pub fn run_selected_with_structured_events_cancellable(
         Option<String>,
     ),
 ) -> Result<BuildReport, String> {
+    if mode == BuildMode::BuildRelease {
+        vapor_core::distribution::require_distribution_job("release-profile builds")?;
+    }
     validate_targets(runtime_targets)?;
     if is_cancelled() {
         return Err("operation cancelled".to_owned());
@@ -261,17 +264,21 @@ pub fn clean_development_cache(
         remove_project_build_cache(&cache_root, project.name())?;
         report_progress(index + 1, total, project.name());
     }
+    let target = host_runtime_target();
+    let cache_root = paths.installation().root().join("cache/build");
+    remove_build_target_cache(&cache_root, &target)?;
+    report_progress(1, 1, &target);
     Ok(())
 }
 
-fn remove_project_build_cache(cache_root: &Path, project_name: &str) -> Result<(), String> {
-    let path = Path::new(project_name);
+fn remove_build_target_cache(cache_root: &Path, target_name: &str) -> Result<(), String> {
+    let path = Path::new(target_name);
     let mut components = path.components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
         || components.next().is_some()
     {
         return Err(format!(
-            "workspace Cargo project has an invalid cache name: {project_name}"
+            "build target cache must be a single directory name: {target_name}"
         ));
     }
 
@@ -558,7 +565,7 @@ fn validate_targets(targets: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CargoStep, cargo_args, cargo_invocation_args, remove_project_build_cache, run_plan_steps,
+        CargoStep, cargo_args, cargo_invocation_args, remove_build_target_cache, run_plan_steps,
         validation_steps, validation_steps_with_build,
     };
 
@@ -572,26 +579,29 @@ mod tests {
                 .expect("system clock after epoch")
                 .as_nanos()
         ));
-        let project_cache = cache_root.join("sample-workspace");
+        let project_cache = cache_root.join("x86_64-unknown-linux-gnu");
+        let other_target = cache_root.join("x86_64-pc-windows-gnullvm");
         let smoke_output = cache_root.join("vapor-smoke-20261019");
         let release_output = cache_root.join("release");
         std::fs::create_dir_all(project_cache.join("debug/deps")).unwrap();
+        std::fs::create_dir_all(&other_target).unwrap();
         std::fs::create_dir_all(&smoke_output).unwrap();
         std::fs::create_dir_all(&release_output).unwrap();
         std::fs::write(project_cache.join("debug/deps/cache-file"), b"build cache").unwrap();
         std::fs::write(smoke_output.join("preserve"), b"smoke output").unwrap();
         std::fs::write(release_output.join("preserve"), b"release output").unwrap();
 
-        remove_project_build_cache(&cache_root, "sample-workspace").unwrap();
+        remove_build_target_cache(&cache_root, "x86_64-unknown-linux-gnu").unwrap();
 
         assert!(!project_cache.exists());
         assert!(smoke_output.join("preserve").is_file());
         assert!(release_output.join("preserve").is_file());
+        assert!(other_target.is_dir());
         std::fs::remove_dir_all(cache_root).unwrap();
     }
 
     #[test]
-    fn cleaning_rejects_project_names_that_escape_the_cache_root() {
+    fn cleaning_rejects_target_names_that_escape_the_cache_root() {
         let cache_root = std::env::temp_dir().join(format!(
             "vapor-workspace-build-clean-path-{}-{}",
             std::process::id(),
@@ -608,12 +618,7 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         let marker = outside.join("preserve");
         std::fs::write(&marker, b"keep").unwrap();
-        let outside_name = outside
-            .file_name()
-            .expect("outside directory name")
-            .to_string_lossy();
-
-        assert!(remove_project_build_cache(&cache_root, &format!("../{outside_name}")).is_err());
+        assert!(remove_build_target_cache(&cache_root, "../outside").is_err());
         assert!(marker.is_file());
 
         std::fs::remove_dir_all(cache_root).unwrap();

@@ -18,7 +18,7 @@ pub(super) fn describe(command: &ToolchainCommand) -> CommandSpec {
             StateSurface::Toolchain,
             &[
                 "toolchain pin is known",
-                "Rustup is available from VAPOR_HOME/rustup/bin or PATH",
+                "Rustup is available from VAPOR_HOME/tools/rustup/bin or PATH",
             ],
             &[
                 "invoke Rustup with Vapor-owned RUSTUP_HOME and CARGO_HOME",

@@ -10,7 +10,8 @@
 - Confirm no Vapor runtime, `App.vapor.toml`, source, tool, or state files are
   staged.
 - Confirm the dedicated build account and non-default Steam branch.
-- Perform the explicitly confirmed upload, then verify Steam's build state.
+- Perform the explicitly confirmed upload from the designated CI job, then
+  verify Steam's build state.
 
 Vapor runtime releases use Vapor's independent release service and do not use
 this Steam checklist.
@@ -22,7 +23,7 @@ this Steam checklist.
 - Build the full declared runtime matrix.
 - Review the actual staged files, target directories, and dependency graph.
 - Dry-run creation or update; ensure the selected Steam account owns the item.
-- Publish only after explicit confirmation.
+- Publish only from the designated CI job after explicit confirmation.
 - Refresh the catalog and verify the resulting item and local installation.
 
 A local host-only deploy proves only a development path. It is not evidence that

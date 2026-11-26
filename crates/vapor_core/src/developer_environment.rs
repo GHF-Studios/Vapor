@@ -73,7 +73,7 @@ impl DeveloperEnvironment {
         let installation =
             VaporInstallation::discover().map_err(DeveloperEnvironmentError::Installation)?;
         let rust = ManagedToolchain::discover().map_err(DeveloperEnvironmentError::Toolchain)?;
-        let tracy = ManagedTracyToolset::discover(&installation.user_data_root())
+        let tracy = ManagedTracyToolset::discover(&installation.root)
             .map_err(DeveloperEnvironmentError::Tracy)?;
         Ok(Self {
             installation,
@@ -88,7 +88,7 @@ impl DeveloperEnvironment {
     ) -> Result<Self, DeveloperEnvironmentError> {
         let rust = ManagedToolchain::discover_for_installation(installation)
             .map_err(DeveloperEnvironmentError::Toolchain)?;
-        let tracy = ManagedTracyToolset::discover(&installation.user_data_root())
+        let tracy = ManagedTracyToolset::discover(&installation.root)
             .map_err(DeveloperEnvironmentError::Tracy)?;
         Ok(Self {
             installation: installation.clone(),

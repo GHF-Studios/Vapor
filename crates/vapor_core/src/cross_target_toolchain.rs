@@ -6,6 +6,7 @@ use std::{
     env, fs,
     io::{self, Read},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 pub const WINDOWS_GNU_LINKER_VERSION: &str = "20260616";

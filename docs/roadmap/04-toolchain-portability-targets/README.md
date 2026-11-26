@@ -14,7 +14,7 @@ Make the Rust/Cargo toolchain app-local enough for Steam-root development.
 ## Exists Now
 
 - The SDK wraps Rustup with Vapor-owned `RUSTUP_HOME` and `CARGO_HOME`.
-- The SDK prefers app-local `rustup/bin/rustup` when present.
+- The SDK prefers app-local `tools/rustup/bin/rustup` when present.
 - The current backend may still use PATH Rustup during development bootstrap.
 - Build output is kept under Vapor-managed output paths.
 

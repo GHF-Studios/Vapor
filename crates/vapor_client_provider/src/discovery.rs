@@ -36,7 +36,7 @@ impl EnvironmentPaths {
     ///
     /// # Errors
     ///
-    /// Fails when the executable is not laid out as an installed Vapor app.
+    /// Fails when the executable is not laid out beneath a valid Vapor Home.
     pub fn discover_installation() -> Result<InstallationPaths, String> {
         let executable = env::current_exe()
             .map_err(|error| format!("failed to locate the running Vapor application: {error}"))?;
@@ -172,8 +172,16 @@ impl InstallationPaths {
     /// guessing app-data locations or duplicating Vapor-home discovery.
     pub fn from_application_executable(executable: &Path) -> Result<Self, String> {
         let executable = canonical_file(executable, "Vapor application executable")?;
-        let command = executable.with_file_name(format!("vapor{}", env::consts::EXE_SUFFIX));
-        Self::from_executable(&command)
+        let root = env::var_os("VAPOR_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                env::var_os("USERPROFILE")
+                    .or_else(|| env::var_os("HOME"))
+                    .map(PathBuf::from)
+                    .map(|home| home.join("Vapor"))
+            })
+            .ok_or_else(|| "could not resolve the user's Vapor Home; set VAPOR_HOME".to_owned())?;
+        Self::from_home(root, executable)
     }
 
     /// Discover the standalone Vapor home from the canonical executable location.
@@ -377,8 +385,8 @@ impl SourceWorkspace {
     /// # Errors
     ///
     /// Fails when the invocation directory is invalid, no marker exists, the
-    /// highest marker is not a source root, or the source root overlaps the Steam
-    /// installation.
+    /// highest marker is not a source root, or the source root overlaps Vapor
+    /// Home outside its managed `sources/` subtree.
     pub fn from_invocation(
         invocation: &Path,
         installation: &InstallationPaths,
@@ -386,7 +394,7 @@ impl SourceWorkspace {
         let invocation = canonical_directory(invocation, "invocation directory")?;
         let marker = highest_marker(&invocation).ok_or_else(|| {
             format!(
-                    "'{}' is not inside an external Vapor source root: no {} exists in any ancestor\nhelp: invoke Vapor from a source repository, not from the Steam app directory",
+                    "'{}' is not inside a Vapor source root: no {} exists in any ancestor\nhelp: select a source under Vapor Home/sources or invoke Vapor from an authored repository",
                 invocation.display(),
                 manifest::WORKSPACE_FILE_NAME
             )

@@ -9,7 +9,7 @@ other Vapor development workflow.
 
 ## Developer experience
 
-A normal developer setup is:
+A normal Developer setup is:
 
 ```text
 install Vapor through Steam

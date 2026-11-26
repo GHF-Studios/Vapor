@@ -32,6 +32,8 @@ pub fn steam_login(request: &SteamLoginRequest) -> Result<SteamLoginReport, Stea
 pub fn steam_run_app_build(
     request: &SteamRunAppBuildRequest,
 ) -> Result<SteamRunAppBuildReport, SteamCommandError> {
+    vapor_core::distribution::require_distribution_job("SteamPipe uploads")
+        .map_err(SteamCommandError::DistributionJobRequired)?;
     validate_account(&request.account)?;
 
     let status = steam_status_for(&request.steamcmd)?;

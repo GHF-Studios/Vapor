@@ -72,6 +72,17 @@ impl RustToolchainCommandEnvironment {
 
     /// Apply Vapor's chosen Rust tools and remove ambient compiler wrappers.
     pub fn apply_to(&self, command: &mut Command) {
+        for (name, _) in env::vars_os() {
+            if name
+                .to_str()
+                .is_some_and(is_managed_build_environment_variable)
+            {
+                command.env_remove(name);
+            }
+        }
+        let host_target = crate::HostTarget::current()
+            .map(|target| target.triple())
+            .unwrap_or("unsupported-host");
         command
             .env(crate::VAPOR_HOME_ENV, &self.vapor_home)
             .env("CARGO_HOME", &self.cargo_home)
@@ -79,9 +90,52 @@ impl RustToolchainCommandEnvironment {
             .env("RUSTUP_TOOLCHAIN", &self.toolchain)
             .env("RUSTC", &self.rustc)
             .env("RUSTDOC", &self.rustdoc)
+            .env(
+                "CARGO_TARGET_DIR",
+                self.vapor_home.join("cache/build").join(host_target),
+            )
             .env_remove("RUSTC_WRAPPER")
             .env_remove("RUSTC_WORKSPACE_WRAPPER");
     }
+}
+
+pub(crate) fn is_managed_build_environment_variable(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    matches!(
+        name.as_str(),
+        "VAPOR_HOME"
+            | "CARGO_HOME"
+            | "RUSTUP_HOME"
+            | "RUSTUP_TOOLCHAIN"
+            | "RUSTC"
+            | "RUSTDOC"
+            | "PATH"
+            | "RUSTFLAGS"
+            | "RUSTDOCFLAGS"
+            | "CARGO_ENCODED_RUSTFLAGS"
+            | "CARGO_ENCODED_RUSTDOCFLAGS"
+            | "CARGO_BUILD_TARGET"
+            | "CARGO_TARGET_DIR"
+            | "CARGO_INCREMENTAL"
+            | "RUSTC_BOOTSTRAP"
+            | "RUSTC_WRAPPER"
+            | "RUSTC_WORKSPACE_WRAPPER"
+            | "CC"
+            | "CXX"
+            | "AR"
+            | "CFLAGS"
+            | "CXXFLAGS"
+            | "ARFLAGS"
+            | "CARGO_BUILD_RUSTC"
+            | "CARGO_BUILD_RUSTDOC"
+    ) || name.starts_with("CARGO_PROFILE_")
+        || (name.starts_with("CARGO_TARGET_")
+            && ["_RUSTFLAGS", "_LINKER", "_AR", "_RUNNER"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix)))
+        || ["CC_", "CXX_", "AR_", "CFLAGS_", "CXXFLAGS_", "ARFLAGS_"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,11 +158,12 @@ pub struct ManagedToolchain {
     pub workspace_root: PathBuf,
 
     pub vapor_home: PathBuf,
-    pub user_data_root: PathBuf,
+    pub data_root: PathBuf,
     pub installation_source: InstallationRootSource,
 
     pub rustup_home: PathBuf,
     pub cargo_home: PathBuf,
+    pub build_target: &'static str,
 
     pub pin: ToolchainPin,
 
@@ -190,13 +245,16 @@ impl ManagedToolchain {
         pin: ToolchainPin,
     ) -> Result<Self, ToolchainError> {
         let vapor_home = installation.root.clone();
-        let user_data_root = installation.user_data_root();
+        let data_root = installation.data_root();
 
-        let rustup_home = user_data_root.join(RUSTUP_HOME_DIR);
+        let rustup_home = installation.root.join(RUSTUP_HOME_DIR);
 
-        let cargo_home = user_data_root.join(CARGO_HOME_DIR);
+        let cargo_home = installation.root.join(CARGO_HOME_DIR);
 
         let host = current_host_triple()?;
+        let build_target = crate::HostTarget::current()
+            .map_err(|_| ToolchainError::UnsupportedHost)?
+            .triple();
 
         let toolchain_root = rustup_home
             .join("toolchains")
@@ -207,10 +265,11 @@ impl ManagedToolchain {
         Ok(Self {
             workspace_root,
             vapor_home,
-            user_data_root,
+            data_root,
             installation_source: installation.root_source,
             rustup_home,
             cargo_home,
+            build_target,
             pin,
             cargo_path: bin.join(executable_name("cargo")),
             rustc_path: bin.join(executable_name("rustc")),
@@ -719,11 +778,11 @@ mod tests {
     fn rust_toolchain_environment_sets_pinned_paths_and_removes_wrappers() {
         let environment = RustToolchainCommandEnvironment::new(
             "/vapor/app",
-            "/vapor/user/cargo-home",
-            "/vapor/user/rustup-home",
+            "/vapor/tools/cargo/home",
+            "/vapor/tools/rustup/home",
             "1.97.0-x86_64-unknown-linux-gnu",
-            "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustc",
-            "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustdoc",
+            "/vapor/tools/rustup/home/toolchains/1.97.0/bin/rustc",
+            "/vapor/tools/rustup/home/toolchains/1.97.0/bin/rustdoc",
         );
         let mut command = Command::new("cargo");
         command
@@ -742,11 +801,11 @@ mod tests {
         );
         assert_eq!(
             variables.get(OsStr::new("CARGO_HOME")),
-            Some(&Some("/vapor/user/cargo-home".into()))
+            Some(&Some("/vapor/tools/cargo/home".into()))
         );
         assert_eq!(
             variables.get(OsStr::new("RUSTUP_HOME")),
-            Some(&Some("/vapor/user/rustup-home".into()))
+            Some(&Some("/vapor/tools/rustup/home".into()))
         );
         assert_eq!(
             variables.get(OsStr::new("RUSTUP_TOOLCHAIN")),
@@ -755,13 +814,13 @@ mod tests {
         assert_eq!(
             variables.get(OsStr::new("RUSTC")),
             Some(&Some(
-                "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustc".into()
+                "/vapor/tools/rustup/home/toolchains/1.97.0/bin/rustc".into()
             ))
         );
         assert_eq!(
             variables.get(OsStr::new("RUSTDOC")),
             Some(&Some(
-                "/vapor/user/rustup-home/toolchains/1.97.0/bin/rustdoc".into()
+                "/vapor/tools/rustup/home/toolchains/1.97.0/bin/rustdoc".into()
             ))
         );
         assert_eq!(variables.get(OsStr::new("RUSTC_WRAPPER")), Some(&None));

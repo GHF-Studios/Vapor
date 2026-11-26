@@ -51,7 +51,7 @@ impl DevelopmentSession {
         configuration: &str,
         profiling: bool,
     ) -> Result<Self, DevelopmentRunError> {
-        let root = toolchain.user_data_root.join(SESSION_ROOT);
+        let root = toolchain.data_root.join(SESSION_ROOT);
         fs::create_dir_all(&root).map_err(|source| DevelopmentRunError::Io {
             path: root.clone(),
             source,
@@ -140,7 +140,7 @@ pub fn active_development_session() -> Result<Option<ActiveDevelopmentSession>, 
 {
     let installation = VaporInstallation::discover().map_err(DevelopmentRunError::Installation)?;
     let path = installation
-        .user_data_root()
+        .data_root()
         .join(SESSION_ROOT)
         .join(ACTIVE_SESSION_FILE);
 
@@ -160,7 +160,7 @@ pub fn active_development_session() -> Result<Option<ActiveDevelopmentSession>, 
 /// Persistent Development Session history, newest first.
 pub fn development_sessions() -> Result<Vec<ActiveDevelopmentSession>, DevelopmentRunError> {
     let installation = VaporInstallation::discover().map_err(DevelopmentRunError::Installation)?;
-    let root = installation.user_data_root().join(SESSION_ROOT);
+    let root = installation.data_root().join(SESSION_ROOT);
 
     let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,
@@ -248,6 +248,28 @@ fn run_workspace_configuration_with_callbacks(
     let configuration = workspace
         .run_configuration(name)
         .map_err(DevelopmentRunError::Configuration)?;
+    let profile = configuration.profile.as_deref().unwrap_or("dev");
+    match profile {
+        "dev" => {}
+        "release" => crate::distribution::require_distribution_job("release-profile runs")
+            .map_err(DevelopmentRunError::Process)?,
+        other => {
+            return Err(DevelopmentRunError::UnsupportedProfile {
+                configuration: configuration.name.clone(),
+                profile: other.to_owned(),
+            });
+        }
+    }
+    if let Some(variable) = configuration
+        .environment
+        .keys()
+        .find(|name| crate::toolchain::is_managed_build_environment_variable(name))
+    {
+        return Err(DevelopmentRunError::ManagedEnvironmentOverride {
+            configuration: configuration.name.clone(),
+            variable: variable.clone(),
+        });
+    }
     let project = select_project(workspace, &configuration)?;
     let toolchain =
         ManagedToolchain::for_workspace(workspace).map_err(DevelopmentRunError::Toolchain)?;
@@ -271,9 +293,7 @@ fn run_workspace_configuration_with_callbacks(
     if let Some(binary) = &configuration.binary {
         command.args(["--bin", binary]);
     }
-    if let Some(profile) = &configuration.profile {
-        command.args(["--profile", profile]);
-    }
+    command.args(["--profile", profile]);
     if !configuration.features.is_empty() {
         command
             .arg("--features")
@@ -431,6 +451,14 @@ pub enum DevelopmentRunError {
     Configuration(RunConfigurationError),
     Toolchain(ToolchainError),
     Installation(InstallationError),
+    UnsupportedProfile {
+        configuration: String,
+        profile: String,
+    },
+    ManagedEnvironmentOverride {
+        configuration: String,
+        variable: String,
+    },
     UnknownProject {
         configuration: String,
         project: String,
@@ -470,6 +498,20 @@ impl fmt::Display for DevelopmentRunError {
             Self::Configuration(error) => error.fmt(formatter),
             Self::Toolchain(error) => error.fmt(formatter),
             Self::Installation(error) => error.fmt(formatter),
+            Self::UnsupportedProfile {
+                configuration,
+                profile,
+            } => write!(
+                formatter,
+                "Run Configuration `{configuration}` selects unsupported Cargo profile `{profile}`; Vapor permits `dev` locally, `test` for tests, and `release` only in distribution CI"
+            ),
+            Self::ManagedEnvironmentOverride {
+                configuration,
+                variable,
+            } => write!(
+                formatter,
+                "Run Configuration `{configuration}` cannot override Vapor-managed build variable `{variable}`"
+            ),
             Self::UnknownProject {
                 configuration,
                 project,

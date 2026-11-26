@@ -17,8 +17,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
-const DEVELOPMENT_DIR: &str = "development";
-const TARGET_DIR: &str = "target";
 const DEV_PROFILE_DIR: &str = "debug";
 const BIN_DIR: &str = "bin";
 const CLIENT_SOURCE_MANIFEST_FILE_NAME: &str = "App-Source.vapor.toml";
@@ -76,7 +74,7 @@ pub struct BuiltBinary {
 #[derive(Debug, Clone)]
 pub struct EcosystemBuildReport {
     pub installation_root: PathBuf,
-    pub user_data_root: PathBuf,
+    pub data_root: PathBuf,
     pub binaries: Vec<BuiltBinary>,
     pub launch_script: PathBuf,
     pub activation_script: PathBuf,
@@ -119,17 +117,23 @@ pub enum LocalClientDeploymentOutcome {
 
 /// Deploy the active Vapor Client workspace into the local Vapor App Instance.
 ///
-/// The first invocation builds and transfers authority to the source-built CLI;
-/// that CLI re-enters this operation and performs the promotion. This keeps
-/// the deployed source, rather than the currently installed binary, in charge.
+/// The first invocation builds a source authority in Vapor's managed cache,
+/// promotes it to a temporary executable inside Vapor Home, and runs it from
+/// there. That CLI re-enters this operation and performs the promotion. Cargo
+/// output is never used as a live executable path.
 pub fn deploy_client_locally() -> Result<LocalClientDeploymentOutcome, DevelopmentError> {
     let workspace = client_workspace()?;
 
     if !local_deployment_authority_active()? {
         let authority = build_workspace_deployment_authority(&workspace)?;
         run_workspace_deployment_authority(&workspace, &authority)?;
+        let deployed_executable = authority
+            .installation_root
+            .join(BIN_DIR)
+            .join(current_host_target()?)
+            .join(executable_name("vapor"));
         return Ok(LocalClientDeploymentOutcome::AuthorityDelegated {
-            executable: authority.executable,
+            executable: deployed_executable,
             installation_root: authority.installation_root,
         });
     }
@@ -299,7 +303,7 @@ fn build_workspace_deployment_inputs_with_authority(
         .map_err(DevelopmentError::Toolchain)?;
 
     let installation_root = toolchain.vapor_home.clone();
-    let user_data_root = toolchain.user_data_root.clone();
+    let data_root = toolchain.data_root.clone();
 
     let mut binaries = Vec::new();
     let projects = deployment_projects(workspace);
@@ -333,7 +337,7 @@ fn build_workspace_deployment_inputs_with_authority(
 
     Ok(EcosystemBuildReport {
         installation_root,
-        user_data_root,
+        data_root,
         binaries,
         launch_script,
         activation_script,
@@ -419,11 +423,11 @@ fn promote_workspace_build(
 }
 
 pub fn development_target_dir(toolchain: &ManagedToolchain, project: &VaporProject) -> PathBuf {
+    let _ = project;
     toolchain
-        .user_data_root
-        .join(DEVELOPMENT_DIR)
-        .join(&project.name)
-        .join(TARGET_DIR)
+        .vapor_home
+        .join("cache/build")
+        .join(toolchain.build_target)
 }
 
 fn run_project_operation(
@@ -454,7 +458,16 @@ fn run_project_operation(
     if operation == DevelopmentOperation::Fmt {
         command.arg("--all");
     } else {
-        command.arg("--workspace");
+        command
+            .arg("--workspace")
+            .arg("--target")
+            .arg(toolchain.build_target);
+        crate::cross_target_toolchain::configure_runtime_target_linker_env(
+            &mut command,
+            &toolchain.vapor_home,
+            toolchain.build_target,
+        )
+        .map_err(|error| DevelopmentError::CrossToolchain(error.to_string()))?;
     }
     let status = command
         .arg("--manifest-path")
@@ -480,6 +493,18 @@ fn run_project_operation(
 }
 
 fn deployment_projects(workspace: &VaporWorkspace) -> Vec<VaporProject> {
+    // First-party executables are split across the Client checkout's sibling
+    // workspaces (CLI, GUI, Installer, Studio, and the Steam entrypoint). The
+    // selected workspace is usually the `Vapor` subdirectory, so filtering to
+    // that directory omits the actual `vapor` binary and makes local deploy
+    // fail. Resolve the owning Client root and include only projects beneath
+    // it; this still excludes duplicate or unrelated checkouts elsewhere in
+    // the superworkspace.
+    let client_root = workspace
+        .root
+        .ancestors()
+        .find(|root| root.join(CLIENT_DISTRIBUTION_MANIFEST_FILE_NAME).is_file());
+
     let mut projects = VaporSuperworkspace::discover_from(&workspace.root)
         .map(|superworkspace| {
             superworkspace
@@ -580,6 +605,7 @@ fn build_distribution_binary(
     build_binary(toolchain, &target, binary)?;
 
     let source = development_target_dir(toolchain, &target.project)
+        .join(toolchain.build_target)
         .join(DEV_PROFILE_DIR)
         .join(executable_name(binary));
 
@@ -600,7 +626,42 @@ pub fn build_workspace_deployment_authority(
         ManagedToolchain::for_workspace(workspace).map_err(DevelopmentError::Toolchain)?;
 
     let projects = deployment_projects(workspace);
-    let executable = build_distribution_binary(&toolchain, &projects, "vapor")?;
+    let compiler_wrapper_target = find_binary_target(&toolchain, &projects, "vapor-cc")?;
+    build_binary(&toolchain, &compiler_wrapper_target, "vapor-cc")?;
+    let compiler_wrapper_output = development_target_dir(&toolchain, &compiler_wrapper_target.project)
+        .join(toolchain.build_target)
+        .join(DEV_PROFILE_DIR)
+        .join(executable_name("vapor-cc"));
+    let compiler_wrapper = toolchain
+        .vapor_home
+        .join("tools/cc-wrapper")
+        .join(current_host_target()?)
+        .join(executable_name("vapor-cc"));
+    promote_file(&compiler_wrapper_output, &compiler_wrapper)?;
+    if cfg!(windows) {
+        let runtime = toolchain
+            .vapor_home
+            .join("tools/llvm-mingw/bin/libunwind.dll");
+        if !runtime.is_file() {
+            return Err(DevelopmentError::CrossToolchain(format!(
+                "managed compiler runtime is missing: {}",
+                runtime.display()
+            )));
+        }
+        promote_file(&runtime, &compiler_wrapper.with_file_name("libunwind.dll"))?;
+    }
+
+    let build_output = build_distribution_binary(&toolchain, &projects, "vapor")?;
+    let executable = toolchain
+        .vapor_home
+        .join(BIN_DIR)
+        .join(toolchain.build_target)
+        .join(format!(
+            "vapor-deploy-authority-{}{}",
+            std::process::id(),
+            env::consts::EXE_SUFFIX
+        ));
+    promote_file(&build_output, &executable)?;
 
     Ok(LocalDeploymentAuthority {
         executable,
@@ -647,11 +708,16 @@ pub fn run_workspace_deployment_authority(
         .current_dir(&workspace.root)
         .env(crate::VAPOR_HOME_ENV, &authority.installation_root)
         .env(LOCAL_DEPLOYMENT_AUTHORITY_ENV, &canonical_authority)
-        .status()
-        .map_err(|source| DevelopmentError::DeploymentAuthorityStart {
-            executable: canonical_authority.clone(),
-            source,
-        })?;
+        .status();
+    let cleanup = fs::remove_file(&canonical_authority);
+    let status = status.map_err(|source| DevelopmentError::DeploymentAuthorityStart {
+        executable: canonical_authority.clone(),
+        source,
+    })?;
+    cleanup.map_err(|source| DevelopmentError::Io {
+        path: canonical_authority.clone(),
+        source,
+    })?;
 
     if status.success() {
         Ok(())
@@ -670,10 +736,13 @@ fn build_binary(
 ) -> Result<(), DevelopmentError> {
     let target_dir = development_target_dir(toolchain, &target.project);
 
-    let status = toolchain
+    let mut command = toolchain
         .cargo_command()
-        .map_err(DevelopmentError::Toolchain)?
+        .map_err(DevelopmentError::Toolchain)?;
+    command
         .arg("build")
+        .arg("--target")
+        .arg(toolchain.build_target)
         .arg("--package")
         .arg(&target.package)
         .arg("--bin")
@@ -681,7 +750,14 @@ fn build_binary(
         .arg("--manifest-path")
         .arg(&target.project.cargo_manifest_path)
         .env("CARGO_TARGET_DIR", target_dir)
-        .current_dir(&target.project.root)
+        .current_dir(&target.project.root);
+    crate::cross_target_toolchain::configure_runtime_target_linker_env(
+        &mut command,
+        &toolchain.vapor_home,
+        toolchain.build_target,
+    )
+    .map_err(|error| DevelopmentError::CrossToolchain(error.to_string()))?;
+    let status = command
         .status()
         .map_err(|source| DevelopmentError::BinaryBuildStart {
             binary: binary.to_owned(),
@@ -809,7 +885,7 @@ fn activation_script_name() -> &'static str {
     }
 }
 
-fn managed_toolchain_bin_user_data_relative(
+fn managed_toolchain_bin_home_relative(
     toolchain: &ManagedToolchain,
 ) -> Result<PathBuf, DevelopmentError> {
     let rust_bin =
@@ -821,7 +897,7 @@ fn managed_toolchain_bin_user_data_relative(
             })?;
 
     rust_bin
-        .strip_prefix(&toolchain.user_data_root)
+        .strip_prefix(&toolchain.vapor_home)
         .map(Path::to_path_buf)
         .map_err(|_| DevelopmentError::InvalidDeploymentPath {
             path: rust_bin.to_path_buf(),
@@ -835,7 +911,7 @@ fn write_activation_script(
 ) -> Result<PathBuf, DevelopmentError> {
     let path = installation_root.join(activation_script_name());
 
-    let rust_bin = managed_toolchain_bin_user_data_relative(toolchain)?
+    let rust_bin = managed_toolchain_bin_home_relative(toolchain)?
         .to_string_lossy()
         .replace('\\', "/");
     let host = current_host_target()?;
@@ -854,7 +930,9 @@ VAPOR_ROOT="$(
     pwd
 )"
 
-unset VAPOR_HOME
+export VAPOR_HOME="$VAPOR_ROOT"
+export CARGO_HOME="$VAPOR_HOME/tools/cargo/home"
+export RUSTUP_HOME="$VAPOR_HOME/tools/rustup/home"
 
 VAPOR_BIN="$VAPOR_ROOT/bin/{host}"
 VAPOR_RUST_BIN="$VAPOR_ROOT/{rust_bin}"
@@ -904,7 +982,7 @@ fn write_activation_script(
 ) -> Result<PathBuf, DevelopmentError> {
     let path = installation_root.join(activation_script_name());
 
-    let rust_bin = managed_toolchain_bin_user_data_relative(toolchain)?
+    let rust_bin = managed_toolchain_bin_home_relative(toolchain)?
         .to_string_lossy()
         .replace('/', "\\");
     let host = current_host_target()?;
@@ -940,6 +1018,8 @@ fn current_host_target() -> Result<&'static str, DevelopmentError> {
 #[derive(Debug)]
 pub enum DevelopmentError {
     Toolchain(ToolchainError),
+
+    CrossToolchain(String),
 
     Workspace(String),
 
@@ -1036,6 +1116,8 @@ impl fmt::Display for DevelopmentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Toolchain(error) => error.fmt(formatter),
+
+            Self::CrossToolchain(error) => formatter.write_str(error),
 
             Self::Workspace(error) => formatter.write_str(error),
 

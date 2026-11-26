@@ -79,6 +79,7 @@ pub enum InstallationRootSource {
     Explicit,
     Environment,
     Executable,
+    DefaultHome,
 }
 
 impl fmt::Display for InstallationRootSource {

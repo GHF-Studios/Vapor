@@ -15,7 +15,7 @@ use std::io;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-const ROLE_STATE_SCHEMA: u32 = 1;
+const ROLE_STATE_SCHEMA: u32 = 2;
 const ROLE_STATE_FILE_NAME: &str = "role.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
