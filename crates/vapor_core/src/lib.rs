@@ -8,6 +8,7 @@ pub mod cargo_reconciliation;
 pub mod content;
 pub mod cross_target_toolchain;
 pub mod developer_environment;
+pub mod git_provider;
 pub mod development;
 pub mod distribution;
 pub mod ecosystem;
