@@ -1,14 +1,19 @@
 # Release Checklists
 
-## Vapor root app
+## Loo Cast Packagepack Steam depot
 
-- Confirm the source branch and root manifest are current.
+- Confirm the Loo Cast source branch and `App-Source.vapor.toml` are current.
 - Run the managed validation workflow.
-- Confirm the complete Linux and Windows runtime matrix and required native
-  support files.
-- Run root publish dry-run and inspect every staged depot and generated VDF.
+- Build the Packagepack for the full Linux and Windows target matrix.
+- Run the Steam depot dry-run and inspect `Packagepack.vapor.toml`, each
+  target's primary executable, and every declared runtime sidecar.
+- Confirm no Vapor runtime, `App.vapor.toml`, source, tool, or state files are
+  staged.
 - Confirm the dedicated build account and non-default Steam branch.
 - Perform the explicitly confirmed upload, then verify Steam's build state.
+
+Vapor runtime releases use Vapor's independent release service and do not use
+this Steam checklist.
 
 ## Workshop content
 

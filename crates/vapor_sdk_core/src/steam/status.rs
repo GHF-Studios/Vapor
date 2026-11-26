@@ -2,11 +2,12 @@ use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::root::types::ROOT_STEAM_APP_ID;
 use crate::toolchain::toolchain_status;
 
 use super::error::SteamCommandError;
-use super::types::{SteamCmdSource, SteamStatusReport, SteamStatusRequest};
+use super::types::{
+    LOO_CAST_STEAM_APP_ID, SteamCmdSource, SteamStatusReport, SteamStatusRequest,
+};
 
 const STEAM_HOME_DIR: &str = "steam";
 const STEAMCMD_STATE_DIR: &str = "steamcmd";
@@ -23,7 +24,7 @@ pub(super) fn steam_status_for(steamcmd: &Path) -> Result<SteamStatusReport, Ste
     let steamcmd_state_root = steam_home.join(STEAMCMD_STATE_DIR);
 
     Ok(SteamStatusReport {
-        app_id: ROOT_STEAM_APP_ID,
+        app_id: LOO_CAST_STEAM_APP_ID,
         vapor_home: toolchain.vapor_home,
         steam_home,
         steamcmd_state_root,

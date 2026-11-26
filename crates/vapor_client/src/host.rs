@@ -63,20 +63,13 @@ impl ClientHostContext {
                     .or_else(|| env_value(inherited_environment, "VAPOR_STUDIO_STATE_DIR"))
                     .map(PathBuf::from)
             })
-            .or_else(|| default_state_directory(platform, inherited_environment))
-            .ok_or_else(|| match platform {
-                HostPlatform::Windows => {
-                    "Vapor Client data path is unavailable; set APPDATA or VAPOR_CLIENT_STATE_DIR".to_owned()
-                }
-                HostPlatform::MacOS => {
-                    "Vapor Client data path is unavailable; set HOME or VAPOR_CLIENT_STATE_DIR".to_owned()
-                }
-                HostPlatform::Linux => {
-                    "Vapor Client data path is unavailable; set XDG_DATA_HOME, HOME, or VAPOR_CLIENT_STATE_DIR".to_owned()
-                }
-                HostPlatform::Other => {
-                    "Vapor Client data path is unavailable; set VAPOR_CLIENT_STATE_DIR".to_owned()
-                }
+            .or_else(|| {
+                env_value(inherited_environment, "VAPOR_HOME")
+                    .map(|root| PathBuf::from(root).join("data/state/studio"))
+            })
+            .ok_or_else(|| {
+                "Vapor Client data path is unavailable; set VAPOR_HOME or VAPOR_CLIENT_STATE_DIR"
+                    .to_owned()
             })?;
         let app_root = args
             .application_executable
@@ -99,26 +92,6 @@ impl ClientHostContext {
             platform,
             steam_client_available,
         })
-    }
-}
-
-fn default_state_directory(
-    platform: HostPlatform,
-    environment: &HashMap<OsString, OsString>,
-) -> Option<PathBuf> {
-    match platform {
-        HostPlatform::Windows => env_value(environment, "APPDATA")
-            .or_else(|| env_value(environment, "LOCALAPPDATA"))
-            .map(|root| PathBuf::from(root).join("Vapor").join("Studio")),
-        HostPlatform::MacOS => env_value(environment, "HOME")
-            .map(|root| PathBuf::from(root).join("Library/Application Support/Vapor/Studio")),
-        HostPlatform::Linux => env_value(environment, "XDG_DATA_HOME")
-            .map(|root| PathBuf::from(root).join("vapor/studio"))
-            .or_else(|| {
-                env_value(environment, "HOME")
-                    .map(|root| PathBuf::from(root).join(".local/share/vapor/studio"))
-            }),
-        HostPlatform::Other => None,
     }
 }
 

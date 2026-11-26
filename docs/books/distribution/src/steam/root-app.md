@@ -1,4 +1,4 @@
-# Root App
+# Loo Cast Packagepack Steam depot
 
 The root app is Vapor's Steam application and launcher/runtime installation.
 Its source manifest declares the Steam AppID, development branch, depot IDs,
@@ -9,19 +9,22 @@ Cargo caches, SteamCMD credentials, generated state, or a mutable Workshop
 Library. The default App's content packages must be prepared for the release
 target matrix before root staging; missing runtime inputs fail the package.
 
-Use a local package to inspect the staged app without upload:
+The Packagepack executable composes the Spacetime Engine and Loo Cast Game and
+launches directly from Steam. The Steam payload excludes `App.vapor.toml`, the
+Vapor runtime, Vapor state, source checkouts, tools, and loose Engine/Game
+directories. The Loo Cast app source manifest is `App-Source.vapor.toml` in the
+Loo Cast source checkout.
+
+Preview the actual allowlist before uploading:
 
 ```text
-root package --host-only
-root publish --dry-run
+root package --release-targets
+root publish --dry-run --release-targets
 ```
 
-The first command is a local host smoke package. The release preview validates
-the root, builds the declared matrix, stages the depots, and produces SteamPipe
-VDF previews. A real upload requires an explicit account and confirmation on a
-non-default branch.
-
-The current manifest's stable entrypoints include Studio, Play, Shell, and
-Installer. The owner-approved Launcher/Studio/IDE product split is newer than
-that packaging model; audit the root manifest and installed entrypoints before
-changing the mapping.
+The generic `root` command name is a CLI workflow label. In this checkout it
+stages the declared Loo Cast Steam package; it does not mean Vapor itself is a
+Steam application. Inspect the shared manifest depot and both target depots,
+including all declared runtime sidecars. Real publication must use the full
+Linux and Windows target matrix and an explicitly configured non-default
+branch.

@@ -14,6 +14,8 @@ use std::fmt;
 pub struct DeveloperEnvironmentStatus {
     pub rust_installed: bool,
     pub rust_analyzer_installed: bool,
+    pub linux_gnu_target_installed: bool,
+    pub linux_gnu_linker_installed: bool,
     pub windows_gnu_target_installed: bool,
     pub windows_gnu_linker_installed: bool,
     pub tracy_profiler_installed: bool,
@@ -24,6 +26,8 @@ impl DeveloperEnvironmentStatus {
     pub const fn is_ready(&self) -> bool {
         self.rust_installed
             && self.rust_analyzer_installed
+            && self.linux_gnu_target_installed
+            && self.linux_gnu_linker_installed
             && self.windows_gnu_target_installed
             && self.windows_gnu_linker_installed
             && self.tracy_profiler_installed
@@ -35,6 +39,8 @@ impl DeveloperEnvironmentStatus {
 pub struct DeveloperEnvironmentRepair {
     pub rust_installed: bool,
     pub rust_analyzer_installed: bool,
+    pub linux_gnu_target_installed: bool,
+    pub linux_gnu_linker_installed: bool,
     pub windows_gnu_target_installed: bool,
     pub windows_gnu_linker_installed: bool,
     pub tracy_profiler_installed: bool,
@@ -46,6 +52,8 @@ impl DeveloperEnvironmentRepair {
     pub const fn changed(&self) -> bool {
         self.rust_installed
             || self.rust_analyzer_installed
+            || self.linux_gnu_target_installed
+            || self.linux_gnu_linker_installed
             || self.windows_gnu_target_installed
             || self.windows_gnu_linker_installed
             || self.tracy_profiler_installed
@@ -93,6 +101,10 @@ impl DeveloperEnvironment {
         DeveloperEnvironmentStatus {
             rust_installed: self.rust.is_installed(),
             rust_analyzer_installed: self.rust.rust_analyzer_path.is_file(),
+            linux_gnu_target_installed: self
+                .rust
+                .target_is_installed(crate::toolchain::LINUX_GNU_TARGET),
+            linux_gnu_linker_installed: crate::linux_gnu_linker_installed(&self.installation),
             windows_gnu_target_installed: self
                 .rust
                 .target_is_installed(crate::toolchain::WINDOWS_GNU_TARGET),
@@ -126,15 +138,23 @@ impl DeveloperEnvironment {
     ) -> Result<DeveloperEnvironmentRepair, DeveloperEnvironmentError> {
         let rust_installed = !self.rust.is_installed();
         let rust_analyzer_installed = !self.rust.rust_analyzer_path.is_file();
+        let linux_gnu_target_installed = !self
+            .rust
+            .target_is_installed(crate::toolchain::LINUX_GNU_TARGET);
+        let linux_gnu_linker_installed = !crate::linux_gnu_linker_installed(&self.installation);
         let windows_gnu_target_installed = !self
             .rust
             .target_is_installed(crate::toolchain::WINDOWS_GNU_TARGET);
         let windows_gnu_linker_installed = !crate::windows_gnu_linker_installed(&self.installation);
-        if rust_installed || rust_analyzer_installed || windows_gnu_target_installed {
+        if rust_installed
+            || rust_analyzer_installed
+            || linux_gnu_target_installed
+            || windows_gnu_target_installed
+        {
             report_stage(
                 context,
                 0,
-                3,
+                4,
                 "Installing pinned Rust toolchain and components",
             );
             self.rust
@@ -154,21 +174,29 @@ impl DeveloperEnvironment {
         }
 
         if windows_gnu_linker_installed {
-            report_stage(context, 1, 3, "Installing Windows GNU linker");
+            report_stage(context, 1, 4, "Installing Windows GNU linker");
             crate::install_windows_gnu_linker(&self.installation)
                 .map_err(DeveloperEnvironmentError::CrossTargetToolchain)?;
         }
 
-        report_stage(context, 2, 3, "Installing Tracy tools");
+        if linux_gnu_linker_installed {
+            report_stage(context, 2, 4, "Installing Linux GNU cross-linker");
+            crate::install_linux_gnu_linker(&self.installation)
+                .map_err(DeveloperEnvironmentError::CrossTargetToolchain)?;
+        }
+
+        report_stage(context, 3, 4, "Installing Tracy tools");
         let tracy = self
             .tracy
             .install_missing()
             .map_err(DeveloperEnvironmentError::Tracy)?;
-        report_stage(context, 3, 3, "Developer setup complete");
+        report_stage(context, 4, 4, "Developer setup complete");
 
         Ok(DeveloperEnvironmentRepair {
             rust_installed,
             rust_analyzer_installed,
+            linux_gnu_target_installed,
+            linux_gnu_linker_installed,
             windows_gnu_target_installed,
             windows_gnu_linker_installed,
             tracy_profiler_installed: tracy.profiler_installed,
@@ -232,6 +260,8 @@ mod tests {
         DeveloperEnvironmentStatus {
             rust_installed: true,
             rust_analyzer_installed,
+            linux_gnu_target_installed: true,
+            linux_gnu_linker_installed: true,
             windows_gnu_target_installed: true,
             windows_gnu_linker_installed: true,
             tracy_profiler_installed: true,

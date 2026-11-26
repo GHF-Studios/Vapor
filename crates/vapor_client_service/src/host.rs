@@ -37,14 +37,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_optional_environment_keeps_workspace_unset_and_uses_user_data_default() {
+    fn vapor_home_owns_the_default_client_state_directory() {
         let context = ClientHostContext::resolve(
             ClientHostArguments {
                 application_executable: PathBuf::from("/install/bin/vapor-gui"),
                 workspace_root: None,
                 state_directory: None,
             },
-            &env(&[("HOME", "/home/player")]),
+            &env(&[
+                ("HOME", "/home/player"),
+                ("XDG_DATA_HOME", "/home/player/.local/share"),
+                ("VAPOR_HOME", "/home/player/Vapor"),
+            ]),
             HostPlatform::Linux,
         )
         .expect("host context resolves without optional values");
@@ -52,7 +56,7 @@ mod tests {
         assert_eq!(context.workspace_root, None);
         assert_eq!(
             context.state_directory,
-            PathBuf::from("/home/player/.local/share/vapor/studio")
+            PathBuf::from("/home/player/Vapor/data/state/studio")
         );
     }
 
@@ -66,6 +70,7 @@ mod tests {
             },
             &env(&[
                 ("HOME", "/home/player"),
+                ("VAPOR_HOME", "/home/player/Vapor"),
                 ("STEAM_PASSWORD", "never-print-this-secret"),
                 ("VAPOR_STEAM_TOKEN", "also-secret"),
             ]),

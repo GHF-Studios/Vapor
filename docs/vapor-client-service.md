@@ -132,7 +132,7 @@ and collection execution remains open work.
 
 The existing `vapor_core` crate is not yet a narrow semantic core: its public
 surface also includes CLI dispatch, Cargo realization, managed tools,
-installation, Steam deployment, profiling, and development-environment
+installation, profiling, and development-environment
 orchestration. The current ownership, based on direct imports and call sites,
 is:
 
@@ -141,7 +141,7 @@ is:
 | `vapor_content::{identity,content,authored_manifest,catalog,resolution}` | IDs, content kinds, pack/dependency rules, typed authored role schema, exact candidates, and generic graph resolution | Canonical host-independent content domain |
 | `vapor_client_domain::{composition,library}` | Composition records and intents, naming/duplication/removal rules, graph identity checks, install observations, and per-item Auto-Install/update/collection policy and intent | Shared durable lifecycle; protocol wraps/re-exports the same records and intents |
 | `vapor_core::{manifest,local,resolution}` | Provisional generic manifest, filesystem discovery, and adapter into shared graph resolution | Provider adapter and compatibility facade; not a second resolver |
-| `vapor_core::{cli,cargo,development,installation,steam,toolchain,...}` | Commands, host effects, build/install/deploy, and developer operations | Vapor service/provider infrastructure; not the semantic content core |
+| `vapor_core::{cli,cargo,development,installation,toolchain,...}` | Commands, host effects, build/install/deploy, and developer operations | Vapor service/provider infrastructure; not the semantic content core |
 | `vapor_client_provider::content::preview_install` | Supplies workspace/cache/installed/Workshop candidate availability and provenance | `vapor_client_domain` owns traversal, exact-edge checks, readiness, and plan output |
 | `vapor_client_application::{catalog,content,workspace,publishing}` | Application operations and source-workspace adapters over shared content/provider operations | Vapor Client application API; presentation stays in Studio |
 | `vapor_client_protocol` | Wire-safe action/result/snapshot types and validation at the transport boundary | Serialization projection of shared domain records and install observations |

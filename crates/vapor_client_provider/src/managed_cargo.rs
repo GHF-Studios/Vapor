@@ -146,7 +146,7 @@ mod tests {
             Path::new("/app"),
             Path::new("/vapor-data"),
             Path::new("/app/bin/x86_64-linux"),
-            Path::new("/app/rustup-home/toolchains/1.97.0/bin"),
+            Path::new("/app/tools/rustup/home/toolchains/1.97.0/bin"),
             None,
         )
         .expect("construct app-managed path");
@@ -161,7 +161,7 @@ mod tests {
         let inherited = env::join_paths([
             Path::new("/app/tools/zig"),
             Path::new("/usr/bin"),
-            Path::new("/app/rustup-home/toolchains/old/bin"),
+            Path::new("/app/tools/rustup/home/toolchains/old/bin"),
             Path::new("/app/tools/steamcmd"),
         ])
         .expect("compose inherited path");
@@ -170,7 +170,7 @@ mod tests {
             Path::new("/app"),
             Path::new("/vapor-data"),
             Path::new("/app/bin/x86_64-linux"),
-            Path::new("/app/rustup-home/toolchains/1.97.0/bin"),
+            Path::new("/app/tools/rustup/home/toolchains/1.97.0/bin"),
             Some(&inherited),
         )
         .expect("construct app-managed path");
@@ -178,7 +178,7 @@ mod tests {
 
         assert_eq!(
             entries[0],
-            Path::new("/app/rustup-home/toolchains/1.97.0/bin")
+            Path::new("/app/tools/rustup/home/toolchains/1.97.0/bin")
         );
         assert_eq!(entries[1], Path::new("/app/bin/x86_64-linux"));
         assert_eq!(entries[2], Path::new("/app/bin"));

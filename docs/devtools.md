@@ -14,8 +14,7 @@ A normal developer setup is:
 ```text
 install Vapor through Steam
 run the Vapor installer
-vapor role promote content-developer
-# or ecosystem-developer
+vapor role promote developer
 ```
 
 Promotion reconciles the complete developer toolset. There is no separate Tracy

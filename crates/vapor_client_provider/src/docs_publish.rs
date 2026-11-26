@@ -651,7 +651,7 @@ description = "Sample guide"
             .expect_err("placeholder must block publication");
 
         assert!(error.contains("placeholder"));
-        assert!(error.contains("sample/src/README.md"));
+        assert!(error.replace('\\', "/").contains("sample/src/README.md"));
     }
 
     #[test]

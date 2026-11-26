@@ -49,7 +49,7 @@ pub use state::{
     InstallationRoleSnapshot, LanguageServerStatus, OperationEvent, OperationOutputEvent,
     OperationOutputStream, OperationPhase, OperationStatus, OperationSummary,
     ProfileReportSnapshot, ProfileTraceSnapshot, ProfileZoneSnapshot,
-    RootDistributionIdentitySnapshot, RootPublishingSnapshot, SourceMetadataRepairAction,
+    SourceMetadataRepairAction,
     SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot, WorkshopAcquisitionBatchSnapshot,
     WorkshopAcquisitionSnapshot, WorkshopBatchReviewSnapshot, WorkshopItemSnapshot,
     WorkshopPackagePreviewSnapshot, WorkshopReviewItemSnapshot, WorkshopReviewSnapshot,
@@ -372,27 +372,17 @@ mod tests {
                 change_note: "Batch update".into(),
             }),
             ClientAction::Workshop(WorkshopAction::DiscardReview),
-            ClientAction::Publishing(PublishingAction::StageRoot {
-                account: "publisher".into(),
-                description: "release".into(),
-                set_live: None,
-            }),
             ClientAction::Publishing(PublishingAction::StageApplication {
                 account: "publisher".into(),
                 branch: Some("vapor-dev".into()),
                 description: "release".into(),
                 runtime_targets: vec!["x86_64-unknown-linux-gnu".into()],
-                build_release: true,
-            }),
-            ClientAction::Publishing(PublishingAction::PublishRoot {
-                review_id: "root-review".into(),
-                confirmation: "confirm".into(),
             }),
             ClientAction::Publishing(PublishingAction::PublishApplication {
                 review_id: "application-review".into(),
                 confirmation: "PUBLISH APPLICATION 2122620 TO vapor-dev".into(),
             }),
-            ClientAction::Publishing(PublishingAction::DiscardRootReview),
+            ClientAction::Publishing(PublishingAction::DiscardApplicationReview),
             ClientAction::Developer(DeveloperAction::RefreshInstallationRole),
             ClientAction::Developer(DeveloperAction::PromoteInstallationRole {
                 target: "developer".into(),
@@ -418,7 +408,7 @@ mod tests {
         ];
         assert_eq!(
             actions.len(),
-            97,
+            95,
             "update this catalog when adding/removing action variants"
         );
         for action in actions {
@@ -623,10 +613,6 @@ mod tests {
                 platform: "linux".into(),
                 steam_client_available: true,
             },
-            root_distribution: RootDistributionIdentitySnapshot {
-                app_id: 2_122_620,
-                depot_id: 2_122_621,
-            },
             active_composition_id: None,
             durable_state: DurableStateSnapshot::default(),
             active_operation: Some(OperationSummary {
@@ -694,7 +680,6 @@ mod tests {
                 workspace_validation_error: Some("metadata needs repair".into()),
             },
             superworkspace: SuperworkspaceSnapshot::default(),
-            root_publishing: None,
             application_release: Some(ApplicationReleaseSnapshot {
                 review_id: "application-review-1".into(),
                 planned: true,
@@ -704,7 +689,7 @@ mod tests {
                 branch: "vapor-dev".into(),
                 account: "builder".into(),
                 description: "release candidate".into(),
-                release_build_validated: true,
+                payload_reviewed: true,
                 package_root: "/stage/application".into(),
                 build_script: "/stage/app_build.vdf".into(),
                 files: 12,
@@ -1016,10 +1001,6 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&WorkflowTier::Player).unwrap(),
             "\"player\""
-        );
-        assert_eq!(
-            serde_json::to_string(&WorkflowTier::Composer).unwrap(),
-            "\"composer\""
         );
         assert_eq!(
             serde_json::to_string(&WorkflowTier::Developer).unwrap(),

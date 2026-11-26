@@ -30,7 +30,7 @@ pub fn install_installation() -> Result<InstallReport, InstallError> {
     install_installation_for(&installation)
 }
 
-/// Install Vapor's machine integration for a specific app root.
+/// Install Vapor's machine integration for a specific Vapor home.
 pub fn install_installation_for(
     installation: &VaporInstallation,
 ) -> Result<InstallReport, InstallError> {
@@ -64,11 +64,12 @@ pub fn ensure_canonical_superworkspace(
 }
 
 fn default_superworkspace_root() -> Result<PathBuf, InstallError> {
-    env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .map(|home| home.join("Vapor"))
-        .ok_or(InstallError::HomeUnavailable)
+    VaporInstallation::default_home_root()
+        .map(|root| root.join("sources"))
+        .map_err(|error| match error {
+            crate::InstallationError::HomeUnavailable => InstallError::HomeUnavailable,
+            other => InstallError::Installation(other),
+        })
 }
 
 fn install_machine_integration(
@@ -289,7 +290,7 @@ impl fmt::Display for InstallError {
                 user_data,
             } => write!(
                 formatter,
-                "canonical Superworkspace `{}` must not overlap Vapor Installation `{}` or Vapor User Data `{}`",
+                "canonical Superworkspace `{}` must not overlap Vapor Installation `{}` or Vapor User Data `{}`; only the managed `sources` directory may live inside Vapor home",
                 path.display(),
                 installation.display(),
                 user_data.display(),

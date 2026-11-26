@@ -10,8 +10,8 @@ use super::{
 use vapor_client_protocol::{
     ActionProfile, AvailableAction, CatalogAction, ClientAction, ClientSnapshot, CompositionAction,
     DurableStateSnapshot, HostSummary, InstallationRoleSnapshot, InstallationState,
-    LocalCapability, RootDistributionIdentitySnapshot, SuperworkspaceRepositorySnapshot,
-    SuperworkspaceSnapshot, WorkflowTier, WorkspaceAction,
+    LocalCapability, SuperworkspaceRepositorySnapshot, SuperworkspaceSnapshot, WorkflowTier,
+    WorkspaceAction,
 };
 
 impl ClientSession {
@@ -270,7 +270,7 @@ impl ClientSession {
                 "composition.build-and-launch",
                 build_reason.is_none(),
                 build_reason,
-                ActionProfile::new(WorkflowTier::Composer)
+                ActionProfile::new(WorkflowTier::Developer)
                     .with_local_capabilities(&[LocalCapability::ManagedRustToolchain]),
             )
             .with_queueable(
@@ -320,10 +320,6 @@ impl ClientSession {
                     .as_ref()
                     .is_some_and(|context| context.steam_client_available),
             },
-            root_distribution: RootDistributionIdentitySnapshot {
-                app_id: vapor_sdk_core::root::types::ROOT_STEAM_APP_ID,
-                depot_id: vapor_sdk_core::root::types::ROOT_STEAM_DEPOT_ID,
-            },
             active_composition_id: self.active_composition_id.clone(),
             durable_state: DurableStateSnapshot {
                 schema_version: self.durable_state.schema_version,
@@ -351,10 +347,6 @@ impl ClientSession {
             workspace_content: self.workspace_content.clone(),
             superworkspace: self.superworkspace_snapshot(),
             workshop,
-            root_publishing: self
-                .root_publish_review
-                .as_ref()
-                .map(|review| review.snapshot.clone()),
             application_release: self.application_release_snapshot.clone(),
             profile_traces: self.profile_traces.clone(),
             profile_trace_error: self.profile_trace_error.clone(),

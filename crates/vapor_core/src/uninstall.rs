@@ -15,16 +15,29 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const LEGACY_APP_ROOT_ENV: &str = "LOO_CAST_APP_ROOT";
 const PROFILE_BLOCK_START: &str = "# >>> Vapor managed PATH >>>";
 const PROFILE_BLOCK_END: &str = "# <<< Vapor managed PATH <<<";
-const LEGACY_APP_MUTABLE_DIRS: &[&str] = &["rustup-home", "cargo-home", "development"];
 const MANAGED_SUPERWORKSPACE_REPOSITORIES: &[&str] =
     &["Loo-Cast", "Vapor-Client", "Vapor-Platform-Server"];
+const LEGACY_STEAM_VAPOR_ENTRIES: &[&str] = &[
+    ".vapor",
+    "bin",
+    "cargo-home",
+    "content",
+    "docs",
+    "examples",
+    "metadata",
+    "output",
+    "resources",
+    "rustup",
+    "rustup-home",
+    "tools",
+    "App.vapor.toml",
+];
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UninstallOptions {
-    pub purge_app_external: bool,
+    pub purge_user_data: bool,
     pub purge_superworkspace: bool,
     /// Permanently erase Vapor User Data and registered source checkouts.
     /// Unknown neighboring files in a shared Superworkspace are preserved.
@@ -37,8 +50,7 @@ pub struct UninstallReport {
     pub user_data_root: PathBuf,
     pub superworkspace_root: Option<PathBuf>,
     pub integration: Vec<String>,
-    pub legacy_app_state_removed: Vec<PathBuf>,
-    pub app_external_purged: bool,
+    pub user_data_purged: bool,
     pub superworkspace_purged: bool,
     pub preserved_superworkspace_entries: Vec<PathBuf>,
 }
@@ -218,9 +230,6 @@ pub fn uninstall_installation_for(
             .map_err(UninstallError::Installation)?;
     }
 
-    let legacy_app_state_removed = remove_legacy_app_mutable_state(installation)?;
-
-    let mut app_external_purged = false;
     let mut superworkspace_purged = false;
     let mut preserved_superworkspace_entries = Vec::new();
 
@@ -234,30 +243,47 @@ pub fn uninstall_installation_for(
         }
     }
 
-    if let Some(app_external) = &preflight.app_external_purge_root {
-        app_external_purged = remove_preflighted_tree(app_external)?;
-
-        let legacy_state = installation.root.join("state");
-        if legacy_state.is_dir() {
-            fs::remove_dir_all(&legacy_state).map_err(|source| UninstallError::Io {
-                path: legacy_state,
-                source,
-            })?;
-            app_external_purged = true;
+    // Remove machine integration only after all safety-sensitive paths pass
+    // preflight. Then remove the runtime payload while retaining user-owned
+    // content by default.
+    let integration = match remove_machine_integration(installation) {
+        Ok(integration) => integration,
+        Err(error) => {
+            #[cfg(windows)]
+            drop(deferred_full_nuke);
+            return Err(error);
         }
+    };
+    let user_data_purged = if let Some(user_data) = &preflight.user_data_purge_root {
+        remove_preflighted_tree(user_data)?
+    } else if preflight.full_nuke_paths.is_empty() {
+        remove_runtime_payload(installation)?;
+        false
+    } else {
+        false
+    };
+    let mut full_nuke_paths = Vec::new();
+    if !preflight.full_nuke_paths.is_empty() {
+        #[cfg(windows)]
+        deferred_full_nuke
+            .expect("a deferred cleanup was staged for non-empty Windows roots")
+            .commit()?;
+        #[cfg(not(windows))]
+        for path in &preflight.full_nuke_paths {
+            if remove_preflighted_tree(path)? {
+                full_nuke_paths.push(path.clone());
+            }
+        }
+        #[cfg(windows)]
+        full_nuke_paths.clone_from(&preflight.full_nuke_paths);
     }
-
-    // Machine integration is committed last. Safety validation above has
-    // already completed, so a refused purge cannot partially uninstall Vapor.
-    let integration = remove_machine_integration(installation)?;
 
     Ok(UninstallReport {
         installation_root: installation.root.clone(),
         user_data_root,
         superworkspace_root,
         integration,
-        legacy_app_state_removed,
-        app_external_purged,
+        user_data_purged,
         superworkspace_purged,
         preserved_superworkspace_entries,
     })
@@ -266,7 +292,8 @@ pub fn uninstall_installation_for(
 #[derive(Debug)]
 struct UninstallPreflight {
     superworkspace_purge_root: Option<PathBuf>,
-    app_external_purge_root: Option<PathBuf>,
+    user_data_purge_root: Option<PathBuf>,
+    full_nuke_paths: Vec<PathBuf>,
 }
 
 fn preflight_uninstall(
@@ -282,10 +309,26 @@ fn preflight_uninstall(
         preflight_owned_tree(&path, &[user_data_root])?;
     }
 
+    if options.full_nuke {
+        let preview = preview_full_nuke(installation)?;
+        if preview.paths.is_empty() {
+            return Err(UninstallError::UnsafePurgeRoot {
+                path: installation.root.clone(),
+            });
+        }
+        return Ok(UninstallPreflight {
+            superworkspace_purge_root: None,
+            user_data_purge_root: None,
+            full_nuke_paths: preview.paths,
+        });
+    }
+
     let superworkspace_purge_root = if let Some(superworkspace) = superworkspace_root {
+        let managed_sources = installation.root.join("sources");
         let root = preflight_owned_tree(
             superworkspace,
             &[installation.root.as_path(), user_data_root],
+            Some(&managed_sources),
         )?
         .ok_or_else(|| UninstallError::UnsafePurgeRoot {
             path: superworkspace.to_path_buf(),
@@ -309,7 +352,8 @@ fn preflight_uninstall(
 
     Ok(UninstallPreflight {
         superworkspace_purge_root,
-        app_external_purge_root,
+        user_data_purge_root,
+        full_nuke_paths: Vec::new(),
     })
 }
 
@@ -426,6 +470,7 @@ fn erase_registered_superworkspace(
 fn preflight_owned_tree(
     path: &Path,
     protected: &[&Path],
+    allowed_managed_child: Option<&Path>,
 ) -> Result<Option<PathBuf>, UninstallError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -452,9 +497,20 @@ fn preflight_owned_tree(
         return Err(UninstallError::UnsafePurgeRoot { path });
     }
 
+    let is_allowed_managed_child = allowed_managed_child
+        .and_then(|allowed| fs::canonicalize(allowed).ok())
+        .is_some_and(|allowed| same_path(&path, &allowed));
+
     for protected in protected {
         let protected = fs::canonicalize(protected).unwrap_or_else(|_| (*protected).to_path_buf());
         if path.starts_with(&protected) || protected.starts_with(&path) {
+            if is_allowed_managed_child
+                && path
+                    .parent()
+                    .is_some_and(|parent| same_path(parent, &protected))
+            {
+                continue;
+            }
             return Err(UninstallError::UnsafePurgeRoot { path });
         }
     }
@@ -694,27 +750,37 @@ fn preflight_registered_superworkspace_paths(
     Ok(())
 }
 
-fn remove_legacy_app_mutable_state(
-    installation: &VaporInstallation,
-) -> Result<Vec<PathBuf>, UninstallError> {
-    let mut removed = Vec::new();
-
-    for name in LEGACY_APP_MUTABLE_DIRS {
+fn remove_runtime_payload(installation: &VaporInstallation) -> Result<(), UninstallError> {
+    for name in ["bin", "docs", "examples", "metadata", "resources", "tools"] {
         let path = installation.root.join(name);
-
-        if !path.exists() {
-            continue;
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+                fs::remove_file(&path).map_err(|source| UninstallError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            }
+            Ok(_) => fs::remove_dir_all(&path).map_err(|source| UninstallError::Io {
+                path: path.clone(),
+                source,
+            })?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(UninstallError::Io {
+                    path: path.clone(),
+                    source,
+                });
+            }
         }
-
-        fs::remove_dir_all(&path).map_err(|source| UninstallError::Io {
-            path: path.clone(),
+    }
+    let marker = installation.root.join(VAPOR_HOME_MANIFEST_FILE_NAME);
+    if marker.is_file() {
+        fs::remove_file(&marker).map_err(|source| UninstallError::Io {
+            path: marker.clone(),
             source,
         })?;
-
-        removed.push(path);
     }
-
-    Ok(removed)
+    Ok(())
 }
 
 fn remove_machine_integration(
@@ -722,33 +788,15 @@ fn remove_machine_integration(
 ) -> Result<Vec<String>, UninstallError> {
     let mut removed = Vec::new();
 
-    if let Some(anchor) = legacy_anchor_file()
-        && anchor.is_file()
-        && anchor_targets_installation(&anchor, &installation.root)?
-    {
-        fs::remove_file(&anchor).map_err(|source| UninstallError::Io {
-            path: anchor.clone(),
-            source,
-        })?;
-        removed.push(format!(
-            "removed legacy app-root anchor {}",
-            anchor.display()
-        ));
-
-        if let Some(parent) = anchor.parent() {
-            let _ = fs::remove_dir(parent);
-        }
-    }
-
     if cfg!(windows) {
         if remove_windows_user_path(installation)? {
             removed.push("removed Vapor host binary directory from user PATH".to_owned());
         }
 
-        for variable in [VAPOR_HOME_ENV, LEGACY_APP_ROOT_ENV] {
-            if remove_windows_user_environment(variable, &installation.root)? {
-                removed.push(format!("removed user environment variable {variable}"));
-            }
+        if remove_windows_user_environment(VAPOR_HOME_ENV, &installation.root)? {
+            removed.push(format!(
+                "removed user environment variable {VAPOR_HOME_ENV}"
+            ));
         }
     } else {
         for profile in shell_profiles() {
@@ -1057,15 +1105,12 @@ fn remove_managed_profile_block(
 }
 
 fn remove_windows_user_path(installation: &VaporInstallation) -> Result<bool, UninstallError> {
-    let target = if cfg!(all(
-        target_arch = "x86_64",
-        target_os = "windows",
-        target_env = "msvc"
-    )) {
-        "x86_64-pc-windows-msvc"
-    } else {
-        return Ok(false);
-    };
+    let target = crate::HostTarget::current()
+        .map_err(|error| UninstallError::Io {
+            path: installation.root.clone(),
+            source: io::Error::other(error),
+        })?
+        .triple();
 
     let bin = installation.root.join("bin").join(target);
     let legacy = format!(r"%VAPOR_HOME%\bin\{target}");
@@ -1138,24 +1183,6 @@ if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase))
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).contains("removed"))
-}
-
-fn anchor_targets_installation(
-    anchor: &Path,
-    installation_root: &Path,
-) -> Result<bool, UninstallError> {
-    let contents = fs::read_to_string(anchor).map_err(|source| UninstallError::Io {
-        path: anchor.to_path_buf(),
-        source,
-    })?;
-    Ok(anchor_contents_target_installation(
-        &contents,
-        installation_root,
-    ))
-}
-
-fn anchor_contents_target_installation(contents: &str, installation_root: &Path) -> bool {
-    contents.trim() == installation_root.to_string_lossy()
 }
 
 fn managed_profile_block_targets(source: &str, installation_root: &Path) -> bool {
@@ -1399,16 +1426,163 @@ fn git_output(root: &Path, args: &[&str]) -> Result<String, UninstallError> {
 }
 
 fn remove_preflighted_tree(path: &Path) -> Result<bool, UninstallError> {
-    if !path.exists() {
-        return Ok(false);
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => {
+            return Err(UninstallError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(UninstallError::UnsafePurgeRoot {
+            path: path.to_path_buf(),
+        });
     }
 
-    fs::remove_dir_all(path).map_err(|source| UninstallError::Io {
+    let result = if metadata.is_dir() {
+        fs::remove_dir_all(path)
+    } else if metadata.is_file() {
+        fs::remove_file(path)
+    } else {
+        return Err(UninstallError::UnsafePurgeRoot {
+            path: path.to_path_buf(),
+        });
+    };
+    result.map_err(|source| UninstallError::Io {
         path: path.to_path_buf(),
         source,
     })?;
 
     Ok(true)
+}
+
+#[cfg(windows)]
+struct PendingFullNuke {
+    commit_file: PathBuf,
+    cancel_file: PathBuf,
+    committed: bool,
+}
+
+#[cfg(windows)]
+impl PendingFullNuke {
+    fn commit(mut self) -> Result<(), UninstallError> {
+        fs::write(&self.commit_file, b"commit").map_err(|source| UninstallError::Io {
+            path: self.commit_file.clone(),
+            source,
+        })?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PendingFullNuke {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::write(&self.cancel_file, b"cancel");
+        }
+    }
+}
+
+#[cfg(windows)]
+fn stage_full_nuke_after_process_exit(
+    roots: &[PathBuf],
+) -> Result<PendingFullNuke, UninstallError> {
+    let temp = env::temp_dir();
+    let suffix = format!("{}-{}", std::process::id(), now_nonce());
+    let roots_file = temp.join(format!("vapor-full-nuke-{suffix}.json"));
+    let script_file = temp.join(format!("vapor-full-nuke-{suffix}.ps1"));
+    let commit_file = temp.join(format!("vapor-full-nuke-{suffix}.commit"));
+    let cancel_file = temp.join(format!("vapor-full-nuke-{suffix}.cancel"));
+    let roots_json = serde_json::to_vec(roots).map_err(|error| UninstallError::Io {
+        path: roots_file.clone(),
+        source: io::Error::other(error),
+    })?;
+    fs::write(&roots_file, roots_json).map_err(|source| UninstallError::Io {
+        path: roots_file.clone(),
+        source,
+    })?;
+    let script = deferred_full_nuke_script();
+    if let Err(source) = fs::write(&script_file, script) {
+        let _ = fs::remove_file(&roots_file);
+        let _ = fs::remove_file(&cancel_file);
+        return Err(UninstallError::Io {
+            path: script_file,
+            source,
+        });
+    }
+    let mut command = crate::managed_process::background_command("powershell");
+    command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(&script_file)
+        .arg(std::process::id().to_string())
+        .arg(&roots_file)
+        .arg(&commit_file)
+        .arg(&cancel_file)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Err(source) = command.spawn() {
+        let _ = fs::remove_file(&roots_file);
+        let _ = fs::remove_file(&script_file);
+        let _ = fs::remove_file(&cancel_file);
+        return Err(UninstallError::CommandStart {
+            command: "deferred full Vapor removal".to_owned(),
+            source,
+        });
+    }
+    Ok(PendingFullNuke {
+        commit_file,
+        cancel_file,
+        committed: false,
+    })
+}
+
+#[cfg(windows)]
+fn deferred_full_nuke_script() -> &'static str {
+    r#"
+param([int]$ParentProcessId, [string]$RootsFile, [string]$CommitFile, [string]$CancelFile)
+$ErrorActionPreference = 'Stop'
+$committed = $false
+try {
+    while (Get-Process -Id $ParentProcessId -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 500 }
+    for ($attempt = 0; $attempt -lt 40; $attempt++) {
+        if (Test-Path -LiteralPath $CancelFile) { return }
+        if (Test-Path -LiteralPath $CommitFile) {
+            if ((Get-Content -LiteralPath $CommitFile -Raw) -ceq 'commit') { $committed = $true; break }
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $committed) { return }
+    $roots = Get-Content -LiteralPath $RootsFile -Raw | ConvertFrom-Json
+    foreach ($root in $roots) {
+        if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+    }
+} finally {
+    Remove-Item -LiteralPath $RootsFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $CommitFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $CancelFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+"#
+}
+
+#[cfg(windows)]
+fn now_nonce() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
@@ -1494,7 +1668,7 @@ mod tests {
         erase_registered_superworkspace, managed_profile_block_targets, preflight_owned_tree,
     };
     use crate::VAPOR_HOME_ENV;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn managed_profile_cleanup_matches_only_the_selected_installation() {
@@ -1510,18 +1684,171 @@ mod tests {
     }
 
     #[test]
-    fn legacy_anchor_cleanup_matches_only_the_selected_installation() {
-        let primary = Path::new("/opt/vapor-primary");
-        let other = Path::new("/opt/vapor-other");
+    fn legacy_steam_cleanup_targets_vapor_entries_without_touching_packagepack() {
+        let product_root = Path::new(r"C:\Program Files (x86)\Steam\steamapps\common\Loo Cast");
+        let targets = legacy_steam_vapor_paths(product_root);
+        for name in [
+            ".vapor",
+            "bin",
+            "cargo-home",
+            "content",
+            "docs",
+            "examples",
+            "metadata",
+            "output",
+            "resources",
+            "rustup",
+            "rustup-home",
+            "tools",
+            "App.vapor.toml",
+        ] {
+            assert!(targets.contains(&product_root.join(name)), "missing {name}");
+        }
+        assert!(!targets.contains(&product_root.join("Packagepack.vapor.toml")));
+        assert!(!targets.contains(&product_root.join("loo-cast-packagepack.exe")));
+        assert!(!targets.contains(&product_root.join("loo-cast-packagepack")));
+    }
 
-        assert!(anchor_contents_target_installation(
-            " /opt/vapor-primary\n",
-            primary
+    #[test]
+    fn steam_library_discovery_reads_only_path_values_and_unescapes_windows_paths() {
+        let source = r#"
+            "libraryfolders"
+            {
+                "0"
+                {
+                    "path" "C:\\Program Files (x86)\\Steam"
+                    "label" "not a library path"
+                }
+                "1"
+                {
+                    "path" "D:\\Games\\Steam Library"
+                }
+                "2"
+                {
+                    "apps" "C:\\not-a-library"
+                }
+            }
+        "#;
+
+        assert_eq!(
+            parse_steam_library_paths(source),
+            vec![
+                PathBuf::from(r"C:\Program Files (x86)\Steam"),
+                PathBuf::from(r"D:\Games\Steam Library"),
+            ]
+        );
+    }
+
+    #[test]
+    fn steam_library_discovery_follows_the_default_install_library_index() {
+        let root = std::env::temp_dir().join(format!(
+            "vapor-steam-library-test-{}-{}",
+            std::process::id(),
+            super::now_nonce()
         ));
-        assert!(!anchor_contents_target_installation(
-            "/opt/vapor-primary\n",
-            other
+        let default_root = root.join("Steam");
+        std::fs::create_dir_all(default_root.join("steamapps")).expect("create default Steam root");
+        std::fs::write(
+            default_root.join("steamapps/libraryfolders.vdf"),
+            r#"
+                "libraryfolders"
+                {
+                    "0"
+                    {
+                        "path" "C:\\Steam"
+                    }
+                    "1"
+                    {
+                        "path" "D:\\SteamLibrary"
+                    }
+                }
+            "#,
+        )
+        .expect("write Steam library index");
+
+        let roots = steam_roots_with_libraries(vec![default_root.clone()])
+            .expect("resolve Steam library roots");
+
+        assert!(roots.contains(&default_root));
+        assert!(roots.contains(&PathBuf::from(r"C:\Steam")));
+        assert!(roots.contains(&PathBuf::from(r"D:\SteamLibrary")));
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn full_nuke_removes_a_preflighted_legacy_manifest_file() {
+        let root = std::env::temp_dir().join(format!(
+            "vapor-full-nuke-file-test-{}-{}",
+            std::process::id(),
+            super::now_nonce()
         ));
+        std::fs::create_dir_all(&root).expect("create disposable root");
+        let target = root.join("App.vapor.toml");
+        std::fs::write(&target, "legacy manifest").expect("write disposable manifest");
+
+        assert!(remove_preflighted_tree(&target).expect("remove preflighted file"));
+        assert!(!target.exists());
+        std::fs::remove_dir_all(root).expect("remove disposable root");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn deferred_full_nuke_requires_an_explicit_commit_marker() {
+        use std::process::Command;
+
+        let root = std::env::temp_dir().join(format!(
+            "vapor-full-nuke-test-{}-{}",
+            std::process::id(),
+            super::now_nonce()
+        ));
+        let target = root.join("target");
+        let plan = root.join("roots.json");
+        let script = root.join("cleanup.ps1");
+        let commit = root.join("commit");
+        let cancel = root.join("cancel");
+        std::fs::create_dir_all(&target).expect("create disposable target");
+        std::fs::write(target.join("marker"), "test").expect("write disposable marker");
+        std::fs::write(&plan, serde_json::to_vec(&[&target]).unwrap()).expect("write plan");
+        std::fs::write(&script, deferred_full_nuke_script()).expect("write helper");
+        std::fs::write(&cancel, "cancel").expect("write cancel marker");
+
+        let run_helper = |script: &Path, plan: &Path, commit: &Path, cancel: &Path| {
+            Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
+                .arg(&script)
+                .arg("2147483647")
+                .arg(&plan)
+                .arg(&commit)
+                .arg(&cancel)
+                .status()
+                .expect("run cleanup helper")
+        };
+
+        let status = run_helper(&script, &plan, &commit, &cancel);
+        assert!(status.success());
+        assert!(target.exists(), "no commit marker must leave data intact");
+
+        std::fs::write(&plan, serde_json::to_vec(&[&target]).unwrap()).expect("rewrite plan");
+        std::fs::write(&script, deferred_full_nuke_script()).expect("rewrite helper");
+        let _ = std::fs::remove_file(&cancel);
+        std::fs::write(&commit, "partial").expect("write malformed commit marker");
+        let status = run_helper(&script, &plan, &commit, &cancel);
+        assert!(status.success());
+        assert!(target.exists(), "a partial marker must leave data intact");
+
+        std::fs::write(&plan, serde_json::to_vec(&[&target]).unwrap()).expect("rewrite plan");
+        std::fs::write(&script, deferred_full_nuke_script()).expect("rewrite helper");
+        std::fs::write(&commit, "commit").expect("write commit marker");
+        let status = run_helper(&script, &plan, &commit, &cancel);
+        assert!(status.success());
+        assert!(!target.exists(), "commit marker permits the planned delete");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

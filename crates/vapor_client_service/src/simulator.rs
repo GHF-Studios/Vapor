@@ -23,7 +23,7 @@ pub fn run_simulator(
     run_interactive(service_executable)
 }
 
-fn spawn_fixture_client(executable: &Path) -> Result<Client, String> {
+fn spawn_fixture_client(executable: &Path, state_directory: PathBuf) -> Result<Client, String> {
     Client::spawn(
         executable,
         ClientBootstrap {
@@ -33,7 +33,7 @@ fn spawn_fixture_client(executable: &Path) -> Result<Client, String> {
             active_composition_id: Some("default".to_owned()),
             fixture_mode: true,
             legacy_storage: vapor_client_protocol::LegacyStorageSeed::default(),
-            state_directory: None,
+            state_directory: Some(state_directory),
         },
     )
     .map_err(|error| error.to_string())
@@ -42,7 +42,8 @@ fn spawn_fixture_client(executable: &Path) -> Result<Client, String> {
 fn run_scenario(executable: &Path, scenario_path: &Path) -> Result<(), String> {
     let scenario = load_scenario(scenario_path)?;
     let fixture_workspace = FixtureWorkspace::create()?;
-    let mut client = spawn_fixture_client(executable)?;
+    let mut client =
+        spawn_fixture_client(executable, fixture_workspace.path.join("service-state"))?;
     println!("Scenario: {}", scenario.name);
     println!("Service: fixture mode; no production provider is available.");
     for (index, mut step) in scenario.steps.into_iter().enumerate() {
@@ -318,7 +319,9 @@ impl Drop for FixtureWorkspace {
 }
 
 fn run_interactive(executable: &Path) -> Result<(), String> {
-    let mut client = spawn_fixture_client(executable)?;
+    let fixture_workspace = FixtureWorkspace::create()?;
+    let mut client =
+        spawn_fixture_client(executable, fixture_workspace.path.join("service-state"))?;
     println!("Vapor Vapor Client service simulator · fixture mode");
     print_snapshot(client.latest_snapshot());
     println!("Type help for commands; this process cannot publish to Workshop or Steam.");

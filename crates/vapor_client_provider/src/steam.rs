@@ -119,7 +119,7 @@ pub fn publish(
         return Err("Steam build description must contain 1 to 256 bytes".to_owned());
     }
     let stage = distribution::stage_with_options(paths, manifest, options.stage_options.clone())?;
-    smoke(&stage, &options.stage_options)?;
+    smoke(&stage, manifest, &options.stage_options)?;
     let fingerprint = fingerprint_stage(&stage)?;
     if options
         .expected_fingerprint
@@ -263,8 +263,12 @@ impl Hasher for Fnv64 {
     }
 }
 
-/// Validate essential staged self-hosting inputs.
-pub fn smoke(stage: &distribution::StageReport, options: &StageOptions) -> Result<(), String> {
+/// Validate the composition manifest and required manifest-selected product paths.
+pub fn smoke(
+    stage: &distribution::StageReport,
+    manifest: &DistributionManifest,
+    options: &StageOptions,
+) -> Result<(), String> {
     let common = stage
         .depot(SteamDepotKind::Common)
         .ok_or_else(|| "staged application has no common depot".to_owned())?;
@@ -407,29 +411,6 @@ pub fn smoke(stage: &distribution::StageReport, options: &StageOptions) -> Resul
     }
     Ok(())
 }
-
-fn require_file(path: PathBuf, message: &str) -> Result<(), String> {
-    if path.is_file() {
-        Ok(())
-    } else {
-        Err(format!("{message}: {}", path.display()))
-    }
-}
-
-fn require_script_target(path: &Path, expected_line: &str, message: &str) -> Result<(), String> {
-    let script = fs::read_to_string(path).map_err(|error| {
-        format!(
-            "failed to read staged launch script '{}': {error}",
-            path.display()
-        )
-    })?;
-    if script.lines().any(|line| line.trim() == expected_line) {
-        Ok(())
-    } else {
-        Err(format!("{message}: {}", path.display()))
-    }
-}
-
 fn write_build_script(
     paths: &EnvironmentPaths,
     manifest: &DistributionManifest,
@@ -451,7 +432,10 @@ fn write_build_script(
     };
     let mut depot_entries = String::new();
     for depot in stage.depots() {
-        let depot_id = manifest.application().depot_id(depot.kind());
+        let depot_id = manifest
+            .application()
+            .depot_id(depot.kind())
+            .ok_or_else(|| format!("staged {} depot is not configured", depot.kind().label()))?;
         let depot_script = scripts.join(format!("depot_build_{depot_id}.vdf"));
         let depot_vdf = render_template(
             &templates.depot_build,
@@ -495,9 +479,9 @@ struct SteamPipeTemplates {
 }
 
 impl SteamPipeTemplates {
-    fn load(source_root: &Path) -> Result<Self, String> {
-        let root = source_root.join(STEAMPIPE_TEMPLATE_ROOT);
-        ensure_contained(source_root, &root)?;
+    fn load(vapor_home: &Path) -> Result<Self, String> {
+        let root = vapor_home.join(STEAMPIPE_TEMPLATE_ROOT);
+        ensure_contained(vapor_home, &root)?;
         Ok(Self {
             app_build: read_template(&root, APP_BUILD_TEMPLATE)?,
             app_build_depot_entry: read_template(&root, APP_BUILD_DEPOT_ENTRY_TEMPLATE)?,
@@ -510,7 +494,7 @@ fn read_template(root: &Path, name: &str) -> Result<String, String> {
     let path = root.join(name);
     fs::read_to_string(&path).map_err(|error| {
         format!(
-            "failed to read SteamPipe template '{}': {error}\nhelp: keep Vapor Client SteamPipe templates checked in under {STEAMPIPE_TEMPLATE_ROOT}",
+            "failed to read SteamPipe template '{}': {error}\nhelp: repair the Vapor installation so its {STEAMPIPE_TEMPLATE_ROOT} resources are present",
             path.display()
         )
     })
