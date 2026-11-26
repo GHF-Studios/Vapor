@@ -485,6 +485,11 @@ fn deployment_projects(workspace: &VaporWorkspace) -> Vec<VaporProject> {
             superworkspace
                 .projects
                 .into_iter()
+                // A user's checkout directory may sit beside older or
+                // experimental copies of the same repositories. Deployment
+                // must resolve binaries from the selected Client checkout,
+                // not from sibling Superworkspace entries.
+                .filter(|project| project.project.root.starts_with(&workspace.root))
                 .map(|project| project.project)
                 .collect::<Vec<_>>()
         })

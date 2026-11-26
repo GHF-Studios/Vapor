@@ -90,6 +90,7 @@ fn application_path(
         toolchain_bin.to_path_buf(),
         binaries.to_path_buf(),
         root.join("bin"),
+        root.join("tools/llvm-mingw/bin"),
     ];
     if let Some(inherited) = inherited {
         entries.extend(

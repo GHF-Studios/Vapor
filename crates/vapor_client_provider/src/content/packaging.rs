@@ -358,7 +358,7 @@ impl RuntimeTarget {
                 validate_runtime_target(target)?;
                 Ok(Self {
                     triple: target.to_owned(),
-                    explicit: target != host_runtime_target(),
+                    explicit: true,
                 })
             }
             None => Ok(Self::host()),
@@ -384,7 +384,7 @@ impl RuntimeTarget {
     fn host() -> Self {
         Self {
             triple: host_runtime_target(),
-            explicit: false,
+            explicit: true,
         }
     }
 
@@ -828,7 +828,7 @@ mod target_tests {
         let target = RuntimeTarget::many(std::slice::from_ref(&host))
             .expect("valid host target")
             .remove(0);
-        assert!(!target.explicit);
+        assert!(target.explicit);
         assert_eq!(target.triple(), host);
     }
 

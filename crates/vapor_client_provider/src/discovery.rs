@@ -600,18 +600,16 @@ fn bundled_cargo_candidates(root: &Path, tools_root: &Path) -> Result<Vec<PathBu
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .collect::<Vec<_>>();
 
+    let host = crate::target::host_rust_target();
+    let host_suffix = format!("-{host}");
     if let Some(pin) = pin {
-        let prefix = format!("{}-", pin.identifier());
-        return Ok(toolchains
-            .into_iter()
-            .filter(|entry| {
-                let name = entry.file_name();
-                name == pin.identifier() || name.to_string_lossy().starts_with(&prefix)
-            })
-            .map(|entry| entry.path().join("bin").join(&executable))
-            .collect());
+        let toolchain = format!("{}-{host}", pin.identifier());
+        return Ok(vec![
+            toolchains_root.join(toolchain).join("bin").join(executable),
+        ]);
     }
 
+    toolchains.retain(|entry| entry.file_name().to_string_lossy().ends_with(&host_suffix));
     toolchains.sort_by(|left, right| {
         let left_name = left.file_name().to_string_lossy().into_owned();
         let right_name = right.file_name().to_string_lossy().into_owned();
