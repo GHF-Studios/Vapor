@@ -30,6 +30,64 @@ const WINDOWS_ARCHIVE_SHA256: &str =
 const MAX_TOOLCHAIN_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const TOOLCHAIN_MARKER: &str = "vapor-toolchain.toml";
 
+/// Configure only Vapor-managed native tools for runtime targets whose host
+/// ABI differs from the current host defaults. Native Linux builds keep Cargo's
+/// standard linker selection; Windows GNU and Windows-hosted Linux builds use
+/// the pinned tools stored in Vapor User Data.
+pub fn configure_runtime_target_linker_env(
+    command: &mut Command,
+    user_data_root: &Path,
+    target: &str,
+) -> Result<(), CrossTargetToolchainError> {
+    let tools = user_data_root.join("tools");
+    let (linker, cc, ar) = match target {
+        "x86_64-pc-windows-gnullvm" => {
+            let bin = tools.join("llvm-mingw/bin");
+            if !is_supported_ucrt_bundle(&tools.join("llvm-mingw")) {
+                return Err(CrossTargetToolchainError::IncompleteArchive {
+                    tool: "LLVM-MinGW",
+                    path: bin,
+                });
+            }
+            (
+                executable_path(&bin, "x86_64-w64-mingw32-clang"),
+                executable_path(&bin, "x86_64-w64-mingw32-clang"),
+                executable_path(&bin, "x86_64-w64-mingw32-ar"),
+            )
+        }
+        "x86_64-unknown-linux-gnu" if cfg!(target_os = "windows") => {
+            let bin = tools.join("cross/bin");
+            (
+                bin.join("x86_64-unknown-linux-gnu-zig-cc.cmd"),
+                bin.join("x86_64-unknown-linux-gnu-zig-cc.cmd"),
+                bin.join("zig-ar.cmd"),
+            )
+        }
+        _ => return Ok(()),
+    };
+
+    for path in [&linker, &cc, &ar] {
+        if !path.is_file() {
+            return Err(CrossTargetToolchainError::IncompleteArchive {
+                tool: "Vapor-managed runtime linker",
+                path: path.clone(),
+            });
+        }
+    }
+    let target_key = target.replace('-', "_").to_ascii_uppercase();
+    let cc_key = format!("CC_{}", target.replace('-', "_"));
+    let ar_key = format!("AR_{}", target.replace('-', "_"));
+    command
+        .env(format!("CARGO_TARGET_{target_key}_LINKER"), &linker)
+        .env(cc_key, cc)
+        .env(ar_key, ar);
+    Ok(())
+}
+
+fn executable_path(directory: &Path, stem: &str) -> PathBuf {
+    directory.join(format!("{stem}{}", env::consts::EXE_SUFFIX))
+}
+
 /// Whether the selected installation has the pinned Zig compiler and Linux
 /// cross-target wrapper required for `x86_64-unknown-linux-gnu` builds.
 pub fn linux_gnu_linker_installed(installation: &VaporInstallation) -> bool {

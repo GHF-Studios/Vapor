@@ -26,8 +26,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
-const RUSTUP_HOME_DIR: &str = "tools/rustup/home";
-const CARGO_HOME_DIR: &str = "tools/cargo/home";
 const LOCAL_RUSTUP_DIR: &str = "tools/rustup/bin";
 
 const INSTALLATION_METADATA_DIR: &str = "metadata";
@@ -44,6 +42,7 @@ pub const DEVELOPER_TARGETS: &[&str] = &[LINUX_GNU_TARGET, WINDOWS_GNU_TARGET];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustToolchainCommandEnvironment {
     vapor_home: PathBuf,
+    data_root: PathBuf,
     cargo_home: PathBuf,
     rustup_home: PathBuf,
     toolchain: std::ffi::OsString,
@@ -54,6 +53,7 @@ pub struct RustToolchainCommandEnvironment {
 impl RustToolchainCommandEnvironment {
     pub fn new(
         vapor_home: impl Into<PathBuf>,
+        data_root: impl Into<PathBuf>,
         cargo_home: impl Into<PathBuf>,
         rustup_home: impl Into<PathBuf>,
         toolchain: impl Into<std::ffi::OsString>,
@@ -62,6 +62,7 @@ impl RustToolchainCommandEnvironment {
     ) -> Self {
         Self {
             vapor_home: vapor_home.into(),
+            data_root: data_root.into(),
             cargo_home: cargo_home.into(),
             rustup_home: rustup_home.into(),
             toolchain: toolchain.into(),
@@ -92,8 +93,9 @@ impl RustToolchainCommandEnvironment {
             .env("RUSTDOC", &self.rustdoc)
             .env(
                 "CARGO_TARGET_DIR",
-                self.vapor_home.join("cache/build").join(host_target),
+                self.data_root.join("cache/build").join(host_target),
             )
+            .env("VAPOR_USER_DATA_ROOT", &self.data_root)
             .env_remove("RUSTC_WRAPPER")
             .env_remove("RUSTC_WORKSPACE_WRAPPER");
     }
@@ -245,11 +247,11 @@ impl ManagedToolchain {
         pin: ToolchainPin,
     ) -> Result<Self, ToolchainError> {
         let vapor_home = installation.root.clone();
-        let data_root = installation.data_root();
+        let data_root = installation.user_data_root();
 
-        let rustup_home = installation.root.join(RUSTUP_HOME_DIR);
-
-        let cargo_home = installation.root.join(CARGO_HOME_DIR);
+        let user_data = crate::product_layout::VaporUserDataLayout::from_root(data_root.clone());
+        let rustup_home = user_data.rustup_home();
+        let cargo_home = user_data.cargo_home();
 
         let host = current_host_triple()?;
         let build_target = crate::HostTarget::current()
@@ -481,6 +483,7 @@ impl ManagedToolchain {
         let mut command = crate::managed_process::background_command(program);
         RustToolchainCommandEnvironment::new(
             &self.vapor_home,
+            &self.data_root,
             &self.cargo_home,
             &self.rustup_home,
             self.pin.identifier(),
@@ -499,7 +502,7 @@ impl ManagedToolchain {
     }
 
     fn local_rustup_path(&self) -> PathBuf {
-        self.vapor_home
+        self.data_root
             .join(LOCAL_RUSTUP_DIR)
             .join(executable_name("rustup"))
     }
@@ -778,6 +781,7 @@ mod tests {
     fn rust_toolchain_environment_sets_pinned_paths_and_removes_wrappers() {
         let environment = RustToolchainCommandEnvironment::new(
             "/vapor/app",
+            "/vapor/user-data",
             "/vapor/tools/cargo/home",
             "/vapor/tools/rustup/home",
             "1.97.0-x86_64-unknown-linux-gnu",

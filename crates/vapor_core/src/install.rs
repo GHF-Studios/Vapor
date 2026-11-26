@@ -34,7 +34,7 @@ pub fn install_installation() -> Result<InstallReport, InstallError> {
 pub fn install_installation_for(
     installation: &VaporInstallation,
 ) -> Result<InstallReport, InstallError> {
-    let data_root = installation.data_root();
+    let data_root = installation.user_data_root();
 
     installation
         .ensure_state_root()

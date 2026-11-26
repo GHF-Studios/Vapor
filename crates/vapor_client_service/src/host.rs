@@ -37,7 +37,7 @@ mod tests {
     }
 
     #[test]
-    fn vapor_home_owns_the_default_client_state_directory() {
+    fn vapor_user_data_owns_the_default_client_state_directory() {
         let context = ClientHostContext::resolve(
             ClientHostArguments {
                 application_executable: PathBuf::from("/install/bin/vapor-gui"),
@@ -48,6 +48,7 @@ mod tests {
                 ("HOME", "/home/player"),
                 ("XDG_DATA_HOME", "/home/player/.local/share"),
                 ("VAPOR_HOME", "/home/player/Vapor"),
+                ("VAPOR_USER_DATA_ROOT", "/home/player/.local/share/vapor"),
             ]),
             HostPlatform::Linux,
         )
@@ -56,7 +57,7 @@ mod tests {
         assert_eq!(context.workspace_root, None);
         assert_eq!(
             context.state_directory,
-            PathBuf::from("/home/player/Vapor/data/state/studio")
+            PathBuf::from("/home/player/.local/share/vapor/state/studio")
         );
     }
 

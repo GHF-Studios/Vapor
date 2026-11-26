@@ -22,13 +22,15 @@ pub enum WorkspaceCommand {
     Sync,
     /// Update workspace dependencies in Cargo.lock using Vapor's local registry cache.
     ResolveLockfile,
-    /// Run `cargo check` through the Vapor-managed Cargo binary.
+    /// Run `cargo check --locked` through the Vapor-managed Cargo binary.
     Check,
     /// Run `cargo fmt` through the Vapor-managed Cargo binary.
     Fmt,
-    /// Run `cargo build --workspace` through the Vapor-managed Cargo binary.
+    /// Run `cargo build --workspace --locked` through the Vapor-managed Cargo binary.
     Build,
-    /// Run `cargo test --workspace` through the Vapor-managed Cargo binary.
+    /// Run `cargo build --workspace --release --locked` through the Vapor-managed Cargo binary.
+    BuildRelease,
+    /// Run `cargo test --workspace --locked` through the Vapor-managed Cargo binary.
     Test,
     /// Build and promote the first-party SDK CLI into the executable-root `bin` directory.
     Deploy,
@@ -55,11 +57,11 @@ pub fn workspace_resolve_lockfile(
     cargo::VaporCargo::new(globals)?.run(&["update", "--workspace", "--offline"])
 }
 
-/// Run `cargo check --workspace` through Vapor-owned Rustup/Cargo state.
+/// Run `cargo check --workspace --locked` through Vapor-owned Rustup/Cargo state.
 pub fn workspace_check(
     globals: &GlobalOptions,
 ) -> Result<WorkspaceCargoReport, WorkspaceCommandError> {
-    cargo::VaporCargo::new(globals)?.run(&["check", "--workspace"])
+    cargo::VaporCargo::new(globals)?.run(&["check", "--workspace", "--locked"])
 }
 
 /// Run `cargo fmt` through Vapor-owned Rustup/Cargo state.
@@ -69,18 +71,25 @@ pub fn workspace_fmt(
     cargo::VaporCargo::new(globals)?.run(&["fmt"])
 }
 
-/// Run `cargo build --workspace` through Vapor-owned Rustup/Cargo state.
+/// Run `cargo build --workspace --locked` through Vapor-owned Rustup/Cargo state.
 pub fn workspace_build(
     globals: &GlobalOptions,
 ) -> Result<WorkspaceCargoReport, WorkspaceCommandError> {
-    cargo::VaporCargo::new(globals)?.run(&["build", "--workspace"])
+    cargo::VaporCargo::new(globals)?.run(&["build", "--workspace", "--locked"])
 }
 
-/// Run `cargo test --workspace` through Vapor-owned Rustup/Cargo state.
+/// Run `cargo build --workspace --release --locked` through Vapor-owned Rustup/Cargo state.
+pub fn workspace_build_release(
+    globals: &GlobalOptions,
+) -> Result<WorkspaceCargoReport, WorkspaceCommandError> {
+    cargo::VaporCargo::new(globals)?.run(&["build", "--workspace", "--release", "--locked"])
+}
+
+/// Run `cargo test --workspace --locked` through Vapor-owned Rustup/Cargo state.
 pub fn workspace_test(
     globals: &GlobalOptions,
 ) -> Result<WorkspaceCargoReport, WorkspaceCommandError> {
-    cargo::VaporCargo::new(globals)?.run(&["test", "--workspace"])
+    cargo::VaporCargo::new(globals)?.run(&["test", "--workspace", "--locked"])
 }
 
 /// Build and promote the unified `vapor` terminal facade into `$VAPOR_HOME/bin`.

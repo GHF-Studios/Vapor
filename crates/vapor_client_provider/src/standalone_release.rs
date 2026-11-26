@@ -143,6 +143,10 @@ fn stage_into(
         &source_root.join("Standalone-App.vapor.toml"),
         &staging_root.join("App.vapor.toml"),
     )?;
+    copy_required(
+        &source_root.join("release/Vapor-Home.toml"),
+        &staging_root.join("Vapor-Home.toml"),
+    )?;
     copy_tree(
         &source_root.join("resources/vapor/tools"),
         &staging_root.join("resources/vapor/tools"),

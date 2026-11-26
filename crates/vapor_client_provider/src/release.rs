@@ -8,7 +8,7 @@ use crate::{
     discovery::{EnvironmentPaths, ensure_contained},
     managed_cargo::ApplicationCargo,
     process_output,
-    target::host_rust_target,
+    target::{host_rust_target, host_runtime_target},
     workspace::{CargoProject, WorkspaceManifest},
 };
 use std::{

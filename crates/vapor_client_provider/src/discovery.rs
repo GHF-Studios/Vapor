@@ -247,7 +247,16 @@ impl InstallationPaths {
                     .display()
             ));
         }
-        let root = candidate_root;
+        let _ = binaries;
+        Self::from_home(candidate_root, executable)
+    }
+
+    fn from_home(root: PathBuf, executable: PathBuf) -> Result<Self, String> {
+        let root = canonical_directory(&root, "Vapor Home")?;
+        let binaries = executable
+            .parent()
+            .ok_or_else(|| format!("executable has no parent: {}", executable.display()))?
+            .to_path_buf();
         let marker = root.join(vapor_core::VAPOR_HOME_MANIFEST_FILE_NAME);
         if !marker.is_file() {
             return Err(format!(
@@ -257,15 +266,15 @@ impl InstallationPaths {
                 marker.display(),
             ));
         }
-        let identity_id = require_installation_marker(&marker, &root)?;
+        let identity_id = require_vapor_home_marker(&marker, &root)?;
         let user_data_root = VaporInstallation::from_explicit_root(root.clone())
             .map_err(|error| error.to_string())?
             .user_data_root();
-
         let libraries = optional_directory(&root, LIBRARY_DIR)?;
         let cargo = bundled_cargo_candidates(&root, &user_data_root)?
             .into_iter()
             .find(|candidate| candidate.is_file());
+        let product_root = explicit_product_root()?;
 
         Ok(Self {
             executable,
@@ -624,7 +633,8 @@ fn bundled_cargo_candidates(root: &Path, tools_root: &Path) -> Result<Vec<PathBu
     let executable = format!("cargo{}", env::consts::EXE_SUFFIX);
     let installation = VaporInstallation::from_explicit_root(root.to_path_buf())
         .map_err(|error| error.to_string())?;
-    let toolchains_root = tools_root.join("rustup-home/toolchains");
+    let user_data = vapor_core::VaporUserDataLayout::from_root(tools_root.to_path_buf());
+    let toolchains_root = user_data.rust_toolchains();
     let pin =
         ManagedToolchain::installation_pin(&installation).map_err(|error| error.to_string())?;
     let mut toolchains = fs::read_dir(&toolchains_root)
@@ -656,7 +666,7 @@ fn bundled_cargo_candidates(root: &Path, tools_root: &Path) -> Result<Vec<PathBu
         .into_iter()
         .map(|entry| entry.path().join("bin").join(&executable))
         .collect::<Vec<_>>();
-    candidates.push(tools_root.join("cargo-home/bin").join(&executable));
+    candidates.push(user_data.cargo_bin().join(&executable));
     candidates.push(root.join("bin").join(executable));
     Ok(candidates)
 }
@@ -686,7 +696,7 @@ mod tests {
                 .as_nanos()
         ));
         let tools_root = root.join("user-data");
-        let toolchains = tools_root.join("rustup-home/toolchains");
+        let toolchains = tools_root.join("tools/rustup/home/toolchains");
         let pinned = toolchains.join("1.97.0-x86_64-unknown-linux-gnu/bin/cargo");
         let ambient = toolchains.join("1.83.0-x86_64-unknown-linux-gnu/bin/cargo");
         fs::create_dir_all(pinned.parent().expect("pinned cargo parent"))

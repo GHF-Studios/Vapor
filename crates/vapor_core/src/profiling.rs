@@ -123,7 +123,7 @@ struct Aggregate {
 pub fn profile_library_path() -> Result<PathBuf, ProfileError> {
     let installation = VaporInstallation::discover()?;
     Ok(installation
-        .data_root()
+        .user_data_root()
         .join(PROFILE_DIR)
         .join(LIBRARY_FILE))
 }

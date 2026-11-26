@@ -1,5 +1,9 @@
 //! Shared Rust runtime target vocabulary for packaging and distribution.
 
+pub use vapor_core::target::{LINUX_GNU_TARGET, WINDOWS_GNU_TARGET};
+#[cfg(test)]
+use vapor_core::target::SUPPORTED_RUNTIME_TARGETS;
+
 /// Resolve the Rust compiler host triple for the installed toolchain.
 pub fn host_rust_target() -> String {
     match (std::env::consts::ARCH, std::env::consts::OS) {

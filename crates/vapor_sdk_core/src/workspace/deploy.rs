@@ -25,7 +25,7 @@ pub(super) fn workspace_deploy(
         return Err(WorkspaceCommandError::BuildFailedBeforeDeploy(build.status));
     }
 
-    let executable_name = executable_name(target.package);
+    let executable_name = executable_name(target.executable);
     let source_executable = cargo
         .target_dir
         .join(DEV_ARTIFACT_DIR)
@@ -50,6 +50,7 @@ pub(super) fn workspace_deploy(
 #[derive(Debug, Clone, Copy)]
 struct DeployTarget {
     package: &'static str,
+    executable: &'static str,
     alias: &'static str,
 }
 
@@ -57,6 +58,7 @@ fn deploy_target(identity: &WorkspaceIdentity) -> Result<DeployTarget, Workspace
     match identity.name.as_str() {
         "vapor-cli" => Ok(DeployTarget {
             package: "vapor_cli",
+            executable: "vapor",
             alias: "vapor",
         }),
         _ => Err(WorkspaceCommandError::WrongWorkspaceName {
@@ -191,7 +193,7 @@ fn write_activation_script(
     destination: &Path,
 ) -> Result<(), WorkspaceCommandError> {
     let content = format!(
-        "@echo off\r\nset \"VAPOR_HOME=%~dp0\"\r\nif \"%VAPOR_HOME:~-1%\"==\"\\\" set \"VAPOR_HOME=%VAPOR_HOME:~0,-1%\"\r\nset \"CARGO_HOME=%VAPOR_HOME%\\tools\\cargo\\home\"\r\nset \"RUSTUP_HOME=%VAPOR_HOME%\\tools\\rustup\\home\"\r\nset \"RUSTUP_TOOLCHAIN={}\"\r\nset \"VAPOR_STEAM_HOME=%VAPOR_HOME%\\steam\"\r\nset \"PATH=%VAPOR_HOME%;%VAPOR_HOME%\\bin;%RUSTUP_HOME%\\toolchains\\{}-{}\\bin;%VAPOR_HOME%\\tools\\cargo\\bin;%VAPOR_HOME%\\tools\\rustup\\bin;%VAPOR_HOME%\\steam\\steamcmd;%PATH%\"\r\n",
+        "@echo off\r\nset \"VAPOR_HOME=%~dp0\"\r\nif \"%VAPOR_HOME:~-1%\"==\"\\\" set \"VAPOR_HOME=%VAPOR_HOME:~0,-1%\"\r\nset \"VAPOR_USER_DATA_ROOT=%LOCALAPPDATA%\\Vapor\"\r\nset \"CARGO_HOME=%VAPOR_USER_DATA_ROOT%\\tools\\cargo\\home\"\r\nset \"RUSTUP_HOME=%VAPOR_USER_DATA_ROOT%\\tools\\rustup\\home\"\r\nset \"RUSTUP_TOOLCHAIN={}\"\r\nset \"VAPOR_STEAM_HOME=%VAPOR_USER_DATA_ROOT%\\tools\\steamcmd\"\r\nset \"PATH=%VAPOR_HOME%;%VAPOR_HOME%\\bin;%RUSTUP_HOME%\\toolchains\\{}-{}\\bin;%CARGO_HOME%\\bin;%VAPOR_USER_DATA_ROOT%\\tools\\rustup\\bin;%VAPOR_STEAM_HOME%;%PATH%\"\r\n",
         toolchain.toolchain.identifier(),
         toolchain.toolchain.identifier(),
         toolchain.host_triple
@@ -209,10 +211,21 @@ fn write_activation_script(
         r#"# Source this file from the Vapor app root: . ./vapor_env.sh
 VAPOR_HOME=$(CDPATH= cd -- "$(dirname -- "${{BASH_SOURCE:-$0}}")" && pwd)
 export VAPOR_HOME
-export CARGO_HOME="$VAPOR_HOME/tools/cargo/home"
-export RUSTUP_HOME="$VAPOR_HOME/tools/rustup/home"
+export VAPOR_USER_DATA_ROOT="$(
+    case "$(uname -s)" in
+        Darwin) printf '%s/Library/Application Support/Vapor' "$HOME" ;;
+        *)
+            case "${{XDG_DATA_HOME:-}}" in
+                /*) printf '%s/vapor' "$XDG_DATA_HOME" ;;
+                *) printf '%s/.local/share/vapor' "$HOME" ;;
+            esac
+            ;;
+    esac
+)"
+export CARGO_HOME="$VAPOR_USER_DATA_ROOT/tools/cargo/home"
+export RUSTUP_HOME="$VAPOR_USER_DATA_ROOT/tools/rustup/home"
 export RUSTUP_TOOLCHAIN="{}"
-export VAPOR_STEAM_HOME="$VAPOR_HOME/steam"
+export VAPOR_STEAM_HOME="$VAPOR_USER_DATA_ROOT/tools/steamcmd"
 
 vapor_prepend_path() {{
     case ":$PATH:" in
@@ -221,10 +234,10 @@ vapor_prepend_path() {{
     esac
 }}
 
-vapor_prepend_path "$VAPOR_HOME/steam/steamcmd"
-vapor_prepend_path "$VAPOR_HOME/tools/rustup/bin"
+vapor_prepend_path "$VAPOR_STEAM_HOME"
+vapor_prepend_path "$VAPOR_USER_DATA_ROOT/tools/rustup/bin"
 vapor_prepend_path "$RUSTUP_HOME/toolchains/{}-{}/bin"
-vapor_prepend_path "$VAPOR_HOME/tools/cargo/bin"
+vapor_prepend_path "$CARGO_HOME/bin"
 vapor_prepend_path "$VAPOR_HOME/bin"
 vapor_prepend_path "$VAPOR_HOME"
 export PATH

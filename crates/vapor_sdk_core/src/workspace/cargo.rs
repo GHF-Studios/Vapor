@@ -25,7 +25,7 @@ impl VaporCargo {
         let target = vapor_core::HostTarget::current()
             .map_err(|error| WorkspaceCommandError::UnsupportedHost(error.to_string()))?
             .triple();
-        let target_dir = toolchain.vapor_home.join("cache/build").join(target);
+        let target_dir = toolchain.data_root.join("cache/build").join(target);
 
         Ok(Self {
             toolchain,
@@ -40,6 +40,7 @@ impl VaporCargo {
             vapor_core::managed_process::background_command(&self.toolchain.cargo_path);
         RustToolchainCommandEnvironment::new(
             &self.toolchain.vapor_home,
+            &self.toolchain.data_root,
             &self.cargo_home,
             &self.toolchain.rustup_home,
             self.toolchain.toolchain.identifier(),

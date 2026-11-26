@@ -64,11 +64,16 @@ impl ClientHostContext {
                     .map(PathBuf::from)
             })
             .or_else(|| {
-                env_value(inherited_environment, "VAPOR_HOME")
-                    .map(|root| PathBuf::from(root).join("data/state/studio"))
+                env_value(inherited_environment, "VAPOR_USER_DATA_ROOT")
+                    .map(PathBuf::from)
+                    .filter(|root| root.is_absolute())
+                    .map(|root| root.join("state/studio"))
+            })
+            .or_else(|| {
+                vapor_product_layout::user_data_root().map(|root| root.join("state/studio"))
             })
             .ok_or_else(|| {
-                "Vapor Client data path is unavailable; set VAPOR_HOME or VAPOR_CLIENT_STATE_DIR"
+                "Vapor Client data path is unavailable; set VAPOR_USER_DATA_ROOT or a platform home variable"
                     .to_owned()
             })?;
         let app_root = args

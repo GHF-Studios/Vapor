@@ -155,7 +155,7 @@ pub use profiling::{
 
 pub use product_layout::{
     user_data_root, ACTIVE_VERSION_FILE, APPLICATION_DIRECTORY, ProductLayoutError,
-    RELEASES_DIRECTORY, StandaloneProductLayout,
+    RELEASES_DIRECTORY, StandaloneProductLayout, VaporUserDataLayout,
 };
 
 pub use role::{

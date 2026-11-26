@@ -26,7 +26,7 @@ pub fn inspect(root: &Path) -> CrossToolchainStatus {
     if !is_executable(&zig) {
         missing.push(format!("zig (expected at {})", zig.display()));
     }
-    let clang = llvm_mingw_clang(vapor_home);
+    let clang = llvm_mingw_clang(root);
     if !is_executable(&clang) {
         missing.push(format!(
             "llvm-mingw clang (expected at {})",
@@ -38,7 +38,7 @@ pub fn inspect(root: &Path) -> CrossToolchainStatus {
         "llvm-dlltool",
         "x86_64-w64-mingw32-ar",
     ] {
-        let path = llvm_mingw_bin(vapor_home).join(executable(tool));
+        let path = llvm_mingw_bin(root).join(executable(tool));
         if !is_executable(&path) {
             missing.push(format!(
                 "llvm-mingw tool {} (expected at {})",
@@ -47,30 +47,28 @@ pub fn inspect(root: &Path) -> CrossToolchainStatus {
             ));
         }
     }
-    let linker = zig_linker_path(vapor_home, LINUX_GNU_TARGET);
+    let linker = zig_linker_path(root, LINUX_GNU_TARGET);
+    let archiver = zig_archiver_path(root);
     if !is_executable(&linker) {
         missing.push(format!(
             "LLVM archiver for {LINUX_GNU_TARGET} (expected at {})",
             archiver.display()
         ));
     }
-    let compiler = linux_cc_compiler(root);
+    let compiler = root.join("bin").join(executable("vapor-linux-cc"));
     if !is_executable(&compiler) {
         missing.push(format!(
             "Vapor Zig C compiler adapter for {LINUX_GNU_TARGET} (expected at {})",
             compiler.display()
         ));
     }
-    if !llvm_mingw_bin(vapor_home).parent().is_some_and(|bundle| {
+    if !llvm_mingw_bin(root).parent().is_some_and(|bundle| {
         bundle
             .join("x86_64-w64-mingw32/bin/libunwind.dll")
             .is_file()
     }) {
         missing.push("llvm-mingw runtime DLL (libunwind.dll)".to_owned());
     }
-    let archiver = vapor_home
-        .join("tools/cross/bin")
-        .join(format!("zig-ar{}", env::consts::EXE_SUFFIX));
     if !is_executable(&archiver) {
         missing.push(format!(
             "Linux target archiver (expected at {})",
@@ -132,7 +130,6 @@ pub fn configure_linker_env(
 
 /// Copy runtime DLLs required by a Windows GNU binary into its deploy directory.
 pub fn copy_windows_runtime_dlls(
-    installation_root: &Path,
     vapor_home: &Path,
     target: &str,
     target_directory: &Path,

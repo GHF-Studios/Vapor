@@ -32,6 +32,16 @@ pub struct Application {
     depots: Option<SteamDepots>,
 }
 
+/// Product shape published by a Vapor Steam application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SteamProductKind {
+    /// The Vapor runtime and its self-hosting tools.
+    VaporRuntime,
+    /// A content Packagepack executable and its declared runtime sidecars.
+    Packagepack,
+}
+
 /// Steam depot definitions for shared and ABI-specific product payloads.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]

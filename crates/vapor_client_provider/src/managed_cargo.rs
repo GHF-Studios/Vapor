@@ -42,10 +42,12 @@ impl ApplicationCargo {
             .to_os_string();
         let root = installation.root();
         let tools_root = installation.user_data_root();
+        let user_data = vapor_core::VaporUserDataLayout::from_root(tools_root.to_path_buf());
         let environment = RustToolchainCommandEnvironment::new(
             root,
-            tools_root.join("cargo-home"),
-            tools_root.join("rustup-home"),
+            tools_root,
+            user_data.cargo_home(),
+            user_data.rustup_home(),
             toolchain,
             rustc,
             rustdoc,
@@ -90,7 +92,7 @@ fn application_path(
         toolchain_bin.to_path_buf(),
         binaries.to_path_buf(),
         root.join("bin"),
-        root.join("tools/llvm-mingw/bin"),
+        tools_root.join("tools/llvm-mingw/bin"),
     ];
     if let Some(inherited) = inherited {
         entries.extend(
@@ -117,8 +119,8 @@ fn application_path(
 fn is_raw_tool_path(root: &Path, tools_root: &Path, entry: &Path) -> bool {
     [root, tools_root].iter().any(|base| {
         [
-            "cargo-home/bin",
-            "rustup/bin",
+            "tools/cargo/home/bin",
+            "tools/rustup/bin",
             "tools/steamcmd",
             "tools/zig",
             "tools/cross/bin",
@@ -126,7 +128,7 @@ fn is_raw_tool_path(root: &Path, tools_root: &Path, entry: &Path) -> bool {
         ]
         .iter()
         .any(|relative| entry == base.join(relative))
-            || (entry.starts_with(base.join("rustup-home/toolchains"))
+            || (entry.starts_with(base.join("tools/rustup/home/toolchains"))
                 && entry.file_name().is_some_and(|name| name == "bin"))
     })
 }

@@ -143,7 +143,11 @@ pub fn package_application_with_context(
         None
     };
     let standalone = if has_standalone_payload {
-        Some(vapor_client_provider::distribution::stage_standalone_bundles(&paths, target_triples)?)
+        Some(vapor_client_provider::standalone_release::stage_standalone_release(
+            paths.source().root(),
+            &workspace_manifest,
+            target_triples,
+        )?)
     } else {
         None
     };

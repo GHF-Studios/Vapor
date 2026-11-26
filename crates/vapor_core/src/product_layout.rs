@@ -2,5 +2,5 @@
 
 pub use vapor_product_layout::{
     user_data_root, ACTIVE_VERSION_FILE, APPLICATION_DIRECTORY, ProductLayoutError,
-    RELEASES_DIRECTORY, StandaloneProductLayout,
+    RELEASES_DIRECTORY, StandaloneProductLayout, VaporUserDataLayout,
 };

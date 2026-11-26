@@ -1968,9 +1968,7 @@ fn install_selector(
         ));
     }
 
-    if let Some(seed) = root_content_seed(context.installation, selector)?
-        && seed.source.as_deref() == Some("steam-depot")
-    {
+    if let Some(seed) = root_content_seed(context.installation, selector)? {
         install_steam_depot_product(
             context,
             &seed,
@@ -1984,25 +1982,19 @@ fn install_selector(
 
     if state.index.cache_by_selector(selector).is_none()
         && let Some(seed) = root_content_seed(context.installation, selector)?
-        && let Some(workshop_id) = seed.workshop_id
+        && let Some(workshop_id) = seed.workshop_id.as_deref()
     {
-        let workshop_id = seed.workshop_id.as_deref().ok_or_else(|| {
-            format!(
-                "root content '{}' has no Workshop ID and is not a Steam-depot product",
-                seed.id
-            )
-        })?;
         let acquired = acquire_workshop_item(
             context.installation,
             seed.app_id,
-            &workshop_id,
+            workshop_id,
             context.account,
         )?;
         state.index.caches.insert(
             acquired.artifact_id().to_owned(),
             CacheRecord {
                 artifact_id: acquired.artifact_id().to_owned(),
-                workshop_id: Some(workshop_id),
+                workshop_id: Some(workshop_id.to_owned()),
                 version: read_deployed_manifest(acquired.cache_root())?
                     .version()
                     .map(ToOwned::to_owned),
@@ -2134,9 +2126,7 @@ fn install_selector(
                     continue;
                 }
             }
-            if let Some(seed) = root_content_seed(context.installation, dependency.id())?
-                && seed.source.as_deref() == Some("steam-depot")
-            {
+            if let Some(seed) = root_content_seed(context.installation, dependency.id())? {
                 install_steam_depot_product(
                     context,
                     &seed,
@@ -2263,13 +2253,6 @@ fn install_steam_depot_product(
                     dependency.id()
                 )
             })?;
-            if seed.source.as_deref() != Some("steam-depot") {
-                return Err(format!(
-                    "{} requires {}, which is not installed and is not a Steam-depot product",
-                    artifact.id(),
-                    dependency.id()
-                ));
-            }
             install_steam_depot_product(
                 context,
                 &seed,
@@ -2620,23 +2603,18 @@ fn product_path_for_seed(
             vapor_core::VAPOR_PRODUCT_ROOT_ENV
         )
     })?;
-    let relative = seed.path.as_deref().ok_or_else(|| {
-        format!(
-            "Steam product seed '{}' does not declare its relative path",
-            seed.id
-        )
-    })?;
+    let relative = Path::new("content/installed").join(&seed.id);
     if relative.is_absolute()
         || relative
             .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
     {
         return Err(format!(
             "Steam product seed '{}' has an unsafe relative path",
             seed.id
         ));
     }
-    let product = root.join(relative);
+    let product = root.join(&relative);
     let canonical = fs::canonicalize(&product).map_err(io("resolve Steam product", &product))?;
     ensure_contained(root, &canonical)?;
     if !canonical.is_dir() {

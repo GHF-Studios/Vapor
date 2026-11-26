@@ -465,17 +465,16 @@ fn content_build_output_root(
                 path.display()
             )
         })?;
-    let root = paths.installation().output_root().join("dev").join(name);
-    if runtime_target.explicit {
-        Ok(root.join(runtime_target.triple()).join("debug"))
+    let target = if runtime_target.explicit {
+        runtime_target.triple().to_owned()
     } else {
         crate::target::host_runtime_target()
     };
-    let _ = name;
     Ok(paths
         .installation()
-        .root()
-        .join("cache/build")
+        .output_root()
+        .join("dev")
+        .join(name)
         .join(target)
         .join("debug"))
 }

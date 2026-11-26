@@ -372,10 +372,10 @@ pub fn generate_local_cargo_realization(
     let packages = AppPackages::from_composition(catalog, composition)?;
 
     let root = toolchain
-        .vapor_home
+        .data_root
         .join("cache/extract/compositions")
         .join(filesystem_name(&composition.root));
-    let target_dir = cargo_realization_target_dir(&toolchain.vapor_home, toolchain.build_target);
+    let target_dir = cargo_realization_target_dir(&toolchain.data_root, toolchain.build_target);
 
     let source = root.join("src");
 
@@ -433,8 +433,8 @@ fn run_cargo(
     }
 }
 
-fn cargo_realization_target_dir(vapor_home: &Path, target: &str) -> PathBuf {
-    vapor_home.join("cache/build").join(target)
+fn cargo_realization_target_dir(user_data_root: &Path, target: &str) -> PathBuf {
+    user_data_root.join("cache/build").join(target)
 }
 
 struct AppPackages {
@@ -707,11 +707,11 @@ mod tests {
 
     #[test]
     fn cargo_realization_target_uses_vapor_managed_cache() {
-        let vapor_home = Path::new("/vapor");
+        let user_data = Path::new("/vapor-user-data");
 
         assert_eq!(
-            cargo_realization_target_dir(vapor_home, "x86_64-unknown-linux-gnu"),
-            Path::new("/vapor/cache/build/x86_64-unknown-linux-gnu")
+            cargo_realization_target_dir(user_data, "x86_64-unknown-linux-gnu"),
+            Path::new("/vapor-user-data/cache/build/x86_64-unknown-linux-gnu")
         );
     }
 }

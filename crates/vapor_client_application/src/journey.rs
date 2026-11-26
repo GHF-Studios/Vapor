@@ -353,14 +353,12 @@ fn snapshot(document: ProgressDocument) -> JourneyProgressSnapshot {
 }
 
 fn progress_path() -> Result<PathBuf, String> {
-    vapor_core::VaporInstallation::discover()
-        .map(|installation| {
-            installation
-                .state_root()
-                .join("journeys")
-                .join("progress.json")
-        })
-        .map_err(|error| format!("could not locate Vapor Home for journey progress: {error}"))
+    let installation = vapor_core::VaporInstallation::discover()
+        .map_err(|error| format!("could not locate Vapor Home for journey progress: {error}"))?;
+    let state_root = installation
+        .ensure_state_root()
+        .map_err(|error| format!("could not resolve Vapor User Data for journey progress: {error}"))?;
+    Ok(state_root.join("journeys").join("progress.json"))
 }
 
 fn read_progress() -> Result<ProgressDocument, String> {

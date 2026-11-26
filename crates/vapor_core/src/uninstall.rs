@@ -3,7 +3,9 @@
 //! Ordinary uninstall removes machine integration only. Vapor-owned OS user
 //! data and authored source survive unless explicitly purged.
 
-use crate::installation::{InstallationError, VAPOR_HOME_ENV, VaporInstallation};
+use crate::installation::{
+    InstallationError, VAPOR_HOME_ENV, VAPOR_HOME_MANIFEST_FILE_NAME, VaporInstallation,
+};
 use crate::source::{SourceError, SourceState, source_state, source_state_at_user_data_root};
 use crate::superworkspace::{
     SUPERWORKSPACE_MANIFEST_FILE_NAME, SuperworkspaceError, VaporSuperworkspace,
@@ -47,7 +49,7 @@ pub struct UninstallOptions {
 #[derive(Debug, Clone)]
 pub struct UninstallReport {
     pub installation_root: PathBuf,
-    pub data_root: PathBuf,
+    pub user_data_root: PathBuf,
     pub superworkspace_root: Option<PathBuf>,
     pub integration: Vec<String>,
     pub user_data_purged: bool,
@@ -197,11 +199,11 @@ pub fn uninstall_installation_for(
     installation: &VaporInstallation,
     options: UninstallOptions,
 ) -> Result<UninstallReport, UninstallError> {
-    let data_root = installation.data_root();
+    let user_data_root = installation.user_data_root();
 
     let erase_all = options.erase_all;
     let purge_superworkspace = options.purge_superworkspace || erase_all;
-    let purge_app_external = options.purge_app_external || erase_all;
+    let purge_user_data = options.purge_user_data || erase_all;
     let superworkspace_root = if erase_all {
         match registered_superworkspace(installation) {
             Ok(root) => root,
@@ -218,13 +220,13 @@ pub fn uninstall_installation_for(
     // mutating integration, user data, or authored source.
     let preflight = preflight_uninstall(
         installation,
-        &data_root,
+        &user_data_root,
         superworkspace_root.as_deref(),
-        purge_app_external,
+        purge_user_data,
         erase_all,
     )?;
 
-    if !purge_app_external && installation.root.join("state").is_dir() {
+    if !purge_user_data && installation.legacy_state_root().exists() {
         installation
             .ensure_state_root()
             .map_err(UninstallError::Installation)?;
@@ -246,41 +248,17 @@ pub fn uninstall_installation_for(
     // Remove machine integration only after all safety-sensitive paths pass
     // preflight. Then remove the runtime payload while retaining user-owned
     // content by default.
-    let integration = match remove_machine_integration(installation) {
-        Ok(integration) => integration,
-        Err(error) => {
-            #[cfg(windows)]
-            drop(deferred_full_nuke);
-            return Err(error);
-        }
-    };
+    let integration = remove_machine_integration(installation)?;
     let user_data_purged = if let Some(user_data) = &preflight.user_data_purge_root {
         remove_preflighted_tree(user_data)?
-    } else if preflight.full_nuke_paths.is_empty() {
-        remove_runtime_payload(installation)?;
-        false
     } else {
         false
     };
-    let mut full_nuke_paths = Vec::new();
-    if !preflight.full_nuke_paths.is_empty() {
-        #[cfg(windows)]
-        deferred_full_nuke
-            .expect("a deferred cleanup was staged for non-empty Windows roots")
-            .commit()?;
-        #[cfg(not(windows))]
-        for path in &preflight.full_nuke_paths {
-            if remove_preflighted_tree(path)? {
-                full_nuke_paths.push(path.clone());
-            }
-        }
-        #[cfg(windows)]
-        full_nuke_paths.clone_from(&preflight.full_nuke_paths);
-    }
+    remove_runtime_payload(installation)?;
 
     Ok(UninstallReport {
         installation_root: installation.root.clone(),
-        data_root,
+        user_data_root,
         superworkspace_root,
         integration,
         user_data_purged,
@@ -313,42 +291,22 @@ pub fn validate_superworkspace_for_erasure(
 struct UninstallPreflight {
     superworkspace_purge_root: Option<PathBuf>,
     user_data_purge_root: Option<PathBuf>,
-    full_nuke_paths: Vec<PathBuf>,
 }
 
 fn preflight_uninstall(
     installation: &VaporInstallation,
-    data_root: &Path,
+    user_data_root: &Path,
     superworkspace_root: Option<&Path>,
-    purge_app_external: bool,
+    purge_user_data: bool,
     erase_all: bool,
 ) -> Result<UninstallPreflight, UninstallError> {
     preflight_machine_integration_removal()?;
-    for name in LEGACY_APP_MUTABLE_DIRS {
-        let path = installation.root.join(name);
-        preflight_owned_tree(&path, &[user_data_root])?;
-    }
-
-    if options.full_nuke {
-        let preview = preview_full_nuke(installation)?;
-        if preview.paths.is_empty() {
-            return Err(UninstallError::UnsafePurgeRoot {
-                path: installation.root.clone(),
-            });
-        }
-        return Ok(UninstallPreflight {
-            superworkspace_purge_root: None,
-            user_data_purge_root: None,
-            full_nuke_paths: preview.paths,
-        });
-    }
 
     let superworkspace_purge_root = if let Some(superworkspace) = superworkspace_root {
-        let managed_sources = installation.root.join("sources");
-        let root = preflight_owned_tree(
+        let root = preflight_owned_tree_with_managed_child(
             superworkspace,
             &[installation.root.as_path(), user_data_root],
-            Some(&managed_sources),
+            Some(&installation.sources_root()),
         )?
         .ok_or_else(|| UninstallError::UnsafePurgeRoot {
             path: superworkspace.to_path_buf(),
@@ -364,7 +322,7 @@ fn preflight_uninstall(
         None
     };
 
-    let app_external_purge_root = if purge_app_external {
+    let user_data_purge_root = if purge_user_data {
         preflight_owned_tree(user_data_root, &[installation.root.as_path()])?
     } else {
         None
@@ -373,7 +331,6 @@ fn preflight_uninstall(
     Ok(UninstallPreflight {
         superworkspace_purge_root,
         user_data_purge_root,
-        full_nuke_paths: Vec::new(),
     })
 }
 
@@ -488,6 +445,13 @@ fn erase_registered_superworkspace(
 }
 
 fn preflight_owned_tree(
+    path: &Path,
+    protected: &[&Path],
+) -> Result<Option<PathBuf>, UninstallError> {
+    preflight_owned_tree_with_managed_child(path, protected, None)
+}
+
+fn preflight_owned_tree_with_managed_child(
     path: &Path,
     protected: &[&Path],
     allowed_managed_child: Option<&Path>,
@@ -1133,6 +1097,7 @@ fn remove_windows_user_path(installation: &VaporInstallation) -> Result<bool, Un
         .triple();
 
     let bin = installation.root.join("bin").join(target);
+    let bins = bin.to_string_lossy().into_owned();
     let legacy = format!(r"%VAPOR_HOME%\bin\{target}");
     let script = r#"
 param([string]$binsEncoded, [string]$legacyEncoded)

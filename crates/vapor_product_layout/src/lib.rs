@@ -9,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
+use semver::Version;
 
 pub const APPLICATION_DIRECTORY: &str = "apps/vapor";
 pub const RELEASES_DIRECTORY: &str = "releases";
@@ -89,10 +90,67 @@ pub fn user_data_root() -> Option<PathBuf> {
             .map(PathBuf::from)
             .map(|home| home.join("Library/Application Support/Vapor")),
         _ => env::var_os("XDG_DATA_HOME")
-            .filter(|value| !value.is_empty())
             .map(PathBuf::from)
+            .filter(|value| value.is_absolute())
             .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
             .map(|root| root.join("vapor")),
+    }
+}
+
+/// Canonical persistent and disposable paths below Vapor User Data.
+///
+/// Release binaries live in immutable versioned roots. Toolchains, Cargo
+/// registries, caches, downloads, and generated output use this separate
+/// user-data layout so installing another app version never changes their
+/// location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaporUserDataLayout {
+    root: PathBuf,
+}
+
+impl VaporUserDataLayout {
+    pub fn discover() -> Option<Self> {
+        user_data_root().map(Self::from_root)
+    }
+
+    pub fn from_root(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn tools_root(&self) -> PathBuf {
+        self.root.join("tools")
+    }
+
+    pub fn cargo_home(&self) -> PathBuf {
+        self.root.join("tools/cargo/home")
+    }
+
+    pub fn cargo_bin(&self) -> PathBuf {
+        self.cargo_home().join("bin")
+    }
+
+    pub fn rustup_home(&self) -> PathBuf {
+        self.root.join("tools/rustup/home")
+    }
+
+    pub fn rustup_bin(&self) -> PathBuf {
+        self.root.join("tools/rustup/bin")
+    }
+
+    pub fn rust_toolchains(&self) -> PathBuf {
+        self.rustup_home().join("toolchains")
+    }
+
+    pub fn build_cache(&self) -> PathBuf {
+        self.root.join("cache/build")
+    }
+
+    pub fn output_root(&self) -> PathBuf {
+        self.root.join("output")
     }
 }
 
@@ -273,7 +331,7 @@ impl StandaloneProductLayout {
         })
     }
 
-    /// List complete releases available for this machine, in lexical version order.
+    /// List complete releases available for this machine, newest SemVer first.
     pub fn installed_versions(&self) -> Result<Vec<String>, ProductLayoutError> {
         let releases = self.releases_root();
         match fs::symlink_metadata(&releases) {
@@ -326,7 +384,7 @@ impl StandaloneProductLayout {
                 versions.push(name.to_owned());
             }
         }
-        versions.sort();
+        versions.sort_by(|left, right| compare_release_versions(left, right));
         Ok(versions)
     }
 
@@ -450,4 +508,46 @@ fn valid_version_segment(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'+' | b'-'))
+}
+
+fn compare_release_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    fn key(value: &str) -> Option<(Version, bool, Option<Version>)> {
+        if let Some(inner) = value.strip_prefix("0.5.0-pre-alpha-") {
+            let inner = Version::parse(inner).ok()?;
+            if !inner.pre.is_empty() || !inner.build.is_empty() {
+                return None;
+            }
+            return Some((Version::parse("0.5.0").ok()?, false, Some(inner)));
+        }
+        let stable = Version::parse(value).ok()?;
+        if !stable.pre.is_empty() {
+            return None;
+        }
+        Some((stable, true, None))
+    }
+
+    match (key(left), key(right)) {
+        (Some(left_key), Some(right_key)) => right_key
+            .cmp(&left_key)
+            .then_with(|| right.cmp(left)),
+        _ => right.cmp(left),
+    }
+}
+
+#[cfg(test)]
+mod version_order_tests {
+    use super::compare_release_versions;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn installed_release_versions_use_semver_precedence() {
+        assert_eq!(
+            compare_release_versions("0.5.0-pre-alpha-0.1.10", "0.5.0-pre-alpha-0.1.9"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_release_versions("0.5.0-pre-alpha-0.2.0", "0.5.0-pre-alpha-0.1.99"),
+            Ordering::Less
+        );
+    }
 }

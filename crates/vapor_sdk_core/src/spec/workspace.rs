@@ -28,10 +28,10 @@ pub(super) fn describe(command: &WorkspaceCommand) -> CommandSpec {
         ),
         WorkspaceCommand::Check => spec(
             "sdk check",
-            "Check the current workspace through the Vapor-managed Cargo binary.",
+            "Check the current workspace through Vapor-managed Cargo without changing Cargo.lock.",
             StateSurface::BuildArtifact,
             &["Vapor toolchain is installed"],
-            &["run cargo check without falling back to system Cargo"],
+            &["run cargo check --locked without falling back to system Cargo"],
         ),
         WorkspaceCommand::Fmt => spec(
             "sdk fmt",
@@ -42,17 +42,30 @@ pub(super) fn describe(command: &WorkspaceCommand) -> CommandSpec {
         ),
         WorkspaceCommand::Build => spec(
             "sdk build",
-            "Build the current workspace through the Vapor-managed Cargo binary.",
+            "Build the current workspace through Vapor-managed Cargo without changing Cargo.lock.",
             StateSurface::BuildArtifact,
             &["Vapor toolchain is installed"],
-            &["write build artifacts under the Vapor output root"],
+            &[
+                "run cargo build --locked",
+                "write build artifacts under the Vapor-managed build-cache root",
+            ],
+        ),
+        WorkspaceCommand::BuildRelease => spec(
+            "sdk build-release",
+            "Build the current workspace in Cargo's release profile through Vapor-managed Cargo without changing Cargo.lock.",
+            StateSurface::BuildArtifact,
+            &["Vapor toolchain is installed"],
+            &[
+                "run cargo build --release --locked",
+                "write optimized build artifacts under the Vapor-managed build-cache root",
+            ],
         ),
         WorkspaceCommand::Test => spec(
             "sdk test",
-            "Test the current workspace through the Vapor-managed Cargo binary.",
+            "Test the current workspace through Vapor-managed Cargo without changing Cargo.lock.",
             StateSurface::BuildArtifact,
             &["Vapor toolchain is installed"],
-            &["run cargo test --workspace without falling back to system Cargo"],
+            &["run cargo test --workspace --locked without falling back to system Cargo"],
         ),
         WorkspaceCommand::Deploy => spec(
             "sdk deploy",

@@ -69,7 +69,10 @@ struct PersistedSourceState {
 
 /// Inspect source registration belonging to one Vapor Installation.
 pub fn source_state(installation: &VaporInstallation) -> Result<SourceState, SourceError> {
-    let state_path = source_state_path(installation);
+    let state_root = installation
+        .ensure_state_root()
+        .map_err(SourceError::Installation)?;
+    let state_path = state_root.join(SOURCE_STATE_FILE_NAME);
     let persisted = load(&state_path)?;
 
     Ok(source_state_from_persisted(state_path, persisted))
@@ -106,10 +109,11 @@ pub fn configure_superworkspace(
 ) -> Result<VaporSuperworkspace, SourceError> {
     let installation_root =
         fs::canonicalize(&installation.root).unwrap_or_else(|_| installation.root.clone());
-    let data = installation.data_root();
+    let data = installation.user_data_root();
     let data_root = fs::canonicalize(&data).unwrap_or(data);
+    let user_data_root = data_root.clone();
     let candidate = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let managed_sources_root = installation_root.join("sources");
+    let managed_sources_root = installation.sources_root();
     let is_managed_sources_root = candidate == managed_sources_root;
     if (roots_overlap(&candidate, &installation_root) || roots_overlap(&candidate, &user_data_root))
         && !is_managed_sources_root
@@ -123,7 +127,7 @@ pub fn configure_superworkspace(
 
     let superworkspace = VaporSuperworkspace::setup(root)
         .map_err(|error| SourceError::Superworkspace(error.to_string()))?;
-    let mut persisted = load(&source_state_path(installation))?;
+    let mut persisted = load_installation_state(installation)?;
     persisted.superworkspace = Some(superworkspace.root.clone());
     // A Superworkspace owns and organizes authored source roots; it is not
     // itself one of those roots. Keeping it in `known` makes the source picker
@@ -193,7 +197,7 @@ pub fn remember_source(
         message: error.to_string(),
     })?;
 
-    let mut persisted = load(&source_state_path(installation))?;
+    let mut persisted = load_installation_state(installation)?;
     if !persisted.known.contains(&source) {
         persisted.known.push(source);
         persisted.known.sort();
@@ -229,7 +233,10 @@ pub fn open_source(
         });
     }
 
-    let state_path = source_state_path(installation);
+    let state_root = installation
+        .ensure_state_root()
+        .map_err(SourceError::Installation)?;
+    let state_path = state_root.join(SOURCE_STATE_FILE_NAME);
     let mut persisted = load(&state_path)?;
 
     if !persisted.known.contains(&source) {
@@ -276,7 +283,10 @@ pub fn validate_source_location(
 
 /// Clear the active authoring source without unregistering it.
 pub fn close_source(installation: &VaporInstallation) -> Result<SourceState, SourceError> {
-    let state_path = source_state_path(installation);
+    let state_root = installation
+        .ensure_state_root()
+        .map_err(SourceError::Installation)?;
+    let state_path = state_root.join(SOURCE_STATE_FILE_NAME);
     let mut persisted = load(&state_path)?;
     if persisted.active.take().is_some() {
         save(installation, &persisted)?;
@@ -290,7 +300,10 @@ pub fn forget_source(
     source: &Path,
 ) -> Result<SourceState, SourceError> {
     let source = fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
-    let state_path = source_state_path(installation);
+    let state_root = installation
+        .ensure_state_root()
+        .map_err(SourceError::Installation)?;
+    let state_path = state_root.join(SOURCE_STATE_FILE_NAME);
     let mut persisted = load(&state_path)?;
 
     persisted.known.retain(|known| known != &source);
@@ -333,8 +346,13 @@ fn roots_overlap(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
 
-fn source_state_path(installation: &VaporInstallation) -> PathBuf {
-    installation.state_root().join(SOURCE_STATE_FILE_NAME)
+fn load_installation_state(
+    installation: &VaporInstallation,
+) -> Result<PersistedSourceState, SourceError> {
+    let state_root = installation
+        .ensure_state_root()
+        .map_err(SourceError::Installation)?;
+    load(&state_root.join(SOURCE_STATE_FILE_NAME))
 }
 
 fn load(path: &Path) -> Result<PersistedSourceState, SourceError> {

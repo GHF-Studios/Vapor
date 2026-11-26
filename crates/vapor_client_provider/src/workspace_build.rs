@@ -261,24 +261,24 @@ pub fn clean_development_cache(
         if is_cancelled() {
             return Err("operation cancelled".to_owned());
         }
-        remove_project_build_cache(&cache_root, project.name())?;
+        remove_named_build_cache(&cache_root, project.name())?;
         report_progress(index + 1, total, project.name());
     }
     let target = host_runtime_target();
-    let cache_root = paths.installation().root().join("cache/build");
-    remove_build_target_cache(&cache_root, &target)?;
+    let cache_root = paths.installation().user_data_root().join("cache/build");
+    remove_named_build_cache(&cache_root, &target)?;
     report_progress(1, 1, &target);
     Ok(())
 }
 
-fn remove_build_target_cache(cache_root: &Path, target_name: &str) -> Result<(), String> {
-    let path = Path::new(target_name);
+fn remove_named_build_cache(cache_root: &Path, entry_name: &str) -> Result<(), String> {
+    let path = Path::new(entry_name);
     let mut components = path.components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
         || components.next().is_some()
     {
         return Err(format!(
-            "build target cache must be a single directory name: {target_name}"
+            "build cache entry must be a single directory name: {entry_name}"
         ));
     }
 

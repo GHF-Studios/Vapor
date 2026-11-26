@@ -4,6 +4,19 @@ Vapor runs Rust and Cargo through its pinned, app-managed toolchain. This keeps
 the compiler version, target setup, environment, and output policy consistent
 across the SDK's build, test, documentation, and packaging operations.
 
+The SDK command surface includes `sdk build-release` for an optimized
+workspace build. For example, CI can build one declared workspace with:
+
+```text
+vapor sdk --workspace /path/to/workspace build-release
+```
+
+Its artifacts remain in Vapor User Data; it does not deploy them into an App
+Instance or publish them. Check, build, release-build, and test operations use
+Cargo's `--locked` option so they cannot rewrite an authored `Cargo.lock`.
+Use the explicit lockfile-resolution operation when dependency versions should
+change.
+
 Use the Vapor command for the job:
 
 ```text

@@ -2,7 +2,7 @@
 
 use crate::{
     discovery::{EnvironmentPaths, InstallationPaths},
-    distribution::{self, DistributionManifest, StageOptions, SteamDepotKind, SteamProductKind},
+    distribution::{self, DistributionManifest, StageOptions, SteamDepotKind},
     manifest,
 };
 use std::{
@@ -482,25 +482,31 @@ struct SteamPipeTemplates {
 }
 
 impl SteamPipeTemplates {
-    fn load(vapor_home: &Path) -> Result<Self, String> {
-        let root = vapor_home.join(STEAMPIPE_TEMPLATE_ROOT);
-        ensure_contained(vapor_home, &root)?;
+    fn load(_source_root: &Path) -> Result<Self, String> {
         Ok(Self {
-            app_build: read_template(&root, APP_BUILD_TEMPLATE)?,
-            app_build_depot_entry: read_template(&root, APP_BUILD_DEPOT_ENTRY_TEMPLATE)?,
-            depot_build: read_template(&root, DEPOT_BUILD_TEMPLATE)?,
+            app_build: APP_BUILD_TEMPLATE_TEXT.to_owned(),
+            app_build_depot_entry: APP_BUILD_DEPOT_ENTRY_TEMPLATE_TEXT.to_owned(),
+            depot_build: DEPOT_BUILD_TEMPLATE_TEXT.to_owned(),
         })
     }
 }
 
-fn read_template(root: &Path, name: &str) -> Result<String, String> {
-    let path = root.join(name);
-    fs::read_to_string(&path).map_err(|error| {
-        format!(
-            "failed to read SteamPipe template '{}': {error}\nhelp: repair the Vapor installation so its {STEAMPIPE_TEMPLATE_ROOT} resources are present",
-            path.display()
-        )
-    })
+fn require_file(path: PathBuf, message: &str) -> Result<(), String> {
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(format!("{message}: {}", path.display()))
+    }
+}
+
+fn require_script_target(path: &Path, expected: &str, message: &str) -> Result<(), String> {
+    let source = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read launch script '{}': {error}", path.display()))?;
+    if source.contains(expected) {
+        Ok(())
+    } else {
+        Err(format!("{message}: {}", path.display()))
+    }
 }
 
 fn render_template(template: &str, values: &[(&str, String)]) -> String {

@@ -6,6 +6,9 @@ members = ["crates/*"]
 version = "0.5.0"
 edition = "2024"
 
+[workspace.dependencies]
+semver = "1"
+
 [profile.dev]
 debug = "line-tables-only"
 

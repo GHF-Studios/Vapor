@@ -8,6 +8,7 @@ interprocess = "2.4"
 serde_json = "1"
 vapor_client_domain = { path = "../vapor_client_domain" }
 vapor_client_protocol = { path = "../vapor_client_protocol" }
+vapor_product_layout = { path = "../vapor_product_layout" }
 
 [target."cfg(windows)".dependencies]
 widestring = "1"

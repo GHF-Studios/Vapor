@@ -15,7 +15,7 @@ pub const VAPOR_HOME_ENV: &str = "VAPOR_HOME";
 pub const VAPOR_PRODUCT_ROOT_ENV: &str = "VAPOR_PRODUCT_ROOT";
 pub const VAPOR_HOME_MANIFEST_FILE_NAME: &str = "Vapor-Home.toml";
 
-const STATE_DIR: &str = "data/state";
+const LEGACY_STATE_DIR: &str = "data/state";
 const HOME_MARKER: &str = "schema = 1\n\n[vapor]\nid = \"ghf-studios/vapor\"\n";
 const BUNDLE_MARKER: &str = "Vapor-Standalone.toml";
 const BUNDLE_DIRS: &[&str] = &["bin", "docs", "examples", "metadata", "resources"];
@@ -88,6 +88,7 @@ impl fmt::Display for InstallationRootSource {
             Self::Explicit => "explicit Vapor home",
             Self::Environment => VAPOR_HOME_ENV,
             Self::Executable => "executable under Vapor home",
+            Self::DefaultHome => "default Vapor home",
         })
     }
 }
@@ -159,14 +160,8 @@ impl VaporInstallation {
             "docs",
             "examples",
             "metadata",
-            "output",
             "resources",
             "sources",
-            "cache/build",
-            "tools/cargo/bin",
-            "tools/cargo/home",
-            "tools/rustup/bin",
-            "tools/rustup/home",
         ] {
             let path = canonical_root.join(directory);
             fs::create_dir_all(&path).map_err(|source| InstallationError::Io { path, source })?;
@@ -862,22 +857,97 @@ impl VaporInstallation {
     /// Vapor owns its complete mutable state tree inside this independent home.
     pub fn user_data_root(&self) -> PathBuf {
         vapor_product_layout::user_data_root()
-            .unwrap_or_else(|| env::temp_dir().join("vapor-user-data"))
+            .unwrap_or_else(Self::user_data_root_fallback)
     }
 
-    /// Canonical persisted state path. No Steam-root or hidden `.vapor`
-    /// fallback is consulted.
+    fn user_data_root_fallback() -> PathBuf {
+        env::temp_dir().join("vapor-user-data")
+    }
+
+    /// Canonical persisted state path under Vapor User Data. State survives
+    /// switching or removing versioned Vapor App Instances.
     pub fn state_root(&self) -> PathBuf {
-        self.root.join(STATE_DIR)
+        self.user_data_root().join("state")
+    }
+
+    /// Path used for persisted state by legacy versioned Vapor App Instances.
+    pub fn legacy_state_root(&self) -> PathBuf {
+        self.root.join(LEGACY_STATE_DIR)
+    }
+
+    /// Canonical source checkout root owned by this Vapor home.
+    pub fn sources_root(&self) -> PathBuf {
+        self.root.join("sources")
     }
 
     /// Ensure the canonical persisted state directory exists.
     pub fn ensure_state_root(&self) -> Result<PathBuf, InstallationError> {
         let state_root = self.state_root();
-        fs::create_dir_all(&state_root).map_err(|source| InstallationError::Io {
-            path: state_root.clone(),
-            source,
-        })?;
+        match fs::symlink_metadata(&state_root) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(InstallationError::InvalidExplicitRoot {
+                    root: state_root,
+                    reason: "canonical Vapor state path must be a real directory",
+                });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir_all(&state_root).map_err(|source| InstallationError::Io {
+                    path: state_root.clone(),
+                    source,
+                })?;
+                let metadata = fs::symlink_metadata(&state_root).map_err(|source| {
+                    InstallationError::Io {
+                        path: state_root.clone(),
+                        source,
+                    }
+                })?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(InstallationError::InvalidExplicitRoot {
+                        root: state_root,
+                        reason: "canonical Vapor state path must be a real directory",
+                    });
+                }
+            }
+            Err(source) => {
+                return Err(InstallationError::Io {
+                    path: state_root,
+                    source,
+                });
+            }
+        }
+
+        // Older App Instances stored mutable state below their own root. Move
+        // it into shared User Data on first state access so reads and writes
+        // observe one authority. Merge rejects conflicting files and leaves
+        // the old tree intact for recovery.
+        let legacy_state = self.legacy_state_root();
+        if legacy_state != state_root {
+            match fs::symlink_metadata(&legacy_state) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return Err(InstallationError::InvalidLegacyRoot {
+                        root: legacy_state,
+                        reason: "legacy Vapor state must be an ordinary directory",
+                    });
+                }
+                Ok(_) => {
+                    merge_regular_tree(&legacy_state, &state_root)?;
+                    fs::remove_dir_all(&legacy_state).map_err(|source| {
+                        InstallationError::Io {
+                            path: legacy_state,
+                            source,
+                        }
+                    })?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(InstallationError::Io {
+                        path: legacy_state,
+                        source,
+                    });
+                }
+            }
+        }
         Ok(state_root)
     }
 }
@@ -1218,9 +1288,85 @@ fn merge_regular_tree(source: &Path, target: &Path) -> Result<(), InstallationEr
         });
     }
 
-fn copy_missing_tree(source: &Path, destination: &Path) -> Result<(), InstallationError> {
-    fs::create_dir_all(destination).map_err(|source_error| InstallationError::Io {
-        path: destination.to_path_buf(),
+    if source_metadata.is_dir() {
+        match fs::symlink_metadata(target) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(InstallationError::MigrationConflict {
+                    path: target.to_path_buf(),
+                });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir_all(target).map_err(|source| InstallationError::Io {
+                    path: target.to_path_buf(),
+                    source,
+                })?;
+            }
+            Err(source_error) => {
+                return Err(InstallationError::Io {
+                    path: target.to_path_buf(),
+                    source: source_error,
+                });
+            }
+        }
+        for entry in fs::read_dir(source).map_err(|source_error| InstallationError::Io {
+            path: source.to_path_buf(),
+            source: source_error,
+        })? {
+            let entry = entry.map_err(|source_error| InstallationError::Io {
+                path: source.to_path_buf(),
+                source: source_error,
+            })?;
+            merge_regular_tree(&entry.path(), &target.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+
+    if !source_metadata.is_file() {
+        return Err(InstallationError::InvalidLegacyRoot {
+            root: source.to_path_buf(),
+            reason: "a Vapor-owned source contains a special filesystem entry",
+        });
+    }
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(InstallationError::MigrationConflict {
+                path: target.to_path_buf(),
+            })
+        }
+        Ok(_) if !files_equal(source, target)? => Err(InstallationError::MigrationConflict {
+            path: target.to_path_buf(),
+        }),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|source| InstallationError::Io {
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
+            }
+            fs::copy(source, target).map_err(|source_error| InstallationError::Io {
+                path: source.to_path_buf(),
+                source: source_error,
+            })?;
+            if !files_equal(source, target)? {
+                return Err(InstallationError::MigrationCopyMismatch {
+                    source: source.to_path_buf(),
+                    destination: target.to_path_buf(),
+                });
+            }
+            Ok(())
+        }
+        Err(source_error) => Err(InstallationError::Io {
+            path: target.to_path_buf(),
+            source: source_error,
+        }),
+    }
+}
+
+fn merge_legacy_vapor(source: &Path, staging: &Path) -> Result<Vec<PathBuf>, InstallationError> {
+    let metadata = fs::symlink_metadata(source).map_err(|source_error| InstallationError::Io {
+        path: source.to_path_buf(),
         source: source_error,
     })?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -1254,6 +1400,52 @@ fn copy_missing_tree(source: &Path, destination: &Path) -> Result<(), Installati
     destinations.sort();
     destinations.dedup();
     Ok(destinations)
+}
+
+fn validate_retained_product_entry(
+    product_root: &Path,
+    relative_path: &Path,
+) -> Result<(std::ffi::OsString, bool), InstallationError> {
+    let mut components = relative_path.components();
+    let name = match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(name)), None) => name.to_os_string(),
+        _ => {
+            return Err(InstallationError::InvalidLegacyRoot {
+                root: product_root.to_path_buf(),
+                reason: "retained depot product and locator paths must be single top-level entries",
+            });
+        }
+    };
+    if name == std::ffi::OsStr::new("App.vapor.toml")
+        || LEGACY_HOME_PATHS
+            .iter()
+            .any(|(legacy, _)| name == std::ffi::OsStr::new(legacy))
+    {
+        return Err(InstallationError::InvalidLegacyRoot {
+            root: product_root.to_path_buf(),
+            reason: "a retained Steam product entry overlaps Vapor-owned migration data",
+        });
+    }
+    let entry = product_root.join(&name);
+    let metadata = fs::symlink_metadata(&entry).map_err(|source| InstallationError::Io {
+        path: entry.clone(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
+        return Err(InstallationError::InvalidLegacyRoot {
+            root: product_root.to_path_buf(),
+            reason: "a retained Steam product entry is a symlink or unsupported filesystem entry",
+        });
+    }
+    Ok((name, metadata.is_dir()))
+}
+
+fn merge_legacy_bin(
+    source: &Path,
+    target: &Path,
+    _relative: &Path,
+) -> Result<(), InstallationError> {
+    merge_regular_tree(source, target)
 }
 
 fn detach_legacy_bin(source: &Path, detached: &Path, _relative: &Path) -> io::Result<bool> {
@@ -1885,6 +2077,44 @@ fn explicit_vapor_home() -> Option<PathBuf> {
     env::var_os(VAPOR_HOME_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+fn copy_missing_tree(source: &Path, destination: &Path) -> Result<(), InstallationError> {
+    fs::create_dir_all(destination).map_err(|source_error| InstallationError::Io {
+        path: destination.to_path_buf(),
+        source: source_error,
+    })?;
+
+    for entry in fs::read_dir(source).map_err(|source_error| InstallationError::Io {
+        path: source.to_path_buf(),
+        source: source_error,
+    })? {
+        let entry = entry.map_err(|source_error| InstallationError::Io {
+            path: source.to_path_buf(),
+            source: source_error,
+        })?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .map_err(|source_error| InstallationError::Io {
+                path: source_path.clone(),
+                source: source_error,
+            })?;
+
+        if file_type.is_dir() {
+            copy_missing_tree(&source_path, &destination_path)?;
+        } else if file_type.is_file() && !destination_path.exists() {
+            fs::copy(&source_path, &destination_path).map_err(|source_error| {
+                InstallationError::Io {
+                    path: destination_path.clone(),
+                    source: source_error,
+                }
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 fn platform_home_root() -> Option<PathBuf> {

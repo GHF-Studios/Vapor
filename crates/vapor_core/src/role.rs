@@ -95,7 +95,10 @@ pub fn role_status(installation: &VaporInstallation) -> Result<RoleStatus, RoleE
 }
 
 pub fn installed_role(installation: &VaporInstallation) -> Result<VaporRole, RoleError> {
-    let path = role_state_path(installation);
+    let path = installation
+        .ensure_state_root()
+        .map_err(RoleError::Installation)?
+        .join(ROLE_STATE_FILE_NAME);
 
     if !path.exists() {
         return Ok(VaporRole::Player);
@@ -111,15 +114,39 @@ pub fn installed_role(installation: &VaporInstallation) -> Result<VaporRole, Rol
         message: error.to_string(),
     })?;
 
-    if state.schema != ROLE_STATE_SCHEMA {
-        return Err(RoleError::UnsupportedSchema {
-            path,
-            found: state.schema,
-            supported: ROLE_STATE_SCHEMA,
-        });
-    }
+    let role = match state.schema {
+        ROLE_STATE_SCHEMA => match state.role.as_str() {
+            "player" => VaporRole::Player,
+            "developer" => VaporRole::Developer,
+            _ => {
+                return Err(RoleError::State {
+                    path,
+                    message: format!("unknown role `{}` in schema 2", state.role),
+                });
+            }
+        },
+        // Schema 1's three creator roles all owned the complete toolchain;
+        // schema 2 consolidates them into the single Developer role.
+        1 => match state.role.as_str() {
+            "player" => VaporRole::Player,
+            "composer" | "content-developer" | "ecosystem-developer" => VaporRole::Developer,
+            _ => {
+                return Err(RoleError::State {
+                    path,
+                    message: format!("unknown role `{}` in schema 1", state.role),
+                });
+            }
+        },
+        found => {
+            return Err(RoleError::UnsupportedSchema {
+                path,
+                found,
+                supported: ROLE_STATE_SCHEMA,
+            });
+        }
+    };
 
-    Ok(state.role)
+    Ok(role)
 }
 
 /// Promote the active Vapor Installation.
@@ -234,7 +261,7 @@ fn persist_role(installation: &VaporInstallation, role: VaporRole) -> Result<(),
 
     let state = PersistedRoleState {
         schema: ROLE_STATE_SCHEMA,
-        role,
+        role: role.as_str().to_owned(),
     };
 
     let source = toml::to_string_pretty(&state).map_err(|error| RoleError::State {
@@ -256,7 +283,7 @@ fn executable_name(stem: &str) -> String {
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedRoleState {
     schema: u32,
-    role: VaporRole,
+    role: String,
 }
 
 #[derive(Debug, Clone)]

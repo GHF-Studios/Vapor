@@ -19,8 +19,9 @@ pub fn promote(paths: &EnvironmentPaths, manifest: &WorkspaceManifest) -> Result
 
 /// Promote configured artifacts for one or more runtime targets.
 ///
-/// An empty target list selects the host runtime triple. All targets use the
-/// managed target-specific output layout.
+/// An empty target list selects the host runtime triple. Cargo places native
+/// host artifacts directly under the profile directory; foreign targets use
+/// a triple-specific subdirectory.
 pub fn promote_for_targets(
     paths: &EnvironmentPaths,
     manifest: &WorkspaceManifest,
@@ -173,7 +174,6 @@ fn promote_for_targets_in_profile(
 #[derive(Debug, Clone)]
 struct RuntimeTarget {
     triple: String,
-    explicit: bool,
 }
 
 impl RuntimeTarget {
@@ -181,7 +181,6 @@ impl RuntimeTarget {
         if target_triples.is_empty() {
             return Ok(vec![Self {
                 triple: host_runtime_target(),
-                explicit: true,
             }]);
         }
         let mut seen = std::collections::BTreeSet::new();
@@ -194,7 +193,6 @@ impl RuntimeTarget {
                 }
                 Ok(Self {
                     triple: target.clone(),
-                    explicit: true,
                 })
             })
             .collect()
@@ -207,12 +205,11 @@ impl RuntimeTarget {
     fn build_output_root(&self, output: &Path, project: &str, profile: &str) -> PathBuf {
         let cargo_profile = if profile == "dev" { "debug" } else { profile };
         let root = output.join(profile).join(project);
-        if self.explicit {
-            root.join(self.triple()).join(cargo_profile)
+        if self.triple() == host_runtime_target() {
+            root.join(cargo_profile)
         } else {
-            target_root
-        };
-        target_root.join(cargo_profile)
+            root.join(self.triple()).join(cargo_profile)
+        }
     }
 
     fn binary_file_name(&self, binary: &str) -> String {
@@ -317,24 +314,23 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn deployment_profiles_resolve_to_distinct_artifact_roots() {
+    fn foreign_target_profiles_resolve_to_distinct_artifact_roots() {
         let target = RuntimeTarget {
-            triple: "x86_64-unknown-linux-gnu".to_owned(),
-            explicit: true,
+            triple: "x86_64-pc-windows-gnullvm".to_owned(),
         };
         let output = Path::new("/vapor/user/output");
         assert_eq!(
             target.build_output_root(output, "vapor", "dev"),
-            Path::new("/vapor/user/output/dev/vapor/x86_64-unknown-linux-gnu/debug")
+            Path::new("/vapor/user/output/dev/vapor/x86_64-pc-windows-gnullvm/debug")
         );
         assert_eq!(
             target.build_output_root(output, "vapor", "release"),
-            Path::new("/vapor/user/output/release/vapor/x86_64-unknown-linux-gnu/release")
+            Path::new("/vapor/user/output/release/vapor/x86_64-pc-windows-gnullvm/release")
         );
     }
 
     #[test]
-    fn host_runtime_target_uses_the_target_specific_cargo_artifact_root() {
+    fn host_runtime_target_uses_cargo_host_artifact_root_without_a_triple_directory() {
         let target = RuntimeTarget::many(&[crate::host_runtime_target()])
             .expect("host target")
             .remove(0);

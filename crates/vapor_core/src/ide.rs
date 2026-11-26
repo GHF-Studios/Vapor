@@ -684,7 +684,7 @@ fn reconcile_rust_component(
 ///
 /// Current managed topology:
 ///
-/// <installation>/tools
+/// <user-data>/tools
 /// ├── cargo/home/
 /// └── rustup/home/
 ///     └── toolchains/
@@ -708,8 +708,7 @@ fn managed_rust_environment_from_toolchain_home(
         .to_path_buf();
 
     let tools_root = rustup_home.parent()?.parent()?;
-    let installation_root = tools_root.parent()?;
-    let cargo_home = installation_root.join("tools/cargo/home");
+    let cargo_home = tools_root.join("cargo/home");
 
     Some((rustup_home, cargo_home))
 }

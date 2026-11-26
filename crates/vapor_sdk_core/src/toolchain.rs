@@ -16,22 +16,22 @@ pub use plan::{ToolchainInstallPlan, ToolchainPlanError, toolchain_install_plan}
 /// Environment variable that overrides where Vapor stores executable-local state.
 pub const VAPOR_HOME_ENV: &str = "VAPOR_HOME";
 
-/// Directory under `VAPOR_HOME` that owns the Rustup bootstrap binary.
+/// Directory under Vapor User Data that owns the Rustup bootstrap binary.
 pub const RUSTUP_DIR: &str = "tools/rustup";
 
-/// Directory under `VAPOR_HOME/tools/rustup` that contains the Rustup executable.
+/// Directory under Vapor User Data/tools/rustup that contains Rustup.
 pub const RUSTUP_BIN_DIR: &str = "bin";
 
-/// Directory under `VAPOR_HOME` used as Rustup's managed home.
+/// Directory under Vapor User Data used as Rustup's managed home.
 pub const RUSTUP_HOME_DIR: &str = "tools/rustup/home";
 
-/// Directory under `VAPOR_HOME` used as Cargo's managed home.
+/// Directory under Vapor User Data used as Cargo's managed home.
 pub const CARGO_HOME_DIR: &str = "tools/cargo/home";
 
-/// Directory under `VAPOR_HOME` reserved for Rustup acquisition/bootstrap state.
+/// Directory under Vapor User Data reserved for Rustup acquisition/bootstrap state.
 pub const TOOLCHAIN_BOOTSTRAP_DIR: &str = "toolchain-bootstrap";
 
-/// Directory under `VAPOR_HOME` for SDK-managed build outputs.
+/// Directory under Vapor User Data for SDK-managed build outputs.
 pub const OUTPUT_DIR: &str = "output";
 
 /// Toolchain commands for the pinned SDK-managed Rust/Cargo toolchain.
@@ -53,6 +53,8 @@ pub struct ToolchainStatus {
     pub host_supported: bool,
     pub vapor_home_source: VaporHomeSource,
     pub vapor_home: PathBuf,
+    /// Canonical persistent per-user Vapor state root.
+    pub data_root: PathBuf,
     /// App-local Rustup executable path Vapor prefers over PATH lookup.
     pub local_rustup_path: PathBuf,
     /// Rustup executable Vapor will invoke, if one is available.
@@ -209,12 +211,13 @@ pub fn toolchain_status() -> Result<ToolchainStatus, ToolchainStatusError> {
         date: managed.pin.date.clone(),
     };
     let vapor_home = managed.vapor_home.clone();
+    let data_root = managed.data_root.clone();
     let vapor_home_source = if env::var_os(VAPOR_HOME_ENV).is_some() {
         VaporHomeSource::Environment
     } else {
         VaporHomeSource::ExecutableRoot
     };
-    let local_rustup_path = vapor_home
+    let local_rustup_path = managed.data_root
         .join(RUSTUP_DIR)
         .join(RUSTUP_BIN_DIR)
         .join(executable_name("rustup"));
@@ -240,6 +243,7 @@ pub fn toolchain_status() -> Result<ToolchainStatus, ToolchainStatusError> {
         host_triple,
         vapor_home_source,
         vapor_home,
+        data_root,
         local_rustup_path,
         rustup_path,
         rustup_source,

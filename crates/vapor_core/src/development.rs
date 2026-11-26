@@ -22,7 +22,7 @@ use std::process::Stdio;
 const DEV_PROFILE_DIR: &str = "debug";
 const BIN_DIR: &str = "bin";
 const CLIENT_SOURCE_MANIFEST_FILE_NAME: &str = "App-Source.vapor.toml";
-const CLIENT_WORKSPACE_REPOSITORY: &str = "Vapor-Client/Vapor";
+const CLIENT_WORKSPACE_REPOSITORY: &str = "sources/Vapor-Client/Vapor";
 const CLIENT_WORKSPACE_ORGANIZATION: &str = "ghf-studios";
 const CLIENT_WORKSPACE_NAME: &str = "vapor";
 const LOCAL_DEPLOYMENT_AUTHORITY_ENV: &str = "VAPOR_LOCAL_DEPLOYMENT_AUTHORITY";
@@ -431,7 +431,7 @@ fn promote_workspace_build(
 pub fn development_target_dir(toolchain: &ManagedToolchain, project: &VaporProject) -> PathBuf {
     let _ = project;
     toolchain
-        .vapor_home
+        .data_root
         .join("cache/build")
         .join(toolchain.build_target)
 }
@@ -470,7 +470,7 @@ fn run_project_operation(
             .arg(toolchain.build_target);
         crate::cross_target_toolchain::configure_runtime_target_linker_env(
             &mut command,
-            &toolchain.vapor_home,
+            &toolchain.data_root,
             toolchain.build_target,
         )
         .map_err(|error| DevelopmentError::CrossToolchain(error.to_string()))?;
@@ -509,7 +509,8 @@ fn deployment_projects(workspace: &VaporWorkspace) -> Vec<VaporProject> {
     let client_root = workspace
         .root
         .ancestors()
-        .find(|root| root.join(CLIENT_DISTRIBUTION_MANIFEST_FILE_NAME).is_file());
+        .find(|root| root.join(CLIENT_SOURCE_MANIFEST_FILE_NAME).is_file());
+    let owning_root = client_root.as_deref().unwrap_or(&workspace.root);
 
     let mut projects = VaporSuperworkspace::discover_from(&workspace.root)
         .map(|superworkspace| {
@@ -520,7 +521,7 @@ fn deployment_projects(workspace: &VaporWorkspace) -> Vec<VaporProject> {
                 // experimental copies of the same repositories. Deployment
                 // must resolve binaries from the selected Client checkout,
                 // not from sibling Superworkspace entries.
-                .filter(|project| project.project.root.starts_with(&workspace.root))
+                .filter(|project| project.project.root.starts_with(owning_root))
                 .map(|project| project.project)
                 .collect::<Vec<_>>()
         })
@@ -907,7 +908,7 @@ fn build_binary(
         .current_dir(&target.project.root);
     crate::cross_target_toolchain::configure_runtime_target_linker_env(
         &mut command,
-        &toolchain.vapor_home,
+        &toolchain.data_root,
         toolchain.build_target,
     )
     .map_err(|error| DevelopmentError::CrossToolchain(error.to_string()))?;
@@ -1039,25 +1040,6 @@ fn activation_script_name() -> &'static str {
     }
 }
 
-fn managed_toolchain_bin_home_relative(
-    toolchain: &ManagedToolchain,
-) -> Result<PathBuf, DevelopmentError> {
-    let rust_bin =
-        toolchain
-            .rustc_path
-            .parent()
-            .ok_or_else(|| DevelopmentError::InvalidDeploymentPath {
-                path: toolchain.rustc_path.clone(),
-            })?;
-
-    rust_bin
-        .strip_prefix(&toolchain.vapor_home)
-        .map(Path::to_path_buf)
-        .map_err(|_| DevelopmentError::InvalidDeploymentPath {
-            path: rust_bin.to_path_buf(),
-        })
-}
-
 #[cfg(not(windows))]
 fn write_activation_script(
     installation_root: &Path,
@@ -1065,10 +1047,8 @@ fn write_activation_script(
 ) -> Result<PathBuf, DevelopmentError> {
     let path = installation_root.join(activation_script_name());
 
-    let rust_bin = managed_toolchain_bin_home_relative(toolchain)?
-        .to_string_lossy()
-        .replace('\\', "/");
     let host = current_host_target()?;
+    let toolchain_id = toolchain.pin.identifier();
 
     let source = format!(
         r#"#!/usr/bin/env bash
@@ -1085,13 +1065,27 @@ VAPOR_ROOT="$(
 )"
 
 export VAPOR_HOME="$VAPOR_ROOT"
-export CARGO_HOME="$VAPOR_HOME/tools/cargo/home"
-export RUSTUP_HOME="$VAPOR_HOME/tools/rustup/home"
+export VAPOR_USER_DATA_ROOT="$(
+    case "$(uname -s)" in
+        Darwin) printf '%s/Library/Application Support/Vapor' "$HOME" ;;
+        *)
+            case "${{XDG_DATA_HOME:-}}" in
+                /*) printf '%s/vapor' "$XDG_DATA_HOME" ;;
+                *) printf '%s/.local/share/vapor' "$HOME" ;;
+            esac
+            ;;
+    esac
+)"
+export CARGO_HOME="$VAPOR_USER_DATA_ROOT/tools/cargo/home"
+export RUSTUP_HOME="$VAPOR_USER_DATA_ROOT/tools/rustup/home"
+export RUSTUP_TOOLCHAIN="{toolchain_id}"
 
 VAPOR_BIN="$VAPOR_ROOT/bin/{host}"
-VAPOR_RUST_BIN="$VAPOR_ROOT/{rust_bin}"
+VAPOR_RUST_BIN="$RUSTUP_HOME/toolchains/{toolchain_id}-{host}/bin"
+VAPOR_CARGO_BIN="$CARGO_HOME/bin"
+VAPOR_RUSTUP_BIN="$VAPOR_USER_DATA_ROOT/tools/rustup/bin"
 
-for VAPOR_PATH in "$VAPOR_RUST_BIN" "$VAPOR_BIN"; do
+for VAPOR_PATH in "$VAPOR_RUST_BIN" "$VAPOR_CARGO_BIN" "$VAPOR_RUSTUP_BIN" "$VAPOR_BIN"; do
     case ":$PATH:" in
         *":$VAPOR_PATH:"*) ;;
         *) export PATH="$VAPOR_PATH${{PATH:+:$PATH}}" ;;
@@ -1101,6 +1095,8 @@ done
 unset VAPOR_PATH
 unset VAPOR_BIN
 unset VAPOR_RUST_BIN
+unset VAPOR_CARGO_BIN
+unset VAPOR_RUSTUP_BIN
 unset VAPOR_ROOT
 "#
     );
@@ -1136,10 +1132,8 @@ fn write_activation_script(
 ) -> Result<PathBuf, DevelopmentError> {
     let path = installation_root.join(activation_script_name());
 
-    let rust_bin = managed_toolchain_bin_home_relative(toolchain)?
-        .to_string_lossy()
-        .replace('/', "\\");
     let host = current_host_target()?;
+    let toolchain_id = toolchain.pin.identifier();
 
     let source = format!(
         "@echo off\r\n\
@@ -1147,7 +1141,12 @@ fn write_activation_script(
              rem This script is intentionally relocatable with the standalone Vapor home.\r\n\
              set \"VAPOR_HOME=\"\r\n\
              set \"VAPOR_ROOT=%~dp0\"\r\n\
-             set \"PATH=%VAPOR_ROOT%bin\\{host};%VAPOR_ROOT%{rust_bin};%PATH%\"\r\n\
+             if not defined LOCALAPPDATA set \"LOCALAPPDATA=%USERPROFILE%\\AppData\\Local\"\r\n\
+             set \"VAPOR_USER_DATA_ROOT=%LOCALAPPDATA%\\Vapor\"\r\n\
+             set \"CARGO_HOME=%VAPOR_USER_DATA_ROOT%\\tools\\cargo\\home\"\r\n\
+             set \"RUSTUP_HOME=%VAPOR_USER_DATA_ROOT%\\tools\\rustup\\home\"\r\n\
+             set \"RUSTUP_TOOLCHAIN={toolchain_id}\"\r\n\
+             set \"PATH=%VAPOR_ROOT%bin\\{host};%RUSTUP_HOME%\\toolchains\\{toolchain_id}-{host}\\bin;%CARGO_HOME%\\bin;%VAPOR_USER_DATA_ROOT%\\tools\\rustup\\bin;%PATH%\"\r\n\
              set \"VAPOR_ROOT=\"\r\n"
     );
 
