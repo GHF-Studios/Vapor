@@ -4043,7 +4043,9 @@ name = "vapor_core"
 version = "0.5.0"
 dependencies = [
  "clap",
+ "crc32fast",
  "csv",
+ "flate2",
  "pathdiff",
  "reqwest",
  "ring",

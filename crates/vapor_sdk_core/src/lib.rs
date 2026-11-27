@@ -24,7 +24,7 @@ pub use commands::{
 };
 pub use content::{ContentSource, ContentType, allowed_pack_children};
 pub use environment::{EnvironmentCommand, EnvironmentReport, environment_status};
-pub use git::{GitBuildError, GitCommand, git_build};
+pub use git::{GitBuildError, GitCommand, git_build, git_inspect_windows};
 pub use options::GlobalOptions;
 pub use repair::{RepairCommand, RepairTarget};
 pub use spec::{CommandSpec, StateSurface, describe_command};
@@ -38,6 +38,7 @@ pub use toolchain::{
 };
 pub use vapor_core::ChildContentRef;
 pub use vapor_core::GitNativeBuildReport;
+pub use vapor_core::GitWindowsArchiveReport;
 pub use workspace::{
     WorkspaceCargoReport, WorkspaceCommand, WorkspaceCommandError, WorkspaceDeployReport,
     WorkspaceStatusReport, WorkspaceSyncReport, workspace_build, workspace_build_release,

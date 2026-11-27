@@ -10,6 +10,7 @@ pub mod cross_target_toolchain;
 pub mod developer_environment;
 pub mod git_provider;
 pub mod git_native_build;
+pub mod git_windows_archive;
 pub mod development;
 pub mod distribution;
 pub mod ecosystem;
@@ -123,6 +124,9 @@ pub use managed_tool::{
 };
 
 pub use git_native_build::{GitNativeBuildError, GitNativeBuildReport, build_linux_shadow};
+pub use git_windows_archive::{
+    GitWindowsArchiveError, GitWindowsArchiveReport, inspect_windows_mingit,
+};
 
 pub use manifest::{ContentHeader, ContentManifest, ManifestError, parse_content_manifest};
 

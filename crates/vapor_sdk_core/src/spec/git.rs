@@ -11,5 +11,12 @@ pub(super) fn describe(command: &GitCommand) -> CommandSpec {
             &["x86-64 Linux host", "Vapor-managed Zig installed", "host shell, Perl, tar, and GNU Make build prerequisites available"],
             &["download and verify pinned Git, curl, OpenSSL, zlib, and GNU Make sources", "compile a static x86-64 musl Git candidate with Vapor-managed Zig", "write a cache marker after Git version and full image inventory checks"],
         ),
+        GitCommand::InspectWindows => spec(
+            "sdk git inspect-windows",
+            "Download and inventory pinned official x64 MinGit in Vapor's disposable cache; do not extract, activate, or publish it.",
+            StateSurface::BuildArtifact,
+            &["Vapor installation discoverable", "network access to the pinned Git for Windows release"],
+            &["download the exact pinned release archive into Vapor User Data", "verify the release SHA-256 before inspection", "write a bounded file and notice inventory into the same cache entry"],
+        ),
     }
 }
