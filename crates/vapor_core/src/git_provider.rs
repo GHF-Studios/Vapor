@@ -67,26 +67,25 @@ impl GitProvider {
                 let mut paths = paths;
                 paths.extend([
                     root.join("usr/bin"),
-                    root.join("mingw64/bin"),
                     root.join("ucrt64/bin"),
+                    root.join("mingw64/bin"),
                     root.join("cmd"),
                 ]);
                 paths
             };
             append_existing_path(command, paths)?;
 
-            #[cfg(windows)]
-            let executable_root = root.join("mingw64");
-            #[cfg(not(windows))]
-            let executable_root = root.clone();
+            let executable_root = executable_root(&root);
 
-            let exec_path = executable_root.join("libexec/git-core");
-            if exec_path.is_dir() {
-                command.env("GIT_EXEC_PATH", exec_path);
-            }
-            let template_path = executable_root.join("share/git-core/templates");
-            if template_path.is_dir() {
-                command.env("GIT_TEMPLATE_DIR", template_path);
+            if let Some(executable_root) = executable_root {
+                let exec_path = executable_root.join("libexec/git-core");
+                if exec_path.is_dir() {
+                    command.env("GIT_EXEC_PATH", exec_path);
+                }
+                let template_path = executable_root.join("share/git-core/templates");
+                if template_path.is_dir() {
+                    command.env("GIT_TEMPLATE_DIR", template_path);
+                }
             }
         }
         Ok(())
@@ -223,6 +222,20 @@ fn verify(
 
 fn executable(name: &str) -> String {
     format!("{name}{}", env::consts::EXE_SUFFIX)
+}
+
+fn executable_root(root: &Path) -> Option<PathBuf> {
+    // Git for Windows' stable launcher stays in cmd/, while current x64
+    // MinGit stores helper binaries under ucrt64/. Retain mingw64/ for older
+    // managed payloads that used the previous x64 environment.
+    let candidates = if cfg!(windows) {
+        vec![root.join("ucrt64"), root.join("mingw64"), root.to_path_buf()]
+    } else {
+        vec![root.to_path_buf()]
+    };
+    candidates
+        .into_iter()
+        .find(|directory| directory.join("libexec/git-core").is_dir())
 }
 
 fn is_executable(path: &Path) -> bool {
