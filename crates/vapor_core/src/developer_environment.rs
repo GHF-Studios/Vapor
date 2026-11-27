@@ -4,7 +4,8 @@
 //! those capabilities; they do not invent tool-specific setup flows.
 
 use crate::{
-    CrossTargetToolchainError, InstallationError, ManagedToolchain, ManagedTracyToolset,
+    CrossTargetToolchainError, InstallationError, ManagedGitError, ManagedToolchain,
+    ManagedTracyToolset,
     OperationContext, OperationOutput, OperationPhase, Progress, ToolchainError, TracyError,
     VaporInstallation,
 };
@@ -12,6 +13,7 @@ use std::fmt;
 
 #[derive(Debug, Clone)]
 pub struct DeveloperEnvironmentStatus {
+    pub git_installed: bool,
     pub rust_installed: bool,
     pub rust_analyzer_installed: bool,
     pub linux_gnu_target_installed: bool,
@@ -24,7 +26,8 @@ pub struct DeveloperEnvironmentStatus {
 
 impl DeveloperEnvironmentStatus {
     pub const fn is_ready(&self) -> bool {
-        self.rust_installed
+        self.git_installed
+            && self.rust_installed
             && self.rust_analyzer_installed
             && self.linux_gnu_target_installed
             && self.linux_gnu_linker_installed
@@ -37,6 +40,7 @@ impl DeveloperEnvironmentStatus {
 
 #[derive(Debug, Clone)]
 pub struct DeveloperEnvironmentRepair {
+    pub git_installed: bool,
     pub rust_installed: bool,
     pub rust_analyzer_installed: bool,
     pub linux_gnu_target_installed: bool,
@@ -50,7 +54,8 @@ pub struct DeveloperEnvironmentRepair {
 
 impl DeveloperEnvironmentRepair {
     pub const fn changed(&self) -> bool {
-        self.rust_installed
+        self.git_installed
+            || self.rust_installed
             || self.rust_analyzer_installed
             || self.linux_gnu_target_installed
             || self.linux_gnu_linker_installed
@@ -99,6 +104,11 @@ impl DeveloperEnvironment {
 
     pub fn status(&self) -> DeveloperEnvironmentStatus {
         DeveloperEnvironmentStatus {
+            git_installed: crate::git_provider::resolve(
+                &self.installation.user_data_root(),
+                &self.installation.state_root(),
+            )
+            .is_ok(),
             rust_installed: self.rust.is_installed(),
             rust_analyzer_installed: self.rust.rust_analyzer_path.is_file(),
             linux_gnu_target_installed: self
@@ -136,6 +146,15 @@ impl DeveloperEnvironment {
         &mut self,
         context: Option<&OperationContext>,
     ) -> Result<DeveloperEnvironmentRepair, DeveloperEnvironmentError> {
+        let git_was_missing = !crate::git_provider::resolve(
+            &self.installation.user_data_root(),
+            &self.installation.state_root(),
+        )
+        .is_ok();
+        let git_report = crate::managed_git::ensure_installed(&self.installation, |message| {
+            report_stage(context, 0, 5, message);
+        })
+        .map_err(DeveloperEnvironmentError::ManagedGit)?;
         let rust_installed = !self.rust.is_installed();
         let rust_analyzer_installed = !self.rust.rust_analyzer_path.is_file();
         let linux_gnu_target_installed = !self
@@ -153,8 +172,8 @@ impl DeveloperEnvironment {
         {
             report_stage(
                 context,
-                0,
-                4,
+                1,
+                5,
                 "Installing pinned Rust toolchain and components",
             );
             self.rust
@@ -174,25 +193,26 @@ impl DeveloperEnvironment {
         }
 
         if windows_gnu_linker_installed {
-            report_stage(context, 1, 4, "Installing Windows GNU linker");
+            report_stage(context, 2, 5, "Installing Windows GNU linker");
             crate::install_windows_gnu_linker(&self.installation)
                 .map_err(DeveloperEnvironmentError::CrossTargetToolchain)?;
         }
 
         if linux_gnu_linker_installed {
-            report_stage(context, 2, 4, "Installing Linux GNU cross-linker");
+            report_stage(context, 3, 5, "Installing Linux GNU cross-linker");
             crate::install_linux_gnu_linker(&self.installation)
                 .map_err(DeveloperEnvironmentError::CrossTargetToolchain)?;
         }
 
-        report_stage(context, 3, 4, "Installing Tracy tools");
+        report_stage(context, 4, 5, "Installing Tracy tools");
         let tracy = self
             .tracy
             .install_missing()
             .map_err(DeveloperEnvironmentError::Tracy)?;
-        report_stage(context, 4, 4, "Developer setup complete");
+        report_stage(context, 5, 5, "Developer setup complete");
 
         Ok(DeveloperEnvironmentRepair {
+            git_installed: git_was_missing && git_report.changed,
             rust_installed,
             rust_analyzer_installed,
             linux_gnu_target_installed,
@@ -224,6 +244,7 @@ fn report_stage(context: Option<&OperationContext>, completed: u64, total: u64, 
 
 #[derive(Debug)]
 pub enum DeveloperEnvironmentError {
+    ManagedGit(ManagedGitError),
     Installation(InstallationError),
     CrossTargetToolchain(CrossTargetToolchainError),
     Toolchain(ToolchainError),
@@ -233,6 +254,7 @@ pub enum DeveloperEnvironmentError {
 impl fmt::Display for DeveloperEnvironmentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ManagedGit(error) => error.fmt(formatter),
             Self::Installation(error) => error.fmt(formatter),
             Self::CrossTargetToolchain(error) => error.fmt(formatter),
             Self::Toolchain(error) => error.fmt(formatter),
@@ -244,6 +266,7 @@ impl fmt::Display for DeveloperEnvironmentError {
 impl std::error::Error for DeveloperEnvironmentError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::ManagedGit(error) => Some(error),
             Self::Installation(error) => Some(error),
             Self::CrossTargetToolchain(error) => Some(error),
             Self::Toolchain(error) => Some(error),
@@ -258,6 +281,7 @@ mod tests {
 
     fn status(rust_analyzer_installed: bool) -> DeveloperEnvironmentStatus {
         DeveloperEnvironmentStatus {
+            git_installed: true,
             rust_installed: true,
             rust_analyzer_installed,
             linux_gnu_target_installed: true,

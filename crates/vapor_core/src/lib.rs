@@ -21,6 +21,7 @@ pub mod identity;
 pub mod install;
 pub mod installation;
 pub mod local;
+pub mod managed_git;
 pub mod maintenance;
 pub mod managed_process;
 pub mod managed_tool;
@@ -28,6 +29,7 @@ pub mod manifest;
 pub mod operation;
 pub mod profiling;
 pub mod product_layout;
+pub mod release;
 pub mod registry;
 pub mod resolution;
 pub mod role;
@@ -78,6 +80,8 @@ pub use developer_environment::{
     DeveloperEnvironment, DeveloperEnvironmentError, DeveloperEnvironmentRepair,
     DeveloperEnvironmentStatus,
 };
+
+pub use managed_git::{ManagedGitError, ManagedGitReport};
 
 pub use ecosystem::{
     AcquiredRepository, EcosystemAcquisitionReport, EcosystemBootstrap, EcosystemError,
