@@ -26,7 +26,7 @@ const MAKE_VERSION: &str = "4.4.1";
 const MAKE_SOURCE_URL: &str = "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz";
 const MAKE_SOURCE_SHA256: &str =
     "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3";
-const RECIPE_REVISION: &str = "2026-11-27.9";
+const RECIPE_REVISION: &str = "2026-11-27.11";
 const CACHE_RELATIVE_ROOT: &str = "cache/build/native-tools/git";
 const MARKER_NAME: &str = "vapor-git-native-build.toml";
 const MAX_SOURCE_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
@@ -252,6 +252,14 @@ fn build_git_cache_entry(
         let make_executable = make_source.join("make");
         let make_prefix = entry_root.join("make-install");
         let staged_install = entry_root.join("install.staging");
+        let staged_prefix = staged_install.join(
+            install_root.strip_prefix("/").map_err(|_| {
+                GitNativeBuildError::Metadata(format!(
+                    "Git install prefix must be absolute: {}",
+                    install_root.display()
+                ))
+            })?,
+        );
         let marker_path = entry_root.join(MARKER_NAME);
         remove_path(&staged_install)?;
         remove_path(&marker_path)?;
@@ -270,7 +278,9 @@ fn build_git_cache_entry(
             git_archive,
             &git_source,
             &make_executable,
+            &install_root,
             &staged_install,
+            &staged_prefix,
             compiler_path,
             native_cflags,
             native_ldflags,
@@ -278,8 +288,9 @@ fn build_git_cache_entry(
         )?;
 
         remove_path(install_root)?;
-        fs::rename(&staged_install, install_root)
+        fs::rename(&staged_prefix, install_root)
             .map_err(|source| io_error("promote Git into its shadow cache", install_root, source))?;
+        remove_path(&staged_install)?;
         let runtime_libraries = runtime_library_inventory(install_root)?;
         let inventory_sha256 = inventory_digest(install_root)?;
         let marker = BuildMarker {
@@ -356,14 +367,19 @@ fn build_and_stage_git(
     archive: &Path,
     source_root: &Path,
     make: &Path,
-    staged_install: &Path,
+    install_root: &Path,
+    staged_root: &Path,
+    staged_prefix: &Path,
     compiler_path: &str,
     cflags: &str,
     ldflags: &str,
     libs: &str,
 ) -> Result<(), GitNativeBuildError> {
     extract_source(archive, source_root, "git-2.56.1", true)?;
-    let staged_prefix = staged_install.to_string_lossy().into_owned();
+    // Git compiles its exec-path from the configured prefix. Keep that final
+    // immutable cache location in the executable while DESTDIR stages the
+    // installed tree under the cache entry for atomic promotion.
+    let final_prefix = install_root.to_string_lossy().into_owned();
     let environment = [
         ("CC", "zig cc"),
         ("CFLAGS", cflags),
@@ -374,12 +390,26 @@ fn build_and_stage_git(
     let configure = run_output(
         "configure source Git",
         source_root.join("configure"),
-        ["--prefix", staged_prefix.as_str()],
+        ["--prefix", final_prefix.as_str()],
         Some(source_root),
         &environment,
     )?;
     if !configure.status.success() {
         return Err(command_failed("configure source Git", configure));
+    }
+
+    let clean = run_output(
+        "clean source Git objects for the configured final prefix",
+        make,
+        ["clean"],
+        Some(source_root),
+        &environment,
+    )?;
+    if !clean.status.success() {
+        return Err(command_failed(
+            "clean source Git objects for the configured final prefix",
+            clean,
+        ));
     }
 
     let jobs = std::thread::available_parallelism()
@@ -411,7 +441,7 @@ fn build_and_stage_git(
         return Err(command_failed("build source Git", build));
     }
 
-    let mut install_args = vec![format!("prefix={}", staged_install.display())];
+    let mut install_args = vec![format!("DESTDIR={}", staged_root.display())];
     install_args.extend(feature_args.iter().map(|feature| (*feature).to_owned()));
     install_args.push("install".to_owned());
     let install = run_output(
@@ -424,18 +454,26 @@ fn build_and_stage_git(
     if !install.status.success() {
         return Err(command_failed("stage source Git in its shadow cache", install));
     }
-    if !is_executable(&staged_install.join("bin/git"))
-        || !is_executable(&staged_install.join("libexec/git-core/git-remote-https"))
+    if !is_executable(&staged_prefix.join("bin/git"))
+        || !is_executable(&staged_prefix.join("libexec/git-core/git-remote-https"))
     {
-        return Err(GitNativeBuildError::IncompleteGitInstall(staged_install.to_path_buf()));
+        return Err(GitNativeBuildError::IncompleteGitInstall(staged_prefix.to_path_buf()));
     }
 
-    let actual_version = read_git_version(&staged_install.join("bin/git"))?;
+    let actual_version = read_git_version(&staged_prefix.join("bin/git"))?;
     let expected_version = format!("git version {GIT_VERSION}");
     if actual_version != expected_version {
         return Err(GitNativeBuildError::UnexpectedGitVersion {
             expected: GIT_VERSION.to_owned(),
             actual: actual_version,
+        });
+    }
+    let actual_exec_path = capture(&staged_prefix.join("bin/git"), ["--exec-path"], None, &[])?;
+    let expected_exec_path = install_root.join("libexec/git-core");
+    if PathBuf::from(actual_exec_path.trim()) != expected_exec_path {
+        return Err(GitNativeBuildError::UnexpectedGitExecPath {
+            expected: expected_exec_path,
+            actual: actual_exec_path.trim().to_owned(),
         });
     }
     Ok(())
@@ -473,6 +511,11 @@ fn validate_cache_entry(
         || runtime_library_inventory(&entry_root.join("install"))? != marker.runtime_libraries
         || inventory_digest(&entry_root.join("install"))? != marker.inventory_sha256
     {
+        return Ok(None);
+    }
+    let expected_exec_path = entry_root.join("install/libexec/git-core");
+    let actual_exec_path = capture(git_executable, ["--exec-path"], None, &[])?;
+    if Path::new(actual_exec_path.trim()) != expected_exec_path.as_path() {
         return Ok(None);
     }
     Ok(Some(marker))
@@ -1012,6 +1055,7 @@ pub enum GitNativeBuildError {
     RuntimeDependencyTooOld { dependency: &'static str, minimum: &'static str, actual: String },
     UnexpectedToolVersion { tool: &'static str, expected: String, path: PathBuf },
     UnexpectedGitVersion { expected: String, actual: String },
+    UnexpectedGitExecPath { expected: PathBuf, actual: String },
     IncompleteGitInstall(PathBuf),
     InventoryEscapesRoot(PathBuf),
     InvalidInstallSymlink(PathBuf),
@@ -1037,6 +1081,7 @@ impl std::fmt::Display for GitNativeBuildError {
             Self::RuntimeDependencyTooOld { dependency, minimum, actual } => write!(formatter, "{dependency} {actual} is below the required {minimum}"),
             Self::UnexpectedToolVersion { tool, expected, path } => write!(formatter, "{} at '{}' did not report the expected version {expected}", tool, path.display()),
             Self::UnexpectedGitVersion { expected, actual } => write!(formatter, "source Git reported '{actual}', expected git version {expected}"),
+            Self::UnexpectedGitExecPath { expected, actual } => write!(formatter, "source Git helper path was '{actual}', expected '{}'", expected.display()),
             Self::IncompleteGitInstall(path) => write!(formatter, "Git shadow build is missing git or its HTTPS remote helper under '{}'", path.display()),
             Self::InventoryEscapesRoot(path) => write!(formatter, "Git build inventory entry escapes its install root: '{}'", path.display()),
             Self::InvalidInstallSymlink(path) => write!(formatter, "Git install contains an absolute, broken, or escaping symlink: '{}'", path.display()),
