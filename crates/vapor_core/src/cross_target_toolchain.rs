@@ -180,6 +180,7 @@ pub fn install_linux_gnu_linker(
                 path: temporary.clone(),
                 message: error.to_string(),
             })?;
+        drop(file);
         verify_sha256_file(&temporary, checksum, url)
             .map_err(CrossTargetToolchainError::Integrity)?;
         fs::rename(&temporary, &archive).map_err(|error| CrossTargetToolchainError::Io {
@@ -471,6 +472,7 @@ pub fn install_windows_gnu_linker(
                 path: temporary.clone(),
                 message: error.to_string(),
             })?;
+        drop(file);
         verify_sha256_file(&temporary, checksum, url)
             .map_err(CrossTargetToolchainError::Integrity)?;
         fs::rename(&temporary, &archive).map_err(|error| CrossTargetToolchainError::Io {
