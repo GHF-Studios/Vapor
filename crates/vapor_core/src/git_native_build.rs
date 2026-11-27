@@ -38,10 +38,11 @@ const MAKE_VERSION: &str = "4.4.1";
 const MAKE_SOURCE_URL: &str = "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz";
 const MAKE_SOURCE_SHA256: &str =
     "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3";
-const RECIPE_REVISION: &str = "2026-11-27.18";
+const RECIPE_REVISION: &str = "2026-11-27.20";
 const CACHE_RELATIVE_ROOT: &str = "cache/build/native-tools/git";
 const MARKER_NAME: &str = "vapor-git-native-build.toml";
-const SOURCE_BUNDLE_NAME: &str = "vapor-git-x86_64-linux-musl-source.tar";
+const SOURCE_BUNDLE_NAME: &str = "vapor-git-x86_64-linux-musl-source.tar.gz";
+const PAYLOAD_ARCHIVE_NAME: &str = "vapor-git-x86_64-linux-musl.tar.gz";
 const MAX_SOURCE_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_NOTICE_FILE_BYTES: usize = 2 * 1024 * 1024;
 const BUILD_FEATURES: &[&str] = &[
@@ -61,6 +62,8 @@ const BUILD_FEATURES: &[&str] = &[
 const GIT_TARGET: &str = "x86_64-linux-musl";
 const GIT_NATIVE_BUILD_SOURCE: &[u8] = include_bytes!("git_native_build.rs");
 const SOURCE_BUNDLE_SOURCE: &[u8] = include_bytes!("git_native_build/source_bundle.rs");
+const LINK_EVIDENCE_SOURCE: &[u8] = include_bytes!("git_native_build/link_evidence.rs");
+const LINK_EVIDENCE_WRAPPER_SOURCE: &[u8] = include_bytes!("git_native_build/link_evidence_cc.sh");
 
 #[derive(Debug, Clone)]
 pub struct GitNativeBuildReport {
@@ -71,6 +74,9 @@ pub struct GitNativeBuildReport {
     pub executable: PathBuf,
     pub runtime_dependencies: BTreeMap<String, String>,
     pub runtime_libraries: BTreeMap<String, String>,
+    pub payload_archive: PathBuf,
+    pub payload_archive_sha256: String,
+    pub payload_archive_bytes: u64,
     pub source_bundle: PathBuf,
     pub source_bundle_sha256: String,
     pub source_bundle_bytes: u64,
@@ -86,6 +92,7 @@ struct GitBuildInputs {
     make_source_sha256: String,
     recipe_revision: String,
     recipe_source_sha256: String,
+    packager_identity: String,
     compiler_identity: String,
     target: String,
     features: Vec<String>,
@@ -106,18 +113,24 @@ struct BuildMarker {
     zlib_source_sha256: String,
     make_source_sha256: String,
     recipe_source_sha256: String,
+    packager_identity: String,
     runtime_dependencies: BTreeMap<String, String>,
     runtime_libraries: BTreeMap<String, String>,
     features: Vec<String>,
     inventory_sha256: String,
     source_bundle_sha256: String,
     source_bundle_bytes: u64,
+    payload_archive_sha256: String,
+    payload_archive_bytes: u64,
     distribution_eligible: bool,
 }
 
 #[path = "git_native_build/source_bundle.rs"]
 mod source_bundle;
 use source_bundle::{SourceArchiveInput, write_source_bundle};
+#[path = "git_native_build/link_evidence.rs"]
+mod link_evidence;
+use link_evidence::collect_link_evidence;
 
 
 /// Build Git and its non-system runtime dependencies from pinned upstream
@@ -150,6 +163,7 @@ pub fn build_linux_shadow(
         compiler_version.trim(),
         sha256_bytes(zig_marker.as_bytes())
     );
+    let packager_identity = packager_identity()?;
     // Build the disposable Make executable for this host, then use the same
     // managed compiler for a static musl Git payload independent of host C
     // library versions.
@@ -164,6 +178,8 @@ pub fn build_linux_shadow(
     let recipe_source_digests = [
         sha256_bytes(GIT_NATIVE_BUILD_SOURCE),
         sha256_bytes(SOURCE_BUNDLE_SOURCE),
+        sha256_bytes(LINK_EVIDENCE_SOURCE),
+        sha256_bytes(LINK_EVIDENCE_WRAPPER_SOURCE),
     ];
     let recipe_source_sha256 = sha256_bytes(&serde_json::to_vec(&recipe_source_digests).map_err(
         |error| {
@@ -180,6 +196,7 @@ pub fn build_linux_shadow(
         make_source_sha256: MAKE_SOURCE_SHA256.to_owned(),
         recipe_revision: RECIPE_REVISION.to_owned(),
         recipe_source_sha256: recipe_source_sha256.clone(),
+        packager_identity: packager_identity.clone(),
         compiler_identity: compiler_identity.clone(),
         target: GIT_TARGET.to_owned(),
         features: BUILD_FEATURES.iter().map(|feature| (*feature).to_owned()).collect(),
@@ -201,6 +218,7 @@ pub fn build_linux_shadow(
         &git_executable,
         &compiler_identity,
         &recipe_source_sha256,
+        &packager_identity,
         &runtime_dependencies,
     )? {
         return Ok(GitNativeBuildReport {
@@ -211,6 +229,9 @@ pub fn build_linux_shadow(
             executable: git_executable,
             runtime_dependencies,
             runtime_libraries: marker.runtime_libraries,
+            payload_archive: entry_root.join(PAYLOAD_ARCHIVE_NAME),
+            payload_archive_sha256: marker.payload_archive_sha256,
+            payload_archive_bytes: marker.payload_archive_bytes,
             source_bundle: entry_root.join(SOURCE_BUNDLE_NAME),
             source_bundle_sha256: marker.source_bundle_sha256,
             source_bundle_bytes: marker.source_bundle_bytes,
@@ -238,6 +259,7 @@ pub fn build_linux_shadow(
         &git_executable,
         &compiler_identity,
         &recipe_source_sha256,
+        &packager_identity,
         &runtime_dependencies,
     )? {
         return Ok(GitNativeBuildReport {
@@ -248,6 +270,9 @@ pub fn build_linux_shadow(
             executable: git_executable,
             runtime_dependencies,
             runtime_libraries: marker.runtime_libraries,
+            payload_archive: entry_root.join(PAYLOAD_ARCHIVE_NAME),
+            payload_archive_sha256: marker.payload_archive_sha256,
+            payload_archive_bytes: marker.payload_archive_bytes,
             source_bundle: entry_root.join(SOURCE_BUNDLE_NAME),
             source_bundle_sha256: marker.source_bundle_sha256,
             source_bundle_bytes: marker.source_bundle_bytes,
@@ -276,7 +301,9 @@ pub fn build_linux_shadow(
         &compiler_path,
         &runtime_dependencies,
         &recipe_source_sha256,
+        &packager_identity,
         &cache_key,
+        &zig_path,
     )?;
     Ok(GitNativeBuildReport {
         git_version: marker.git_version,
@@ -286,6 +313,9 @@ pub fn build_linux_shadow(
         executable: git_executable,
         runtime_dependencies,
         runtime_libraries: marker.runtime_libraries,
+        payload_archive: entry_root.join(PAYLOAD_ARCHIVE_NAME),
+        payload_archive_sha256: marker.payload_archive_sha256,
+        payload_archive_bytes: marker.payload_archive_bytes,
         source_bundle: entry_root.join(SOURCE_BUNDLE_NAME),
         source_bundle_sha256: marker.source_bundle_sha256,
         source_bundle_bytes: marker.source_bundle_bytes,
@@ -305,7 +335,9 @@ fn build_git_cache_entry(
     compiler_path: &str,
     runtime_dependencies: &BTreeMap<String, String>,
     recipe_source_sha256: &str,
+    packager_identity: &str,
     cache_key: &str,
+    zig_path: &Path,
 ) -> Result<BuildMarker, GitNativeBuildError> {
     let result = (|| {
         acquire_source(make_archive, MAKE_SOURCE_URL, MAKE_SOURCE_SHA256)?;
@@ -317,6 +349,7 @@ fn build_git_cache_entry(
         let build_root = entry_root.join("build");
         let make_source = build_root.join("make-source");
         let git_source = build_root.join("git-source");
+        let link_evidence_compiler = build_root.join("git-link-evidence-cc");
         let make_executable = make_source.join("make");
         let make_prefix = entry_root.join("make-install");
         let staged_install = entry_root.join("install.staging");
@@ -333,6 +366,7 @@ fn build_git_cache_entry(
         remove_path(&marker_path)?;
         fs::create_dir_all(&build_root)
             .map_err(|source| io_error("create Git source build directory", &build_root, source))?;
+        write_link_evidence_compiler(&link_evidence_compiler)?;
 
         build_bootstrap_make(
             make_archive,
@@ -375,6 +409,8 @@ fn build_git_cache_entry(
             &staged_install,
             &staged_prefix,
             compiler_path,
+            zig_path,
+            &link_evidence_compiler,
             &pkg_config_libdir,
             &target_cflags,
             &target_ldflags,
@@ -387,6 +423,7 @@ fn build_git_cache_entry(
         remove_path(&staged_install)?;
         let runtime_libraries = runtime_library_inventory(install_root)?;
         require_static_runtime(&runtime_libraries)?;
+        let link_evidence = collect_link_evidence(&git_source, install_root)?;
         let inventory_sha256 = inventory_digest(install_root)?;
         let source_archives = [
             SourceArchiveInput {
@@ -449,10 +486,29 @@ fn build_git_cache_entry(
             entry_root,
             &source_archives,
             compiler_identity,
+            packager_identity,
             install_root,
+            &link_evidence,
         )?;
+        let payload_archive = entry_root.join(PAYLOAD_ARCHIVE_NAME);
+        let payload_archive_staging = entry_root.join(format!(
+            ".{PAYLOAD_ARCHIVE_NAME}.{}.tmp",
+            std::process::id()
+        ));
+        let _ = package_tar_gz(
+            install_root,
+            &payload_archive_staging,
+            "package Vapor-managed Linux Git payload",
+        )?;
+        fs::rename(&payload_archive_staging, &payload_archive)
+            .map_err(|error| io_error("promote Vapor-managed Git payload archive", &payload_archive, error))?;
+        let payload_archive_sha256 = sha256_file(&payload_archive)
+            .map_err(|error| io_error("hash Vapor-managed Git payload archive", &payload_archive, error))?;
+        let payload_archive_bytes = fs::metadata(&payload_archive)
+            .map_err(|error| io_error("inspect Vapor-managed Git payload archive", &payload_archive, error))?
+            .len();
         let marker = BuildMarker {
-            schema: 5,
+            schema: 7,
             cache_key: cache_key.to_owned(),
             git_version: format!("git version {GIT_VERSION}"),
             target: GIT_TARGET.to_owned(),
@@ -464,12 +520,15 @@ fn build_git_cache_entry(
             zlib_source_sha256: ZLIB_SOURCE_SHA256.to_owned(),
             make_source_sha256: MAKE_SOURCE_SHA256.to_owned(),
             recipe_source_sha256: recipe_source_sha256.to_owned(),
+            packager_identity: packager_identity.to_owned(),
             runtime_dependencies: runtime_dependencies.clone(),
             runtime_libraries,
             features: BUILD_FEATURES.iter().map(|feature| (*feature).to_owned()).collect(),
             inventory_sha256,
             source_bundle_sha256,
             source_bundle_bytes,
+            payload_archive_sha256,
+            payload_archive_bytes,
             distribution_eligible: false,
         };
         write_marker(entry_root, &marker)?;
@@ -482,7 +541,115 @@ fn build_git_cache_entry(
         let _ = remove_path(&entry_root.join(MARKER_NAME));
         let _ = remove_path(&entry_root.join("dependencies"));
         let _ = remove_path(&entry_root.join(SOURCE_BUNDLE_NAME));
+        let _ = remove_path(&entry_root.join(PAYLOAD_ARCHIVE_NAME));
+        let _ = remove_path(&entry_root.join(format!(
+            ".{PAYLOAD_ARCHIVE_NAME}.{}.tmp",
+            std::process::id()
+        )));
         let _ = remove_path(&entry_root.join("source-bundle.staging"));
+    }
+    result
+}
+
+fn write_link_evidence_compiler(path: &Path) -> Result<(), GitNativeBuildError> {
+    fs::write(path, LINK_EVIDENCE_WRAPPER_SOURCE)
+        .map_err(|error| io_error("write Vapor Git link-invocation wrapper", path, error))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .map_err(|error| io_error("make Git link-invocation wrapper executable", path, error))?;
+    }
+    Ok(())
+}
+
+fn packager_identity() -> Result<String, GitNativeBuildError> {
+    let tar = capture("tar", ["--version"], None, &[])?;
+    let gzip = capture("gzip", ["--version"], None, &[])?;
+    Ok(format!(
+        "tar={};gzip={}",
+        tar.lines().next().unwrap_or("unknown tar"),
+        gzip.lines().next().unwrap_or("unknown gzip")
+    ))
+}
+
+pub(super) fn package_tar_gz(
+    source_root: &Path,
+    destination: &Path,
+    operation: &'static str,
+) -> Result<(String, u64), GitNativeBuildError> {
+    let filename = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("vapor-payload");
+    let parent = destination.parent().ok_or_else(|| {
+        GitNativeBuildError::Metadata(format!(
+            "archive destination has no parent: {}",
+            destination.display()
+        ))
+    })?;
+    let raw_tar = parent.join(format!(".{filename}.{}.tar", std::process::id()));
+    let compressed_tar = PathBuf::from(format!("{}.gz", raw_tar.display()));
+    remove_path(&raw_tar)?;
+    remove_path(&compressed_tar)?;
+    remove_path(destination)?;
+
+    let result = (|| {
+        let raw_arg = raw_tar.to_string_lossy();
+        let root_arg = source_root.to_string_lossy();
+        let tar = run_output(
+            operation,
+            "tar",
+            [
+                "--sort=name",
+                "--mtime=@0",
+                "--owner=0",
+                "--group=0",
+                "--numeric-owner",
+                "--format=pax",
+                "--pax-option=delete=atime,delete=ctime",
+                "-cf",
+                raw_arg.as_ref(),
+                "-C",
+                root_arg.as_ref(),
+                ".",
+            ],
+            None,
+            &[],
+        )?;
+        if !tar.status.success() {
+            return Err(command_failed(operation, tar));
+        }
+        let gzip = run_output(
+            "compress deterministic Vapor Git payload archive",
+            "gzip",
+            ["--no-name", "--force", raw_arg.as_ref()],
+            None,
+            &[],
+        )?;
+        if !gzip.status.success() {
+            return Err(command_failed("compress deterministic Vapor Git payload archive", gzip));
+        }
+        fs::rename(&compressed_tar, destination)
+            .map_err(|error| io_error("promote compressed Vapor Git archive", destination, error))?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .open(destination)
+            .map_err(|error| io_error("open completed Vapor Git archive", destination, error))?;
+        file.sync_all()
+            .map_err(|error| io_error("sync completed Vapor Git archive", destination, error))?;
+        let bytes = fs::metadata(destination)
+            .map_err(|error| io_error("inspect completed Vapor Git archive", destination, error))?
+            .len();
+        let digest = sha256_file(destination)
+            .map_err(|error| io_error("hash completed Vapor Git archive", destination, error))?;
+        Ok((digest, bytes))
+    })();
+
+    let _ = remove_path(&raw_tar);
+    let _ = remove_path(&compressed_tar);
+    if result.is_err() {
+        let _ = remove_path(destination);
     }
     result
 }
@@ -723,6 +890,8 @@ fn build_and_stage_git(
     staged_root: &Path,
     staged_prefix: &Path,
     compiler_path: &str,
+    zig_path: &Path,
+    link_evidence_compiler: &Path,
     pkg_config_libdir: &str,
     cflags: &str,
     ldflags: &str,
@@ -741,13 +910,17 @@ fn build_and_stage_git(
     let build_path = env::join_paths(build_paths)
         .map(|path| path.to_string_lossy().into_owned())
         .map_err(|error| GitNativeBuildError::Metadata(format!("could not construct managed Git build PATH: {error}")))?;
+    let link_evidence_compiler = link_evidence_compiler.to_string_lossy().into_owned();
+    let zig_path = zig_path.to_string_lossy().into_owned();
     let environment = [
-        ("CC", "zig cc -target x86_64-linux-musl"),
+        ("CC", link_evidence_compiler.as_str()),
         ("CFLAGS", cflags),
         ("LDFLAGS", ldflags),
         ("LIBS", libs),
         ("PKG_CONFIG_LIBDIR", pkg_config_libdir),
         ("PATH", build_path.as_str()),
+        ("VAPOR_MANAGED_ZIG", zig_path.as_str()),
+        ("VAPOR_GIT_BUILD_TARGET", GIT_TARGET),
     ];
     let configure = run_output(
         "configure source Git",
@@ -847,6 +1020,7 @@ fn validate_cache_entry(
     git_executable: &Path,
     expected_compiler_identity: &str,
     expected_recipe_source_sha256: &str,
+    expected_packager_identity: &str,
     expected_runtime_dependencies: &BTreeMap<String, String>,
 ) -> Result<Option<BuildMarker>, GitNativeBuildError> {
     let marker_path = entry_root.join(MARKER_NAME);
@@ -854,7 +1028,8 @@ fn validate_cache_entry(
         return Ok(None);
     }
     let source_bundle_path = entry_root.join(SOURCE_BUNDLE_NAME);
-    if !source_bundle_path.is_file() {
+    let payload_archive_path = entry_root.join(PAYLOAD_ARCHIVE_NAME);
+    if !source_bundle_path.is_file() || !payload_archive_path.is_file() {
         return Ok(None);
     }
     let source = fs::read_to_string(&marker_path)
@@ -863,7 +1038,7 @@ fn validate_cache_entry(
         Ok(marker) => marker,
         Err(_) => return Ok(None),
     };
-    if marker.schema != 5
+    if marker.schema != 7
         || marker.cache_key != expected_key
         || marker.git_version != format!("git version {GIT_VERSION}")
         || marker.target != GIT_TARGET
@@ -875,6 +1050,7 @@ fn validate_cache_entry(
         || marker.recipe_source_sha256 != expected_recipe_source_sha256
         || marker.recipe_revision != RECIPE_REVISION
         || marker.compiler_identity != expected_compiler_identity
+        || marker.packager_identity != expected_packager_identity
         || marker.runtime_dependencies != *expected_runtime_dependencies
         || marker.features != BUILD_FEATURES.iter().map(|feature| (*feature).to_owned()).collect::<Vec<_>>()
         || marker.distribution_eligible
@@ -891,6 +1067,13 @@ fn validate_cache_entry(
             .map_err(|error| io_error("inspect cached Git source bundle", &source_bundle_path, error))?
             .len()
             != marker.source_bundle_bytes
+        || sha256_file(&payload_archive_path)
+            .map_err(|error| io_error("verify cached Git payload archive", &payload_archive_path, error))?
+            != marker.payload_archive_sha256
+        || fs::metadata(&payload_archive_path)
+            .map_err(|error| io_error("inspect cached Git payload archive", &payload_archive_path, error))?
+            .len()
+            != marker.payload_archive_bytes
         || !has_static_runtime(&marker.runtime_libraries)
     {
         return Ok(None);

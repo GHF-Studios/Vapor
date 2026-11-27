@@ -1,8 +1,9 @@
 use super::{
     BUILD_FEATURES, GIT_TARGET, GIT_VERSION, GitNativeBuildError, MAX_NOTICE_FILE_BYTES,
     RECIPE_REVISION, SOURCE_BUNDLE_NAME, command_failed, io_error, remove_path, run_output,
-    sha256_bytes, sha256_file, validate_archive_paths,
+    package_tar_gz, sha256_bytes, sha256_file, validate_archive_paths,
 };
+use super::link_evidence::LinkEvidence;
 use serde::Serialize;
 use std::{fs::{self, Metadata}, path::{Path, PathBuf}};
 #[cfg(unix)]
@@ -17,6 +18,14 @@ const RECIPE_FILES: &[(&str, &[u8])] = &[
         "src/git_native_build/source_bundle.rs",
         include_bytes!("source_bundle.rs"),
     ),
+    (
+        "src/git_native_build/link_evidence.rs",
+        include_bytes!("link_evidence.rs"),
+    ),
+    (
+        "src/git_native_build/link_evidence_cc.sh",
+        include_bytes!("link_evidence_cc.sh"),
+    ),
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,10 +35,12 @@ struct SourceBundleManifest {
     git_version: String,
     recipe_revision: String,
     compiler_identity: String,
+    packager_identity: String,
     build_features: Vec<String>,
     redistribution_review: String,
     components: Vec<SourceBundleComponent>,
     payload_files: Vec<PayloadFile>,
+    link_invocations: Vec<LinkEvidence>,
     notice_files: Vec<SourceBundleNotice>,
     recipe_files: Vec<SourceBundleRecipeFile>,
 }
@@ -44,7 +55,8 @@ struct PayloadFile {
     link_target: Option<String>,
     hardlink_to: Option<String>,
     components: Vec<&'static str>,
-    statically_linked_components: Vec<&'static str>,
+    link_invocation_sha256: Option<String>,
+    requested_static_libraries: Option<Vec<String>>,
 }
 
 struct ScannedPayloadFile {
@@ -93,7 +105,9 @@ pub(super) fn write_source_bundle(
     entry_root: &Path,
     sources: &[SourceArchiveInput<'_>],
     compiler_identity: &str,
+    packager_identity: &str,
     install_root: &Path,
+    link_evidence: &[LinkEvidence],
 ) -> Result<(String, u64), GitNativeBuildError> {
     let staging = entry_root.join("source-bundle.staging");
     let bundle = entry_root.join(SOURCE_BUNDLE_NAME);
@@ -281,20 +295,22 @@ pub(super) fn write_source_bundle(
                     .to_owned(),
             ));
         }
-        let payload_files = payload_inventory(install_root)?;
+        let payload_files = payload_inventory(install_root, link_evidence)?;
         let manifest = SourceBundleManifest {
-            schema: 3,
+            schema: 4,
             target: GIT_TARGET.to_owned(),
             git_version: GIT_VERSION.to_owned(),
             recipe_revision: RECIPE_REVISION.to_owned(),
             compiler_identity: compiler_identity.to_owned(),
+            packager_identity: packager_identity.to_owned(),
             build_features: BUILD_FEATURES
                 .iter()
                 .map(|feature| (*feature).to_owned())
                 .collect(),
-            redistribution_review: "incomplete: installed paths are attributed to producing/runtime components; license scope, notices, corresponding-source sufficiency, and redistribution terms still require review".to_owned(),
+            redistribution_review: "incomplete: installed paths are attributed to Git; per-ELF compiler-requested libraries are recorded but actual static archive-member inclusion is unknown; license scope, notices, corresponding-source sufficiency, and redistribution terms still require review".to_owned(),
             components,
             payload_files,
+            link_invocations: link_evidence.to_vec(),
             notice_files,
             recipe_files,
         };
@@ -320,40 +336,15 @@ pub(super) fn write_source_bundle(
             })?;
         fs::write(
             staging.join("README.txt"),
-            "This archive contains the exact hash-pinned upstream source archives used by the matching Vapor-managed Linux Git build, extracted upstream license/notice texts, the exact Vapor Core build-recipe source files, and a machine-readable component inventory. Recipe-file and notice digests are recorded in components.json. The inventory maps installed paths to their producing component and records statically linked runtime components; license scope, notices, corresponding-source sufficiency, and redistribution terms remain subject to review. It is not a release approval.\n",
+            "This archive contains the exact hash-pinned upstream source archives used by the matching Vapor-managed Linux Git build, extracted upstream license/notice texts, the exact Vapor Core build-recipe source files, and a machine-readable component inventory. Recipe-file, notice, and compiler-invocation digests are recorded in components.json. The inventory maps installed paths to the Git source and records compiler-requested static library selectors for each ELF image. It does not establish which archive members were linked into each image. License scope, notices, corresponding-source sufficiency, and redistribution terms remain subject to review. It is not a release approval.\n",
         )
         .map_err(|error| io_error("write Git source bundle README", &staging.join("README.txt"), error))?;
 
-        let staging_arg = staging.to_string_lossy();
-        let temporary_bundle_arg = temporary_bundle.to_string_lossy();
-        let output = run_output(
+        let _ = package_tar_gz(
+            &staging,
+            &temporary_bundle,
             "package exact Git source and notice bundle",
-            "tar",
-            [
-                "--sort=name",
-                "--mtime=@0",
-                "--owner=0",
-                "--group=0",
-                "--numeric-owner",
-                "--format=ustar",
-                "-cf",
-                temporary_bundle_arg.as_ref(),
-                "-C",
-                staging_arg.as_ref(),
-                ".",
-            ],
-            None,
-            &[],
         )?;
-        if !output.status.success() {
-            return Err(command_failed("package exact Git source and notice bundle", output));
-        }
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .open(&temporary_bundle)
-            .map_err(|error| io_error("open completed Git source bundle", &temporary_bundle, error))?;
-        file.sync_all()
-            .map_err(|error| io_error("sync completed Git source bundle", &temporary_bundle, error))?;
         fs::rename(&temporary_bundle, &bundle)
             .map_err(|error| io_error("promote completed Git source bundle", &bundle, error))?;
         let bytes = fs::metadata(&bundle)
@@ -372,7 +363,10 @@ pub(super) fn write_source_bundle(
     result
 }
 
-fn payload_inventory(root: &Path) -> Result<Vec<PayloadFile>, GitNativeBuildError> {
+fn payload_inventory(
+    root: &Path,
+    link_evidence: &[LinkEvidence],
+) -> Result<Vec<PayloadFile>, GitNativeBuildError> {
     let root = fs::canonicalize(root)
         .map_err(|error| io_error("resolve Git payload inventory", root, error))?;
     let mut scanned = Vec::new();
@@ -397,6 +391,29 @@ fn payload_inventory(root: &Path) -> Result<Vec<PayloadFile>, GitNativeBuildErro
         return Err(GitNativeBuildError::Metadata(
             "Git payload inventory contains no installed entries".to_owned(),
         ));
+    }
+    let evidence_by_binary = link_evidence
+        .iter()
+        .map(|evidence| (evidence.binary_sha256.as_str(), evidence))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for record in &mut records {
+        if record.kind != "elf" {
+            continue;
+        }
+        let digest = record.sha256.as_deref().ok_or_else(|| {
+            GitNativeBuildError::Metadata(format!(
+                "ELF payload lacks a content digest: {}",
+                record.path
+            ))
+        })?;
+        let evidence = evidence_by_binary.get(digest).ok_or_else(|| {
+            GitNativeBuildError::Metadata(format!(
+                "ELF payload lacks compiler link-invocation evidence: {}",
+                record.path
+            ))
+        })?;
+        record.link_invocation_sha256 = Some(evidence.invocation_sha256.clone());
+        record.requested_static_libraries = Some(evidence.requested_static_libraries.clone());
     }
     Ok(records)
 }
@@ -439,7 +456,8 @@ fn scan_payload_directory(
                     link_target: Some(target),
                     hardlink_to: None,
                     components: vec!["Git"],
-                    statically_linked_components: Vec::new(),
+                    link_invocation_sha256: None,
+                    requested_static_libraries: None,
                 },
                 #[cfg(unix)]
                 hardlink_key: None,
@@ -490,7 +508,8 @@ fn payload_file_record(
             link_target: None,
             hardlink_to: None,
             components: vec!["Git"],
-            statically_linked_components: Vec::new(),
+            link_invocation_sha256: None,
+            requested_static_libraries: None,
         },
         #[cfg(unix)]
         hardlink_key,
