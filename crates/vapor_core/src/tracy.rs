@@ -159,6 +159,30 @@ fn install_managed_tracy_csvexport(
         return Ok(destination);
     }
 
+    if environment.target.operating_system == HostOperatingSystem::Windows {
+        let asset_target = tracy_release_target(environment)?;
+        let asset = format!(
+            "tracy-csvexport-{TRACY_PROFILER_VERSION}-{asset_target}.exe"
+        );
+        let client = github_release_client().map_err(TracyError::managed)?;
+        return match download_verified_github_release_asset(
+            &client,
+            MANAGED_RELEASE_REPOSITORY,
+            &format!("{MANAGED_RELEASE_TAG_PREFIX}{TRACY_PROFILER_VERSION}"),
+            &asset,
+            &destination,
+            true,
+        )
+        .map_err(TracyError::managed)?
+        {
+            ReleaseAssetStatus::Downloaded => Ok(destination),
+            ReleaseAssetStatus::Missing => Err(TracyError::message(format!(
+                "no managed Tracy analysis artifact is available for {}; Vapor developer-environment provisioning for this target is incomplete",
+                environment.target.triple(),
+            ))),
+        };
+    }
+
     if environment.target != HostTarget::LINUX_X86_64_GNU {
         return Err(TracyError::message(format!(
             "no managed Tracy analysis artifact is available for {}; Vapor developer-environment provisioning for this target is incomplete",
@@ -318,6 +342,21 @@ fn profiler_executable_name(environment: &HostEnvironment) -> &'static str {
     }
 }
 
+/// Tracy is a separate host process, so its release asset follows the native
+/// host toolchain ABI rather than Vapor's application ABI. Windows gnullvm and
+/// MSVC Vapor installations both run the published native MSVC Tracy tools.
+fn tracy_release_target(environment: &HostEnvironment) -> Result<&'static str, TracyError> {
+    environment
+        .target
+        .rustup_host_triple()
+        .ok_or_else(|| {
+            TracyError::message(format!(
+                "no native Tracy release target is defined for {}",
+                environment.target.triple(),
+            ))
+        })
+}
+
 fn resolved(executable: PathBuf) -> ResolvedTracyProfiler {
     ResolvedTracyProfiler { executable }
 }
@@ -378,7 +417,7 @@ fn acquire_managed_tracy(
     let binary_asset = format!(
         "tracy-profiler-{}-{}-{}{}",
         TRACY_PROFILER_VERSION,
-        environment.target.triple(),
+        tracy_release_target(environment)?,
         variant,
         if environment.target.operating_system == HostOperatingSystem::Windows {
             ".exe"

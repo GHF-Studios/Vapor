@@ -113,13 +113,17 @@ jobs:
         run: |
           cmake -B tracy/profiler/build -S tracy/profiler -DCMAKE_BUILD_TYPE=Release "-DGIT_REV=$env:TRACY_COMMIT"
           cmake --build tracy/profiler/build --parallel 2 --config Release
+          cmake -B tracy/csvexport/build -S tracy/csvexport "-DGIT_REV=$env:TRACY_COMMIT"
+          cmake --build tracy/csvexport/build --parallel 2 --config Release
 
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $asset = "tracy-profiler-$env:TRACY_VERSION-x86_64-pc-windows-msvc-native.exe"
-          Copy-Item tracy/profiler/build/Release/tracy-profiler.exe "dist/$asset"
+          $profiler = "tracy-profiler-$env:TRACY_VERSION-x86_64-pc-windows-msvc-native.exe"
+          $csvexport = "tracy-csvexport-$env:TRACY_VERSION-x86_64-pc-windows-msvc.exe"
+          Copy-Item tracy/profiler/build/Release/tracy-profiler.exe "dist/$profiler"
+          Copy-Item tracy/csvexport/build/Release/tracy-csvexport.exe "dist/$csvexport"
 
       - uses: actions/upload-artifact@v4
         with:

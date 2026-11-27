@@ -13,6 +13,11 @@ toolsets, the pinned managed Tracy profiler, and Tracy's saved-trace analysis
 utility. Developer setup is mandatory; the Installer does not offer a partial
 or skipped toolset.
 
+Tracy is a separate process, so its executable is selected for the native host
+platform rather than Vapor's application ABI. On Windows, both MSVC and
+GnuLLVM Vapor builds use the managed native MSVC Tracy profiler and CSV exporter.
+The signed upstream license notice is installed with the profiler.
+
 For Linux package builds, Vapor manages Zig and a target-normalizing compiler
 wrapper. For Windows GNU builds, it manages the matching UCRT LLVM-MinGW
 compiler, archiver, and runtime. These tools and Rustup state are owned by the
