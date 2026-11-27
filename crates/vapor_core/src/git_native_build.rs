@@ -38,7 +38,7 @@ const MAKE_VERSION: &str = "4.4.1";
 const MAKE_SOURCE_URL: &str = "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz";
 const MAKE_SOURCE_SHA256: &str =
     "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3";
-const RECIPE_REVISION: &str = "2026-11-27.16";
+const RECIPE_REVISION: &str = "2026-11-27.17";
 const CACHE_RELATIVE_ROOT: &str = "cache/build/native-tools/git";
 const MARKER_NAME: &str = "vapor-git-native-build.toml";
 const SOURCE_BUNDLE_NAME: &str = "vapor-git-x86_64-linux-musl-source.tar";
@@ -59,6 +59,8 @@ const BUILD_FEATURES: &[&str] = &[
     "zlib",
 ];
 const GIT_TARGET: &str = "x86_64-linux-musl";
+const GIT_NATIVE_BUILD_SOURCE: &[u8] = include_bytes!("git_native_build.rs");
+const SOURCE_BUNDLE_SOURCE: &[u8] = include_bytes!("git_native_build/source_bundle.rs");
 
 #[derive(Debug, Clone)]
 pub struct GitNativeBuildReport {
@@ -83,6 +85,7 @@ struct GitBuildInputs {
     zlib_source_sha256: String,
     make_source_sha256: String,
     recipe_revision: String,
+    recipe_source_sha256: String,
     compiler_identity: String,
     target: String,
     features: Vec<String>,
@@ -102,6 +105,7 @@ struct BuildMarker {
     openssl_source_sha256: String,
     zlib_source_sha256: String,
     make_source_sha256: String,
+    recipe_source_sha256: String,
     runtime_dependencies: BTreeMap<String, String>,
     runtime_libraries: BTreeMap<String, String>,
     features: Vec<String>,
@@ -157,6 +161,17 @@ pub fn build_linux_shadow(
         ("zlib".to_owned(), ZLIB_VERSION.to_owned()),
         ("linkage".to_owned(), "static musl".to_owned()),
     ]);
+    let recipe_source_digests = [
+        sha256_bytes(GIT_NATIVE_BUILD_SOURCE),
+        sha256_bytes(SOURCE_BUNDLE_SOURCE),
+    ];
+    let recipe_source_sha256 = sha256_bytes(&serde_json::to_vec(&recipe_source_digests).map_err(
+        |error| {
+            GitNativeBuildError::Metadata(format!(
+                "could not encode Git recipe source digests: {error}"
+            ))
+        },
+    )?);
     let inputs = GitBuildInputs {
         git_source_sha256: GIT_SOURCE_SHA256.to_owned(),
         curl_source_sha256: CURL_SOURCE_SHA256.to_owned(),
@@ -164,6 +179,7 @@ pub fn build_linux_shadow(
         zlib_source_sha256: ZLIB_SOURCE_SHA256.to_owned(),
         make_source_sha256: MAKE_SOURCE_SHA256.to_owned(),
         recipe_revision: RECIPE_REVISION.to_owned(),
+        recipe_source_sha256: recipe_source_sha256.clone(),
         compiler_identity: compiler_identity.clone(),
         target: GIT_TARGET.to_owned(),
         features: BUILD_FEATURES.iter().map(|feature| (*feature).to_owned()).collect(),
@@ -184,6 +200,7 @@ pub fn build_linux_shadow(
         &cache_key,
         &git_executable,
         &compiler_identity,
+        &recipe_source_sha256,
         &runtime_dependencies,
     )? {
         return Ok(GitNativeBuildReport {
@@ -220,6 +237,7 @@ pub fn build_linux_shadow(
         &cache_key,
         &git_executable,
         &compiler_identity,
+        &recipe_source_sha256,
         &runtime_dependencies,
     )? {
         return Ok(GitNativeBuildReport {
@@ -257,6 +275,7 @@ pub fn build_linux_shadow(
         &compiler_identity,
         &compiler_path,
         &runtime_dependencies,
+        &recipe_source_sha256,
         &cache_key,
     )?;
     Ok(GitNativeBuildReport {
@@ -285,6 +304,7 @@ fn build_git_cache_entry(
     compiler_identity: &str,
     compiler_path: &str,
     runtime_dependencies: &BTreeMap<String, String>,
+    recipe_source_sha256: &str,
     cache_key: &str,
 ) -> Result<BuildMarker, GitNativeBuildError> {
     let result = (|| {
@@ -369,11 +389,61 @@ fn build_git_cache_entry(
         require_static_runtime(&runtime_libraries)?;
         let inventory_sha256 = inventory_digest(install_root)?;
         let source_archives = [
-            SourceArchiveInput { component: "Git", version: GIT_VERSION, role: "runtime", source_url: GIT_SOURCE_URL, source_sha256: GIT_SOURCE_SHA256, archive: git_archive, top_level: "git-2.56.1", extension: "xz", observed_license: "GNU General Public License version 2; embedded components have additional license texts" },
-            SourceArchiveInput { component: "GNU Make", version: MAKE_VERSION, role: "build-time tool", source_url: MAKE_SOURCE_URL, source_sha256: MAKE_SOURCE_SHA256, archive: make_archive, top_level: "make-4.4.1", extension: "gz", observed_license: "GNU General Public License version 3" },
-            SourceArchiveInput { component: "curl", version: CURL_VERSION, role: "statically linked runtime dependency", source_url: CURL_SOURCE_URL, source_sha256: CURL_SOURCE_SHA256, archive: curl_archive, top_level: "curl-8.23.0", extension: "xz", observed_license: "curl copyright and permission notice" },
-            SourceArchiveInput { component: "OpenSSL", version: OPENSSL_VERSION, role: "statically linked runtime dependency", source_url: OPENSSL_SOURCE_URL, source_sha256: OPENSSL_SOURCE_SHA256, archive: openssl_archive, top_level: "openssl-3.5.9", extension: "gz", observed_license: "Apache License 2.0; archive also contains build-time Perl dependency license text" },
-            SourceArchiveInput { component: "zlib", version: ZLIB_VERSION, role: "statically linked runtime dependency", source_url: ZLIB_SOURCE_URL, source_sha256: ZLIB_SOURCE_SHA256, archive: zlib_archive, top_level: "zlib-1.4", extension: "gz", observed_license: "zlib license; archive also contains notices for contrib components" },
+            SourceArchiveInput {
+                component: "Git",
+                version: GIT_VERSION,
+                role: "runtime",
+                source_url: GIT_SOURCE_URL,
+                source_sha256: GIT_SOURCE_SHA256,
+                archive: git_archive,
+                top_level: "git-2.56.1",
+                extension: "xz",
+                observed_license: "GNU General Public License version 2; embedded components have additional license texts",
+            },
+            SourceArchiveInput {
+                component: "GNU Make",
+                version: MAKE_VERSION,
+                role: "build-time tool",
+                source_url: MAKE_SOURCE_URL,
+                source_sha256: MAKE_SOURCE_SHA256,
+                archive: make_archive,
+                top_level: "make-4.4.1",
+                extension: "gz",
+                observed_license: "GNU General Public License version 3",
+            },
+            SourceArchiveInput {
+                component: "curl",
+                version: CURL_VERSION,
+                role: "statically linked runtime dependency",
+                source_url: CURL_SOURCE_URL,
+                source_sha256: CURL_SOURCE_SHA256,
+                archive: curl_archive,
+                top_level: "curl-8.23.0",
+                extension: "xz",
+                observed_license: "curl copyright and permission notice",
+            },
+            SourceArchiveInput {
+                component: "OpenSSL",
+                version: OPENSSL_VERSION,
+                role: "statically linked runtime dependency",
+                source_url: OPENSSL_SOURCE_URL,
+                source_sha256: OPENSSL_SOURCE_SHA256,
+                archive: openssl_archive,
+                top_level: "openssl-3.5.9",
+                extension: "gz",
+                observed_license: "Apache License 2.0; archive also contains build-time Perl dependency license text",
+            },
+            SourceArchiveInput {
+                component: "zlib",
+                version: ZLIB_VERSION,
+                role: "statically linked runtime dependency",
+                source_url: ZLIB_SOURCE_URL,
+                source_sha256: ZLIB_SOURCE_SHA256,
+                archive: zlib_archive,
+                top_level: "zlib-1.4",
+                extension: "gz",
+                observed_license: "zlib license; archive also contains notices for contrib components",
+            },
         ];
         let (source_bundle_sha256, source_bundle_bytes) = write_source_bundle(
             entry_root,
@@ -381,7 +451,7 @@ fn build_git_cache_entry(
             compiler_identity,
         )?;
         let marker = BuildMarker {
-            schema: 4,
+            schema: 5,
             cache_key: cache_key.to_owned(),
             git_version: format!("git version {GIT_VERSION}"),
             target: GIT_TARGET.to_owned(),
@@ -392,6 +462,7 @@ fn build_git_cache_entry(
             openssl_source_sha256: OPENSSL_SOURCE_SHA256.to_owned(),
             zlib_source_sha256: ZLIB_SOURCE_SHA256.to_owned(),
             make_source_sha256: MAKE_SOURCE_SHA256.to_owned(),
+            recipe_source_sha256: recipe_source_sha256.to_owned(),
             runtime_dependencies: runtime_dependencies.clone(),
             runtime_libraries,
             features: BUILD_FEATURES.iter().map(|feature| (*feature).to_owned()).collect(),
@@ -774,6 +845,7 @@ fn validate_cache_entry(
     expected_key: &str,
     git_executable: &Path,
     expected_compiler_identity: &str,
+    expected_recipe_source_sha256: &str,
     expected_runtime_dependencies: &BTreeMap<String, String>,
 ) -> Result<Option<BuildMarker>, GitNativeBuildError> {
     let marker_path = entry_root.join(MARKER_NAME);
@@ -790,7 +862,7 @@ fn validate_cache_entry(
         Ok(marker) => marker,
         Err(_) => return Ok(None),
     };
-    if marker.schema != 4
+    if marker.schema != 5
         || marker.cache_key != expected_key
         || marker.git_version != format!("git version {GIT_VERSION}")
         || marker.target != GIT_TARGET
@@ -799,6 +871,7 @@ fn validate_cache_entry(
         || marker.openssl_source_sha256 != OPENSSL_SOURCE_SHA256
         || marker.zlib_source_sha256 != ZLIB_SOURCE_SHA256
         || marker.make_source_sha256 != MAKE_SOURCE_SHA256
+        || marker.recipe_source_sha256 != expected_recipe_source_sha256
         || marker.recipe_revision != RECIPE_REVISION
         || marker.compiler_identity != expected_compiler_identity
         || marker.runtime_dependencies != *expected_runtime_dependencies

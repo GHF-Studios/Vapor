@@ -9,6 +9,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const RECIPE_FILES: &[(&str, &[u8])] = &[
+    (
+        "src/git_native_build.rs",
+        include_bytes!("../git_native_build.rs"),
+    ),
+    (
+        "src/git_native_build/source_bundle.rs",
+        include_bytes!("source_bundle.rs"),
+    ),
+];
+
 #[derive(Debug, Clone, Serialize)]
 struct SourceBundleManifest {
     schema: u32,
@@ -20,6 +31,7 @@ struct SourceBundleManifest {
     redistribution_review: String,
     components: Vec<SourceBundleComponent>,
     notice_files: Vec<SourceBundleNotice>,
+    recipe_files: Vec<SourceBundleRecipeFile>,
 }
 #[derive(Debug, Clone, Serialize)]
 struct SourceBundleComponent {
@@ -37,6 +49,13 @@ struct SourceBundleNotice {
     pub(super) component: String,
     upstream_path: String,
     bundle_path: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SourceBundleRecipeFile {
+    path: String,
+    bytes: u64,
     sha256: String,
 }
 
@@ -69,13 +88,23 @@ pub(super) fn write_source_bundle(
     let result = (|| {
         let sources_directory = staging.join("sources");
         let notices_directory = staging.join("notices");
+        let recipe_directory = staging.join("recipe");
         fs::create_dir_all(&sources_directory)
-            .map_err(|source| io_error("create Git source bundle archives", &sources_directory, source))?;
+            .map_err(|source| {
+                io_error("create Git source bundle archives", &sources_directory, source)
+            })?;
         fs::create_dir_all(&notices_directory)
-            .map_err(|source| io_error("create Git source bundle notices", &notices_directory, source))?;
+            .map_err(|source| {
+                io_error("create Git source bundle notices", &notices_directory, source)
+            })?;
+        fs::create_dir_all(&recipe_directory)
+            .map_err(|source| {
+                io_error("create Git build recipe directory", &recipe_directory, source)
+            })?;
 
         let mut components = Vec::with_capacity(sources.len());
         let mut notice_files = Vec::new();
+        let mut recipe_files = Vec::with_capacity(RECIPE_FILES.len());
         let mut notice_document = String::from(
             "Vapor managed Git source bundle\n\nThe following upstream license and notice texts are reproduced from the exact source archives listed in components.json. This collected evidence is not a completed legal review and does not assert that every shipped binary component has been mapped.\n",
         );
@@ -108,7 +137,11 @@ pub(super) fn write_source_bundle(
                 })?;
 
             validate_archive_paths(source.archive, source.top_level, source.extension == "xz")?;
-            let list_option = if source.extension == "xz" { "-tJf" } else { "-tzf" };
+            let list_option = if source.extension == "xz" {
+                "-tJf"
+            } else {
+                "-tzf"
+            };
             let archive_arg = source.archive.to_string_lossy();
             let listing = run_output(
                 "list upstream license and notice files",
@@ -133,7 +166,11 @@ pub(super) fn write_source_bundle(
                 if relative_path.as_os_str().is_empty() {
                     continue;
                 }
-                let extract_option = if source.extension == "xz" { "-xJOf" } else { "-xzOf" };
+                let extract_option = if source.extension == "xz" {
+                    "-xJOf"
+                } else {
+                    "-xzOf"
+                };
                 let notice = run_output(
                     "read upstream license and notice text",
                     "tar",
@@ -145,9 +182,12 @@ pub(super) fn write_source_bundle(
                     return Err(command_failed("read upstream license and notice text", notice));
                 }
                 total_notice_bytes = total_notice_bytes.saturating_add(notice.stdout.len());
-                if notice.stdout.len() > MAX_NOTICE_FILE_BYTES || total_notice_bytes > MAX_NOTICE_FILE_BYTES * 8 {
+                if notice.stdout.len() > MAX_NOTICE_FILE_BYTES
+                    || total_notice_bytes > MAX_NOTICE_FILE_BYTES * 8
+                {
                     return Err(GitNativeBuildError::Metadata(
-                        "upstream license/notice material exceeds the bounded source-bundle limit".to_owned(),
+                        "upstream license/notice material exceeds the bounded source-bundle limit"
+                            .to_owned(),
                     ));
                 }
                 let bundle_relative = PathBuf::from("notices")
@@ -156,12 +196,14 @@ pub(super) fn write_source_bundle(
                 let destination = staging.join(&bundle_relative);
                 if let Some(parent) = destination.parent() {
                     fs::create_dir_all(parent)
-                    .map_err(|error| {
-                        io_error("create bundled notice directory", parent, error)
-                    })?;
+                        .map_err(|error| {
+                            io_error("create bundled notice directory", parent, error)
+                        })?;
                 }
                 fs::write(&destination, &notice.stdout)
-                    .map_err(|error| io_error("write bundled upstream notice", &destination, error))?;
+                    .map_err(|error| {
+                        io_error("write bundled upstream notice", &destination, error)
+                    })?;
                 let bundle_path = bundle_relative.to_string_lossy().replace('\\', "/");
                 notice_files.push(SourceBundleNotice {
                     component: source.component.to_owned(),
@@ -169,7 +211,10 @@ pub(super) fn write_source_bundle(
                     bundle_path: bundle_path.clone(),
                     sha256: sha256_bytes(&notice.stdout),
                 });
-                notice_document.push_str(&format!("\n===== {}: {} =====\n", source.component, archive_entry));
+                notice_document.push_str(&format!(
+                    "\n===== {}: {} =====\n",
+                    source.component, archive_entry
+                ));
                 notice_document.push_str(&String::from_utf8_lossy(&notice.stdout));
                 if !notice_document.ends_with('\n') {
                     notice_document.push('\n');
@@ -186,13 +231,38 @@ pub(super) fn write_source_bundle(
                 license_text_identification: source.observed_license.to_owned(),
             });
         }
+        for (relative_path, contents) in RECIPE_FILES {
+            let relative_path = Path::new(relative_path);
+            let destination = recipe_directory.join(relative_path);
+            let parent = destination.parent().ok_or_else(|| {
+                GitNativeBuildError::Metadata(format!(
+                    "build recipe path has no parent: {}",
+                    destination.display()
+                ))
+            })?;
+            fs::create_dir_all(parent)
+                .map_err(|error| io_error("create build recipe directory", parent, error))?;
+            fs::write(&destination, contents)
+                .map_err(|error| {
+                    io_error("write bundled build recipe source", &destination, error)
+                })?;
+            recipe_files.push(SourceBundleRecipeFile {
+                path: format!(
+                    "recipe/{}",
+                    relative_path.to_string_lossy().replace('\\', "/")
+                ),
+                bytes: contents.len() as u64,
+                sha256: sha256_bytes(contents),
+            });
+        }
         if notice_files.is_empty() {
             return Err(GitNativeBuildError::Metadata(
-                "no upstream license or notice files were discovered in the pinned source archives".to_owned(),
+                "no upstream license or notice files were discovered in the pinned source archives"
+                    .to_owned(),
             ));
         }
         let manifest = SourceBundleManifest {
-            schema: 1,
+            schema: 2,
             target: GIT_TARGET.to_owned(),
             git_version: GIT_VERSION.to_owned(),
             recipe_revision: RECIPE_REVISION.to_owned(),
@@ -204,32 +274,31 @@ pub(super) fn write_source_bundle(
             redistribution_review: "incomplete: source texts and notice files are collected; binary-to-component mapping and legal review are still required".to_owned(),
             components,
             notice_files,
+            recipe_files,
         };
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|error| {
-                GitNativeBuildError::Metadata(format!(
-                    "could not encode Git source inventory: {error}"
-                ))
+                GitNativeBuildError::Metadata(format!("could not encode Git source inventory: {error}"))
             })?;
         fs::write(staging.join("components.json"), manifest_bytes)
-        .map_err(|error| {
-            io_error(
-                "write Git source inventory",
-                &staging.join("components.json"),
-                error,
-            )
-        })?;
+            .map_err(|error| {
+                io_error(
+                    "write Git source inventory",
+                    &staging.join("components.json"),
+                    error,
+                )
+            })?;
         fs::write(staging.join("THIRD_PARTY_NOTICES.txt"), notice_document)
-        .map_err(|error| {
-            io_error(
-                "write combined Git notices",
-                &staging.join("THIRD_PARTY_NOTICES.txt"),
-                error,
-            )
-        })?;
+            .map_err(|error| {
+                io_error(
+                    "write combined Git notices",
+                    &staging.join("THIRD_PARTY_NOTICES.txt"),
+                    error,
+                )
+            })?;
         fs::write(
             staging.join("README.txt"),
-            "This archive contains the exact hash-pinned upstream source archives used by the matching Vapor-managed Linux Git build, plus extracted upstream license/notice texts and a machine-readable component inventory. The inventory is intentionally marked incomplete until every installed binary and linked component is mapped and redistribution obligations are reviewed. It is not a release approval.\n",
+            "This archive contains the exact hash-pinned upstream source archives used by the matching Vapor-managed Linux Git build, extracted upstream license/notice texts, the exact Vapor Core build-recipe source files, and a machine-readable component inventory. Recipe-file and notice digests are recorded in components.json. The inventory is intentionally marked incomplete until every installed binary and linked component is mapped and redistribution obligations are reviewed. It is not a release approval.\n",
         )
         .map_err(|error| io_error("write Git source bundle README", &staging.join("README.txt"), error))?;
 
