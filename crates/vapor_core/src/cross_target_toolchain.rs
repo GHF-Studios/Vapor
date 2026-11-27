@@ -605,7 +605,7 @@ fn extract_archive(archive: &Path, destination: &Path) -> Result<(), CrossTarget
     #[cfg(target_os = "windows")]
     let output = {
         let command = format!(
-            "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
+            "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('{}', '{}')",
             powershell_quote(&archive.to_string_lossy()),
             powershell_quote(&destination.to_string_lossy()),
         );
@@ -671,7 +671,22 @@ fn flatten_single_root(staging: &Path) -> Result<(), CrossTargetToolchainError> 
 
 #[cfg(target_os = "windows")]
 fn powershell_quote(value: &str) -> String {
-    value.replace('\'', "''")
+    let compatible = if let Some(unc_path) = value.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc_path}")
+    } else {
+        let bytes = value.as_bytes();
+        if bytes.len() >= 7
+            && value.starts_with(r"\\?\")
+            && bytes[4].is_ascii_alphabetic()
+            && bytes[5] == b':'
+            && matches!(bytes[6], b'\\' | b'/')
+        {
+            value[4..].to_owned()
+        } else {
+            value.to_owned()
+        }
+    };
+    compatible.replace('\'', "''")
 }
 
 #[derive(Debug)]
