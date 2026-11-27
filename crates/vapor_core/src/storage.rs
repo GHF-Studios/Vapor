@@ -169,7 +169,7 @@ pub fn inspect(installation: &VaporInstallation) -> Result<StorageInventory, Str
         &home,
         "cache/build",
         CleanupCost::Rebuild,
-        "Close active Cargo builds first. Clears compiled build artifacts and incremental state. Source is kept; the next build will recompile and may take substantially longer.",
+        "Close active builds first. Clears compiled artifacts, incremental state, and cached native build inputs; Vapor may need to re-download those inputs and rebuild. Authored source checkouts and installed tools are kept.",
         &mut candidates,
         &mut scan_incomplete,
     );
