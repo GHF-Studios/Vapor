@@ -2,6 +2,7 @@
 
 use crate::content::{ContentSource, ContentType};
 use crate::environment::EnvironmentCommand;
+use crate::git::GitCommand;
 use crate::repair::RepairCommand;
 use crate::steam::types::SteamCommand;
 use crate::template::TemplateCommand;
@@ -87,6 +88,7 @@ pub enum SdkCommand {
     Workspace(WorkspaceCommand),
     Repair(RepairCommand),
     Toolchain(ToolchainCommand),
+    Git(GitCommand),
     Template(TemplateCommand),
     Packagepack(PackagepackCommand),
     Pack {

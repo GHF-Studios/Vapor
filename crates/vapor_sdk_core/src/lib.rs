@@ -9,6 +9,7 @@
 pub mod commands;
 pub mod content;
 pub mod environment;
+pub mod git;
 pub mod options;
 pub mod repair;
 pub mod spec;
@@ -23,6 +24,7 @@ pub use commands::{
 };
 pub use content::{ContentSource, ContentType, allowed_pack_children};
 pub use environment::{EnvironmentCommand, EnvironmentReport, environment_status};
+pub use git::{GitBuildError, GitCommand, git_build};
 pub use options::GlobalOptions;
 pub use repair::{RepairCommand, RepairTarget};
 pub use spec::{CommandSpec, StateSurface, describe_command};
@@ -35,6 +37,7 @@ pub use toolchain::{
     toolchain_install, toolchain_install_plan, toolchain_status,
 };
 pub use vapor_core::ChildContentRef;
+pub use vapor_core::GitNativeBuildReport;
 pub use workspace::{
     WorkspaceCargoReport, WorkspaceCommand, WorkspaceCommandError, WorkspaceDeployReport,
     WorkspaceStatusReport, WorkspaceSyncReport, workspace_build, workspace_build_release,

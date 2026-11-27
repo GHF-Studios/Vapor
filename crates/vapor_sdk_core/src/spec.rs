@@ -2,6 +2,7 @@
 
 mod content;
 mod environment;
+mod git;
 mod repair;
 mod steam;
 mod template;
@@ -57,6 +58,7 @@ pub fn describe_command(command: &SdkCommand) -> CommandSpec {
         SdkCommand::Workspace(command) => workspace::describe(command),
         SdkCommand::Repair(command) => repair::describe(command),
         SdkCommand::Toolchain(command) => toolchain::describe(command),
+        SdkCommand::Git(command) => git::describe(command),
         SdkCommand::Template(command) => template::describe(command),
         SdkCommand::Packagepack(command) => content::describe_packagepack(command),
         SdkCommand::Pack { pack_type, command } => content::describe_pack(*pack_type, command),

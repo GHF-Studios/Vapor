@@ -4046,6 +4046,7 @@ dependencies = [
  "csv",
  "pathdiff",
  "reqwest",
+ "ring",
  "semver",
  "serde",
  "serde_json",

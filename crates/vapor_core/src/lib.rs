@@ -9,6 +9,7 @@ pub mod content;
 pub mod cross_target_toolchain;
 pub mod developer_environment;
 pub mod git_provider;
+pub mod git_native_build;
 pub mod development;
 pub mod distribution;
 pub mod ecosystem;
@@ -120,6 +121,8 @@ pub use managed_tool::{
     download_verified_github_release_asset, find_executable, find_executable_on_path,
     github_release_client,
 };
+
+pub use git_native_build::{GitNativeBuildError, GitNativeBuildReport, build_linux_shadow};
 
 pub use manifest::{ContentHeader, ContentManifest, ManifestError, parse_content_manifest};
 
