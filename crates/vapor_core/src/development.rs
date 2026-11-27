@@ -719,12 +719,38 @@ pub fn run_workspace_deployment_authority(
 
     #[cfg(not(windows))]
     {
-        let output = crate::managed_process::background_command(&canonical_authority)
+        let mut command = crate::managed_process::background_command(&canonical_authority);
+        command
             .args(["client", "deploy", "local"])
             .current_dir(&workspace.root)
             .env(crate::VAPOR_HOME_ENV, &authority.installation_root)
-            .env(LOCAL_DEPLOYMENT_AUTHORITY_ENV, &canonical_authority)
-            .output();
+            .env(LOCAL_DEPLOYMENT_AUTHORITY_ENV, &canonical_authority);
+
+        #[cfg(target_os = "linux")]
+        {
+            // The authority is a source-built CLI staged beside the installed
+            // app's native runtime libraries. Unlike the installed launcher,
+            // it does not inherit Steam's library search path automatically.
+            // Preserve any caller-provided loader path after the app-owned
+            // directory so the authority resolves the same native runtime.
+            let mut library_paths = vec![
+                authority
+                    .installation_root
+                    .join(BIN_DIR)
+                    .join(current_host_target()?),
+            ];
+            if let Some(existing) = env::var_os("LD_LIBRARY_PATH") {
+                library_paths.extend(env::split_paths(&existing));
+            }
+            let library_path = env::join_paths(library_paths).map_err(|error| {
+                DevelopmentError::Workspace(format!(
+                    "could not prepare local deployment authority library path: {error}"
+                ))
+            })?;
+            command.env("LD_LIBRARY_PATH", library_path);
+        }
+
+        let output = command.output();
         let cleanup = fs::remove_file(&canonical_authority);
         let output = output.map_err(|source| DevelopmentError::DeploymentAuthorityStart {
             executable: canonical_authority.clone(),
