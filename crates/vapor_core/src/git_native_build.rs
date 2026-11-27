@@ -38,10 +38,12 @@ const MAKE_VERSION: &str = "4.4.1";
 const MAKE_SOURCE_URL: &str = "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz";
 const MAKE_SOURCE_SHA256: &str =
     "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3";
-const RECIPE_REVISION: &str = "2026-11-27.15";
+const RECIPE_REVISION: &str = "2026-11-27.16";
 const CACHE_RELATIVE_ROOT: &str = "cache/build/native-tools/git";
 const MARKER_NAME: &str = "vapor-git-native-build.toml";
+const SOURCE_BUNDLE_NAME: &str = "vapor-git-x86_64-linux-musl-source.tar";
 const MAX_SOURCE_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_NOTICE_FILE_BYTES: usize = 2 * 1024 * 1024;
 const BUILD_FEATURES: &[&str] = &[
     "https-transport",
     "make-no-nls",
@@ -67,6 +69,9 @@ pub struct GitNativeBuildReport {
     pub executable: PathBuf,
     pub runtime_dependencies: BTreeMap<String, String>,
     pub runtime_libraries: BTreeMap<String, String>,
+    pub source_bundle: PathBuf,
+    pub source_bundle_sha256: String,
+    pub source_bundle_bytes: u64,
     pub distribution_eligible: bool,
 }
 
@@ -101,8 +106,15 @@ struct BuildMarker {
     runtime_libraries: BTreeMap<String, String>,
     features: Vec<String>,
     inventory_sha256: String,
+    source_bundle_sha256: String,
+    source_bundle_bytes: u64,
     distribution_eligible: bool,
 }
+
+#[path = "git_native_build/source_bundle.rs"]
+mod source_bundle;
+use source_bundle::{SourceArchiveInput, write_source_bundle};
+
 
 /// Build Git and its non-system runtime dependencies from pinned upstream
 /// sources into Vapor's non-authoritative cache.
@@ -178,10 +190,13 @@ pub fn build_linux_shadow(
             git_version: marker.git_version,
             cache_hit: true,
             cache_key,
-            cache_root: entry_root,
+            cache_root: entry_root.clone(),
             executable: git_executable,
             runtime_dependencies,
             runtime_libraries: marker.runtime_libraries,
+            source_bundle: entry_root.join(SOURCE_BUNDLE_NAME),
+            source_bundle_sha256: marker.source_bundle_sha256,
+            source_bundle_bytes: marker.source_bundle_bytes,
             distribution_eligible: false,
         });
     }
@@ -211,10 +226,13 @@ pub fn build_linux_shadow(
             git_version: marker.git_version,
             cache_hit: true,
             cache_key,
-            cache_root: entry_root,
+            cache_root: entry_root.clone(),
             executable: git_executable,
             runtime_dependencies,
             runtime_libraries: marker.runtime_libraries,
+            source_bundle: entry_root.join(SOURCE_BUNDLE_NAME),
+            source_bundle_sha256: marker.source_bundle_sha256,
+            source_bundle_bytes: marker.source_bundle_bytes,
             distribution_eligible: false,
         });
     }
@@ -245,10 +263,13 @@ pub fn build_linux_shadow(
         git_version: marker.git_version,
         cache_hit: false,
         cache_key,
-        cache_root: entry_root,
+        cache_root: entry_root.clone(),
         executable: git_executable,
         runtime_dependencies,
         runtime_libraries: marker.runtime_libraries,
+        source_bundle: entry_root.join(SOURCE_BUNDLE_NAME),
+        source_bundle_sha256: marker.source_bundle_sha256,
+        source_bundle_bytes: marker.source_bundle_bytes,
         distribution_eligible: marker.distribution_eligible,
     })
 }
@@ -347,8 +368,20 @@ fn build_git_cache_entry(
         let runtime_libraries = runtime_library_inventory(install_root)?;
         require_static_runtime(&runtime_libraries)?;
         let inventory_sha256 = inventory_digest(install_root)?;
+        let source_archives = [
+            SourceArchiveInput { component: "Git", version: GIT_VERSION, role: "runtime", source_url: GIT_SOURCE_URL, source_sha256: GIT_SOURCE_SHA256, archive: git_archive, top_level: "git-2.56.1", extension: "xz", observed_license: "GNU General Public License version 2; embedded components have additional license texts" },
+            SourceArchiveInput { component: "GNU Make", version: MAKE_VERSION, role: "build-time tool", source_url: MAKE_SOURCE_URL, source_sha256: MAKE_SOURCE_SHA256, archive: make_archive, top_level: "make-4.4.1", extension: "gz", observed_license: "GNU General Public License version 3" },
+            SourceArchiveInput { component: "curl", version: CURL_VERSION, role: "statically linked runtime dependency", source_url: CURL_SOURCE_URL, source_sha256: CURL_SOURCE_SHA256, archive: curl_archive, top_level: "curl-8.23.0", extension: "xz", observed_license: "curl copyright and permission notice" },
+            SourceArchiveInput { component: "OpenSSL", version: OPENSSL_VERSION, role: "statically linked runtime dependency", source_url: OPENSSL_SOURCE_URL, source_sha256: OPENSSL_SOURCE_SHA256, archive: openssl_archive, top_level: "openssl-3.5.9", extension: "gz", observed_license: "Apache License 2.0; archive also contains build-time Perl dependency license text" },
+            SourceArchiveInput { component: "zlib", version: ZLIB_VERSION, role: "statically linked runtime dependency", source_url: ZLIB_SOURCE_URL, source_sha256: ZLIB_SOURCE_SHA256, archive: zlib_archive, top_level: "zlib-1.4", extension: "gz", observed_license: "zlib license; archive also contains notices for contrib components" },
+        ];
+        let (source_bundle_sha256, source_bundle_bytes) = write_source_bundle(
+            entry_root,
+            &source_archives,
+            compiler_identity,
+        )?;
         let marker = BuildMarker {
-            schema: 3,
+            schema: 4,
             cache_key: cache_key.to_owned(),
             git_version: format!("git version {GIT_VERSION}"),
             target: GIT_TARGET.to_owned(),
@@ -363,6 +396,8 @@ fn build_git_cache_entry(
             runtime_libraries,
             features: BUILD_FEATURES.iter().map(|feature| (*feature).to_owned()).collect(),
             inventory_sha256,
+            source_bundle_sha256,
+            source_bundle_bytes,
             distribution_eligible: false,
         };
         write_marker(entry_root, &marker)?;
@@ -374,6 +409,8 @@ fn build_git_cache_entry(
         let _ = remove_path(&entry_root.join("install.staging"));
         let _ = remove_path(&entry_root.join(MARKER_NAME));
         let _ = remove_path(&entry_root.join("dependencies"));
+        let _ = remove_path(&entry_root.join(SOURCE_BUNDLE_NAME));
+        let _ = remove_path(&entry_root.join("source-bundle.staging"));
     }
     result
 }
@@ -743,13 +780,17 @@ fn validate_cache_entry(
     if !marker_path.is_file() || !git_executable.is_file() {
         return Ok(None);
     }
+    let source_bundle_path = entry_root.join(SOURCE_BUNDLE_NAME);
+    if !source_bundle_path.is_file() {
+        return Ok(None);
+    }
     let source = fs::read_to_string(&marker_path)
         .map_err(|error| io_error("read Git build cache marker", &marker_path, error))?;
     let marker = match toml::from_str::<BuildMarker>(&source) {
         Ok(marker) => marker,
         Err(_) => return Ok(None),
     };
-    if marker.schema != 3
+    if marker.schema != 4
         || marker.cache_key != expected_key
         || marker.git_version != format!("git version {GIT_VERSION}")
         || marker.target != GIT_TARGET
@@ -771,6 +812,11 @@ fn validate_cache_entry(
     if read_git_version(git_executable)? != marker.git_version
         || runtime_library_inventory(&entry_root.join("install"))? != marker.runtime_libraries
         || inventory_digest(&entry_root.join("install"))? != marker.inventory_sha256
+        || sha256_file(&source_bundle_path).map_err(|error| io_error("verify cached Git source bundle", &source_bundle_path, error))? != marker.source_bundle_sha256
+        || fs::metadata(&source_bundle_path)
+            .map_err(|error| io_error("inspect cached Git source bundle", &source_bundle_path, error))?
+            .len()
+            != marker.source_bundle_bytes
         || !has_static_runtime(&marker.runtime_libraries)
     {
         return Ok(None);
