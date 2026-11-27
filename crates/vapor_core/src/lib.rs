@@ -161,7 +161,7 @@ pub use product_layout::{
 
 pub use role::{
     ParseVaporRoleError, RoleError, RoleStatus, RoleTransitionReport, VaporRole, demote_role,
-    git_available, installed_role, promote_role, promote_role_with_context, role_status,
+    installed_role, promote_role, promote_role_with_context, role_status,
 };
 
 pub use source::{

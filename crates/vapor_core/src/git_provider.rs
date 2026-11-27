@@ -45,6 +45,19 @@ impl GitProvider {
         })
     }
 
+    /// Run a Git process when the caller needs to inspect its output.
+    pub fn run_output<I, S>(&self, arguments: I) -> Result<std::process::Output, std::io::Error>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        let mut command = Command::new(&self.path);
+        command.args(arguments);
+        self.configure_command(&mut command)
+            .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+        command.output()
+    }
+
     fn configure_command(&self, command: &mut Command) -> Result<(), String> {
         let root = self.user_data_root.join(MANAGED_GIT_DIRECTORY);
         if self.source == GitProviderSource::Managed {
@@ -242,4 +255,27 @@ fn append_existing_path(command: &mut Command, paths: Vec<PathBuf>) -> Result<()
 #[cfg(not(windows))]
 fn append_existing_path(_command: &mut Command, _paths: Vec<PathBuf>) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GitProvider, GitProviderSource};
+    use std::path::PathBuf;
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_output_captures_stdout_and_exit_status() {
+        let provider = GitProvider {
+            path: PathBuf::from("/bin/sh"),
+            source: GitProviderSource::Environment,
+            user_data_root: PathBuf::new(),
+        };
+
+        let output = provider
+            .run_output(["-c", "printf provider-output; exit 7"])
+            .expect("start provider process");
+
+        assert_eq!(output.stdout, b"provider-output");
+        assert_eq!(output.status.code(), Some(7));
+    }
 }

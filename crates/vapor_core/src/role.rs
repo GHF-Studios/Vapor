@@ -8,7 +8,6 @@
 
 use crate::{DeveloperEnvironment, DeveloperEnvironmentError, VaporInstallation};
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -240,18 +239,6 @@ pub fn demote_role(
     })
 }
 
-pub fn git_available() -> bool {
-    let Some(path) = env::var_os("PATH") else {
-        return false;
-    };
-
-    let executable = executable_name("git");
-
-    env::split_paths(&path)
-        .map(|root| root.join(&executable))
-        .any(|candidate| candidate.is_file())
-}
-
 fn persist_role(installation: &VaporInstallation, role: VaporRole) -> Result<(), RoleError> {
     let state_root = installation
         .ensure_state_root()
@@ -274,10 +261,6 @@ fn persist_role(installation: &VaporInstallation, role: VaporRole) -> Result<(),
 
 fn role_state_path(installation: &VaporInstallation) -> PathBuf {
     installation.state_root().join(ROLE_STATE_FILE_NAME)
-}
-
-fn executable_name(stem: &str) -> String {
-    format!("{stem}{}", env::consts::EXE_SUFFIX)
 }
 
 #[derive(Debug, Serialize, Deserialize)]

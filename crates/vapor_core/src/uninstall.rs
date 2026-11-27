@@ -6,6 +6,7 @@
 use crate::installation::{
     InstallationError, VAPOR_HOME_ENV, VAPOR_HOME_MANIFEST_FILE_NAME, VaporInstallation,
 };
+use crate::git_provider::{self, GitProvider};
 use crate::source::{SourceError, SourceState, source_state, source_state_at_user_data_root};
 use crate::superworkspace::{
     SUPERWORKSPACE_MANIFEST_FILE_NAME, SuperworkspaceError, VaporSuperworkspace,
@@ -283,7 +284,7 @@ pub fn validate_superworkspace_for_erasure(
     }
 
     let root = active_superworkspace(installation)?;
-    ensure_superworkspace_purge_safe(&root)?;
+    ensure_superworkspace_purge_safe(&root, installation)?;
     Ok(root)
 }
 
@@ -315,7 +316,7 @@ fn preflight_uninstall(
         if erase_all {
             preflight_registered_superworkspace(&root, installation, user_data_root)?;
         } else {
-            ensure_superworkspace_purge_safe(&root)?;
+            ensure_superworkspace_purge_safe(&root, installation)?;
         }
         Some(root)
     } else {
@@ -1235,11 +1236,15 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn ensure_superworkspace_purge_safe(root: &Path) -> Result<(), UninstallError> {
+fn ensure_superworkspace_purge_safe(
+    root: &Path,
+    installation: &VaporInstallation,
+) -> Result<(), UninstallError> {
     let root = fs::canonicalize(root).map_err(|source| UninstallError::Io {
         path: root.to_path_buf(),
         source,
     })?;
+    let mut git: Option<GitProvider> = None;
 
     for entry in fs::read_dir(&root).map_err(|source| UninstallError::Io {
         path: root.clone(),
@@ -1278,15 +1283,33 @@ fn ensure_superworkspace_purge_safe(root: &Path) -> Result<(), UninstallError> {
             return Err(UninstallError::UnsafeSuperworkspaceEntry { path });
         }
 
-        ensure_expected_origin(name, &path)?;
-        ensure_source_checkout_safe(name, &path)?;
+        if git.is_none() {
+            git = Some(
+                git_provider::resolve(
+                    &installation.user_data_root(),
+                    &installation.state_root(),
+                )
+                .map_err(UninstallError::GitProviderUnavailable)?,
+            );
+        }
+        let provider = git
+            .as_ref()
+            .ok_or_else(|| UninstallError::UnsafeSource {
+                message: "Git provider resolution produced no provider".to_owned(),
+            })?;
+        ensure_expected_origin(name, &path, provider)?;
+        ensure_source_checkout_safe(name, &path, provider)?;
     }
 
     Ok(())
 }
 
-fn ensure_expected_origin(name: &str, root: &Path) -> Result<(), UninstallError> {
-    let origin = git_output(root, &["remote", "get-url", "origin"])?;
+fn ensure_expected_origin(
+    name: &str,
+    root: &Path,
+    git: &GitProvider,
+) -> Result<(), UninstallError> {
+    let origin = git_output(git, root, &["remote", "get-url", "origin"])?;
     let normalized = origin.trim().trim_end_matches('/').trim_end_matches(".git");
     let expected = format!("GHF-Studios/{name}");
 
@@ -1303,10 +1326,14 @@ fn ensure_expected_origin(name: &str, root: &Path) -> Result<(), UninstallError>
     Ok(())
 }
 
-fn ensure_source_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallError> {
-    ensure_git_checkout_safe(name, root)?;
+fn ensure_source_checkout_safe(
+    name: &str,
+    root: &Path,
+    git: &GitProvider,
+) -> Result<(), UninstallError> {
+    ensure_git_checkout_safe(name, root, git)?;
 
-    let submodules = git_output(root, &["submodule", "status"])?;
+    let submodules = git_output(git, root, &["submodule", "status"])?;
     for line in submodules.lines() {
         let Some(prefix) = line.chars().next() else {
             continue;
@@ -1331,15 +1358,19 @@ fn ensure_source_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallE
         };
         let submodule = root.join(path);
         if submodule.is_dir() {
-            ensure_git_checkout_safe(&format!("{name}/{path}"), &submodule)?;
+            ensure_git_checkout_safe(&format!("{name}/{path}"), &submodule, git)?;
         }
     }
 
     Ok(())
 }
 
-fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallError> {
-    let inside = git_output(root, &["rev-parse", "--is-inside-work-tree"])?;
+fn ensure_git_checkout_safe(
+    name: &str,
+    root: &Path,
+    git: &GitProvider,
+) -> Result<(), UninstallError> {
+    let inside = git_output(git, root, &["rev-parse", "--is-inside-work-tree"])?;
     if inside != "true" {
         return Err(UninstallError::UnsafeSource {
             message: format!(
@@ -1350,6 +1381,7 @@ fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallErro
     }
 
     let dirty = git_output(
+        git,
         root,
         &[
             "status",
@@ -1366,9 +1398,10 @@ fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallErro
         });
     }
 
-    git_output(root, &["fetch", "--quiet", "--prune", "origin"])?;
+    git_output(git, root, &["fetch", "--quiet", "--prune", "origin"])?;
 
     let local_only = git_output(
+        git,
         root,
         &["rev-list", "--branches", "--not", "--remotes=origin"],
     )?;
@@ -1380,7 +1413,7 @@ fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallErro
         });
     }
 
-    let remote_contains_head = git_output(root, &["branch", "-r", "--contains", "HEAD"])?;
+    let remote_contains_head = git_output(git, root, &["branch", "-r", "--contains", "HEAD"])?;
     if remote_contains_head.is_empty() {
         return Err(UninstallError::UnsafeSource {
             message: format!(
@@ -1390,6 +1423,7 @@ fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallErro
     }
 
     let local_tags = git_output(
+        git,
         root,
         &[
             "for-each-ref",
@@ -1397,7 +1431,7 @@ fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallErro
             "refs/tags",
         ],
     )?;
-    let remote_tags = git_output(root, &["ls-remote", "--tags", "--refs", "origin"])?;
+    let remote_tags = git_output(git, root, &["ls-remote", "--tags", "--refs", "origin"])?;
 
     let remote_tags = remote_tags
         .lines()
@@ -1428,13 +1462,13 @@ fn ensure_git_checkout_safe(name: &str, root: &Path) -> Result<(), UninstallErro
     Ok(())
 }
 
-fn git_output(root: &Path, args: &[&str]) -> Result<String, UninstallError> {
+fn git_output(git: &GitProvider, root: &Path, args: &[&str]) -> Result<String, UninstallError> {
     let command = format!("git -C {} {}", root.display(), args.join(" "));
-    let output = crate::managed_process::background_command("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
+    let arguments = std::iter::once(std::ffi::OsString::from("-C"))
+        .chain(std::iter::once(root.as_os_str().to_owned()))
+        .chain(args.iter().map(std::ffi::OsString::from));
+    let output = git
+        .run_output(arguments)
         .map_err(|source| UninstallError::CommandStart {
             command: command.clone(),
             source,
@@ -1630,6 +1664,7 @@ pub enum UninstallError {
     UnsafePurgeRoot { path: PathBuf },
     UnsafeSuperworkspaceEntry { path: PathBuf },
     UnsafeSource { message: String },
+    GitProviderUnavailable(String),
     MalformedProfileBlock { path: PathBuf },
     CommandStart { command: String, source: io::Error },
     CommandFailed { command: String, status: String },
@@ -1656,6 +1691,10 @@ impl fmt::Display for UninstallError {
                 path.display()
             ),
             Self::UnsafeSource { message } => formatter.write_str(message),
+            Self::GitProviderUnavailable(message) => write!(
+                formatter,
+                "cannot verify source safety without Vapor's Git provider: {message}"
+            ),
             Self::MalformedProfileBlock { path } => write!(
                 formatter,
                 "managed Vapor PATH block in `{}` has no closing marker; refusing to rewrite it",

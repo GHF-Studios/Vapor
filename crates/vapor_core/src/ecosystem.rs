@@ -1,11 +1,12 @@
+use crate::git_provider::{self, GitProvider};
 use crate::installation::VaporInstallation;
 use crate::registry::{RegisteredRepository, RegistryClient, RegistryError};
-use crate::role::git_available;
 use crate::source::SourceError;
 use crate::superworkspace::{SuperworkspaceError, VaporSuperworkspace};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::env;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -91,9 +92,8 @@ pub fn acquire_ecosystem_repositories(
     destination: &Path,
     repository_names: &[&str],
 ) -> Result<EcosystemAcquisitionReport, EcosystemError> {
-    if !git_available() {
-        return Err(EcosystemError::GitUnavailable);
-    }
+    let git = git_provider::resolve(&installation.user_data_root(), &installation.state_root())
+        .map_err(EcosystemError::GitProviderUnavailable)?;
 
     let bootstrap = load_bootstrap(installation)?;
 
@@ -130,7 +130,7 @@ pub fn acquire_ecosystem_repositories(
         let existing = target.exists();
 
         if existing {
-            validate_existing_checkout(repository, &target)?;
+            validate_existing_checkout(repository, &target, &git)?;
         }
 
         prepared.push((repository, target, existing));
@@ -140,8 +140,8 @@ pub fn acquire_ecosystem_repositories(
 
     for (repository, target, existing) in prepared {
         if !existing {
-            clone_repository(repository, &target)?;
-            initialize_submodules(repository, &target)?;
+            clone_repository(repository, &target, &git)?;
+            initialize_submodules(repository, &target, &git)?;
         }
 
         acquired.push(AcquiredRepository {
@@ -365,12 +365,17 @@ fn validate_repository(repository: &RegisteredRepository) -> Result<(), Ecosyste
 fn validate_existing_checkout(
     repository: &RegisteredRepository,
     target: &Path,
+    git: &GitProvider,
 ) -> Result<(), EcosystemError> {
-    let output = crate::managed_process::background_command("git")
-        .arg("-C")
-        .arg(target)
-        .args(["remote", "get-url", "origin"])
-        .output()
+    let arguments = [
+        OsString::from("-C"),
+        target.as_os_str().to_owned(),
+        OsString::from("remote"),
+        OsString::from("get-url"),
+        OsString::from("origin"),
+    ];
+    let output = git
+        .run_output(arguments)
         .map_err(|source| EcosystemError::GitStart {
             repository: repository.id.clone(),
             operation: "existing-checkout validation",
@@ -415,17 +420,20 @@ fn checkout_path(repository: &RegisteredRepository) -> Result<PathBuf, Ecosystem
 fn clone_repository(
     repository: &RegisteredRepository,
     target: &Path,
+    git: &GitProvider,
 ) -> Result<(), EcosystemError> {
-    let status = crate::managed_process::background_command("git")
-        .arg("clone")
-        .arg("--")
-        .arg(&repository.clone_url)
-        .arg(target)
-        .status()
-        .map_err(|source| EcosystemError::GitStart {
+    let arguments = [
+        OsString::from("clone"),
+        OsString::from("--"),
+        OsString::from(&repository.clone_url),
+        target.as_os_str().to_owned(),
+    ];
+    let status = git
+        .run(arguments)
+        .map_err(|message| EcosystemError::GitStart {
             repository: repository.id.clone(),
             operation: "clone",
-            source,
+            source: io::Error::other(message),
         })?;
 
     ensure_git_success(repository, "clone", status)
@@ -434,16 +442,21 @@ fn clone_repository(
 fn initialize_submodules(
     repository: &RegisteredRepository,
     target: &Path,
+    git: &GitProvider,
 ) -> Result<(), EcosystemError> {
-    let status = crate::managed_process::background_command("git")
-        .arg("-C")
-        .arg(target)
-        .args(["submodule", "update", "--init"])
-        .status()
-        .map_err(|source| EcosystemError::GitStart {
+    let arguments = [
+        OsString::from("-C"),
+        target.as_os_str().to_owned(),
+        OsString::from("submodule"),
+        OsString::from("update"),
+        OsString::from("--init"),
+    ];
+    let status = git
+        .run(arguments)
+        .map_err(|message| EcosystemError::GitStart {
             repository: repository.id.clone(),
             operation: "submodule initialization",
-            source,
+            source: io::Error::other(message),
         })?;
 
     ensure_git_success(repository, "submodule initialization", status)
@@ -471,7 +484,7 @@ pub enum EcosystemError {
 
     CurrentDirectory(io::Error),
 
-    GitUnavailable,
+    GitProviderUnavailable(String),
 
     BootstrapUnavailable {
         installed: PathBuf,
@@ -577,8 +590,11 @@ impl fmt::Display for EcosystemError {
                 write!(formatter, "failed to determine current directory: {error}")
             }
 
-            Self::GitUnavailable => {
-                formatter.write_str("Git is required to acquire Vapor ecosystem source")
+            Self::GitProviderUnavailable(message) => {
+                write!(
+                    formatter,
+                    "Git is required to acquire Vapor ecosystem source: {message}"
+                )
             }
 
             Self::BootstrapUnavailable { installed } => {
