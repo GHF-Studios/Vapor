@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::env;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 const GITHUB_API_ACCEPT: &str = "application/vnd.github+json";
@@ -247,66 +247,30 @@ pub fn download_verified_github_release_asset(
 }
 
 fn sha256_file(path: &Path) -> Result<String, ManagedToolError> {
-    #[cfg(target_os = "windows")]
-    {
-        let output = crate::managed_process::background_command("certutil")
-            .args(["-hashfile"])
-            .arg(path)
-            .arg("SHA256")
-            .output()
-            .map_err(|source| ManagedToolError::DigestTool {
-                tool: "certutil",
-                source,
-            })?;
+    let mut file = fs::File::open(path).map_err(|source| ManagedToolError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buffer = [0_u8; 64 * 1024];
 
-        if !output.status.success() {
-            return Err(ManagedToolError::DigestToolFailed {
-                tool: "certutil",
-                status: output.status.to_string(),
-            });
+    loop {
+        let count = file.read(&mut buffer).map_err(|source| ManagedToolError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if count == 0 {
+            break;
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout
-            .lines()
-            .map(str::trim)
-            .find(|line| {
-                line.len() == 64 && line.chars().all(|character| character.is_ascii_hexdigit())
-            })
-            .map(str::to_owned)
-            .ok_or(ManagedToolError::DigestOutput { tool: "certutil" })
+        context.update(&buffer[..count]);
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        let output = crate::managed_process::background_command("sha256sum")
-            .arg(path)
-            .output()
-            .map_err(|source| ManagedToolError::DigestTool {
-                tool: "sha256sum",
-                source,
-            })?;
-
-        if !output.status.success() {
-            return Err(ManagedToolError::DigestToolFailed {
-                tool: "sha256sum",
-                status: output.status.to_string(),
-            });
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout
-            .split_whitespace()
-            .next()
-            .filter(|digest| {
-                digest.len() == 64
-                    && digest
-                        .chars()
-                        .all(|character| character.is_ascii_hexdigit())
-            })
-            .map(str::to_owned)
-            .ok_or(ManagedToolError::DigestOutput { tool: "sha256sum" })
-    }
+    Ok(context
+        .finish()
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 /// Verify an installed tool archive against a pinned SHA-256 checksum.
