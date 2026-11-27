@@ -39,6 +39,7 @@ pub struct GitWindowsArchiveReport {
     pub dlls: Vec<String>,
     pub license_and_notice_paths: Vec<String>,
     pub package_versions: Option<String>,
+    pub package_records: Vec<MinGitPackageVersion>,
     pub libexec_moved: Option<String>,
     pub expected_paths: Vec<ExpectedPath>,
     pub files: Vec<ArchiveFile>,
@@ -55,6 +56,12 @@ pub struct ArchiveFile {
     pub path: String,
     pub bytes: u64,
     pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MinGitPackageVersion {
+    pub package: String,
+    pub version: String,
 }
 
 /// Download, hash-verify, and inventory the pinned MinGit ZIP in Vapor User Data.
@@ -179,6 +186,8 @@ pub fn inspect_windows_mingit(
         "mingw64/bin/git.exe",
         "mingw64/libexec/git-core/git.exe",
     ].into_iter().map(|path| ExpectedPath { path, present: paths.contains(path) }).collect();
+    let package_records = package_versions.as_deref().map(parse_package_versions)
+        .transpose()?.unwrap_or_default();
 
     let report = GitWindowsArchiveReport {
         version: MINGIT_VERSION.to_owned(),
@@ -193,6 +202,7 @@ pub fn inspect_windows_mingit(
         dlls,
         license_and_notice_paths,
         package_versions,
+        package_records,
         libexec_moved,
         expected_paths,
         files,
@@ -205,6 +215,23 @@ pub fn inspect_windows_mingit(
     fs::rename(&inventory_tmp, &report.inventory_path)
         .map_err(|source| io_error("promote MinGit inventory", &report.inventory_path, source))?;
     Ok(report)
+}
+
+fn parse_package_versions(text: &str) -> Result<Vec<MinGitPackageVersion>, GitWindowsArchiveError> {
+    text.lines().enumerate().map(|(index, line)| {
+        let mut fields = line.split_whitespace();
+        let package = fields.next();
+        let version = fields.next();
+        if package.is_none() || version.is_none() || fields.next().is_some() {
+            return Err(GitWindowsArchiveError::Metadata(format!(
+                "unexpected package-version record on line {}", index + 1
+            )));
+        }
+        Ok(MinGitPackageVersion {
+            package: package.unwrap().to_owned(),
+            version: version.unwrap().to_owned(),
+        })
+    }).collect()
 }
 
 struct CentralEntry {

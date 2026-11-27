@@ -125,7 +125,8 @@ pub use managed_tool::{
 
 pub use git_native_build::{GitNativeBuildError, GitNativeBuildReport, build_linux_shadow};
 pub use git_windows_archive::{
-    GitWindowsArchiveError, GitWindowsArchiveReport, inspect_windows_mingit,
+    GitWindowsArchiveError, GitWindowsArchiveReport, MinGitPackageVersion,
+    inspect_windows_mingit,
 };
 
 pub use manifest::{ContentHeader, ContentManifest, ManifestError, parse_content_manifest};
