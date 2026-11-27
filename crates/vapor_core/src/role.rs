@@ -113,39 +113,53 @@ pub fn installed_role(installation: &VaporInstallation) -> Result<VaporRole, Rol
         message: error.to_string(),
     })?;
 
-    let role = match state.schema {
+    decode_persisted_role(state).map_err(|error| match error {
+        PersistedRoleError::UnsupportedSchema(found) => RoleError::UnsupportedSchema {
+            path,
+            found,
+            supported: ROLE_STATE_SCHEMA,
+        },
+        PersistedRoleError::UnknownRole { schema, role } => RoleError::State {
+            path,
+            message: format!("unknown role `{role}` in schema {schema}"),
+        },
+    })
+}
+
+/// Read a persisted role for the legacy-state migration path. Migration uses
+/// the same schema interpretation as normal role loading so equivalent old
+/// and new records can be reconciled without weakening byte-level conflict
+/// handling for other state files.
+pub(crate) fn read_persisted_role(path: &std::path::Path) -> Result<VaporRole, String> {
+    let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let state: PersistedRoleState = toml::from_str(&source).map_err(|error| error.to_string())?;
+    decode_persisted_role(state).map_err(|error| error.to_string())
+}
+
+fn decode_persisted_role(state: PersistedRoleState) -> Result<VaporRole, PersistedRoleError> {
+    match state.schema {
         ROLE_STATE_SCHEMA => match state.role.as_str() {
-            "player" => VaporRole::Player,
-            "developer" => VaporRole::Developer,
-            _ => {
-                return Err(RoleError::State {
-                    path,
-                    message: format!("unknown role `{}` in schema 2", state.role),
-                });
-            }
+            "player" => Ok(VaporRole::Player),
+            "developer" => Ok(VaporRole::Developer),
+            _ => Err(PersistedRoleError::UnknownRole {
+                schema: state.schema,
+                role: state.role,
+            }),
         },
         // Schema 1's three creator roles all owned the complete toolchain;
         // schema 2 consolidates them into the single Developer role.
         1 => match state.role.as_str() {
-            "player" => VaporRole::Player,
-            "composer" | "content-developer" | "ecosystem-developer" => VaporRole::Developer,
-            _ => {
-                return Err(RoleError::State {
-                    path,
-                    message: format!("unknown role `{}` in schema 1", state.role),
-                });
+            "player" => Ok(VaporRole::Player),
+            "composer" | "content-developer" | "ecosystem-developer" => {
+                Ok(VaporRole::Developer)
             }
+            _ => Err(PersistedRoleError::UnknownRole {
+                schema: state.schema,
+                role: state.role,
+            }),
         },
-        found => {
-            return Err(RoleError::UnsupportedSchema {
-                path,
-                found,
-                supported: ROLE_STATE_SCHEMA,
-            });
-        }
-    };
-
-    Ok(role)
+        found => Err(PersistedRoleError::UnsupportedSchema(found)),
+    }
 }
 
 /// Promote the active Vapor Installation.
@@ -267,6 +281,25 @@ fn role_state_path(installation: &VaporInstallation) -> PathBuf {
 struct PersistedRoleState {
     schema: u32,
     role: String,
+}
+
+#[derive(Debug)]
+enum PersistedRoleError {
+    UnknownRole { schema: u32, role: String },
+    UnsupportedSchema(u32),
+}
+
+impl fmt::Display for PersistedRoleError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownRole { schema, role } => {
+                write!(formatter, "unknown role `{role}` in schema {schema}")
+            }
+            Self::UnsupportedSchema(found) => {
+                write!(formatter, "unsupported schema {found}; supported schema is {ROLE_STATE_SCHEMA}")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

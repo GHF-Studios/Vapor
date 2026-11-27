@@ -931,7 +931,7 @@ impl VaporInstallation {
                     });
                 }
                 Ok(_) => {
-                    merge_regular_tree(&legacy_state, &state_root)?;
+                    merge_legacy_state_tree(&legacy_state, &state_root)?;
                     fs::remove_dir_all(&legacy_state).map_err(|source| {
                         InstallationError::Io {
                             path: legacy_state,
@@ -1271,6 +1271,72 @@ fn copy_regular_tree(source: &Path, target: &Path) -> Result<(), InstallationErr
             path: source.to_path_buf(),
             source: source_error,
         })?;
+    }
+    Ok(())
+}
+
+fn merge_legacy_state_tree(source: &Path, target: &Path) -> Result<(), InstallationError> {
+    let source_role = source.join("role.toml");
+    let target_role = target.join("role.toml");
+    let equivalent_role_conflict = match (
+        fs::symlink_metadata(&source_role),
+        fs::symlink_metadata(&target_role),
+    ) {
+        (Ok(source_metadata), Ok(target_metadata))
+            if source_metadata.is_file()
+                && target_metadata.is_file()
+                && !files_equal(&source_role, &target_role)? =>
+        {
+            matches!(
+                (
+                    crate::role::read_persisted_role(&source_role),
+                    crate::role::read_persisted_role(&target_role),
+                ),
+                (Ok(source_role), Ok(target_role)) if source_role == target_role
+            )
+        }
+        _ => false,
+    };
+    let source_index = source.join("sources.toml");
+    let target_index = target.join("sources.toml");
+    let merged_source_index = match (
+        fs::symlink_metadata(&source_index),
+        fs::symlink_metadata(&target_index),
+    ) {
+        (Ok(source_metadata), Ok(target_metadata))
+            if source_metadata.is_file()
+                && target_metadata.is_file()
+                && !files_equal(&source_index, &target_index)? =>
+        {
+            crate::source::merge_legacy_source_state_files(&source_index, &target_index)
+                .map_err(|source_error| InstallationError::Io {
+                    path: target_index.clone(),
+                    source: source_error,
+                })?
+        }
+        _ => false,
+    };
+
+    for entry in fs::read_dir(source).map_err(|source_error| InstallationError::Io {
+        path: source.to_path_buf(),
+        source: source_error,
+    })? {
+        let entry = entry.map_err(|source_error| InstallationError::Io {
+            path: source.to_path_buf(),
+            source: source_error,
+        })?;
+        if equivalent_role_conflict && entry.file_name() == "role.toml" {
+            // Keep the canonical User Data record as authority. The legacy
+            // copy is removed only after the rest of this state tree merges.
+            continue;
+        }
+        if merged_source_index && entry.file_name() == "sources.toml" {
+            // The canonical source index keeps its current selection and gains
+            // registrations from the legacy App Instance before that copy is
+            // removed with the rest of the migrated state tree.
+            continue;
+        }
+        merge_regular_tree(&entry.path(), &target.join(entry.file_name()))?;
     }
     Ok(())
 }

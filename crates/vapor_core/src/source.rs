@@ -18,6 +18,7 @@
 
 use crate::{InstallationError, VaporInstallation, VaporSuperworkspace};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -56,7 +57,7 @@ pub struct ResolvedSourceContext {
     pub source: SourceContextSource,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct PersistedSourceState {
     #[serde(default)]
     superworkspace: Option<PathBuf>,
@@ -65,6 +66,96 @@ struct PersistedSourceState {
 
     #[serde(default)]
     known: Vec<PathBuf>,
+}
+
+/// Merge two supported source-registration snapshots during migration from
+/// App Instance state to shared User Data. The canonical User Data selection
+/// wins when both snapshots have one; known roots are unioned so migration
+/// does not discard source registrations unique to either snapshot.
+pub(crate) fn merge_legacy_source_state_files(
+    legacy_path: &Path,
+    canonical_path: &Path,
+) -> io::Result<bool> {
+    let legacy_source = fs::read_to_string(legacy_path)?;
+    let canonical_source = fs::read_to_string(canonical_path)?;
+    let Ok(legacy) = toml::from_str::<PersistedSourceState>(&legacy_source) else {
+        return Ok(false);
+    };
+    let Ok(canonical) = toml::from_str::<PersistedSourceState>(&canonical_source) else {
+        return Ok(false);
+    };
+
+    let known = canonical
+        .known
+        .iter()
+        .chain(&legacy.known)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let active = canonical
+        .active
+        .clone()
+        .filter(|path| known.contains(path))
+        .or_else(|| {
+            legacy
+                .active
+                .clone()
+                .filter(|path| known.contains(path))
+        });
+    let merged = PersistedSourceState {
+        superworkspace: canonical
+            .superworkspace
+            .clone()
+            .or(legacy.superworkspace.clone()),
+        active,
+        known: known.into_iter().collect(),
+    };
+
+    if merged == canonical {
+        return Ok(true);
+    }
+
+    let encoded = toml::to_string_pretty(&merged).map_err(|error| {
+        io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+    })?;
+    let temporary_path = canonical_path.with_file_name(format!(
+        ".{SOURCE_STATE_FILE_NAME}.migration-{}.tmp",
+        std::process::id()
+    ));
+    let backup_path = canonical_path.with_file_name(format!(
+        ".{SOURCE_STATE_FILE_NAME}.migration-{}.bak",
+        std::process::id()
+    ));
+    let result = (|| -> io::Result<()> {
+        let mut temporary = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        use std::io::Write;
+        temporary.write_all(encoded.as_bytes())?;
+        temporary.sync_all()?;
+        fs::set_permissions(&temporary_path, fs::metadata(canonical_path)?.permissions())?;
+
+        // Windows cannot rename a file over an existing destination. Move the
+        // old index aside first and restore it if promotion fails.
+        fs::rename(canonical_path, &backup_path)?;
+        if let Err(error) = fs::rename(&temporary_path, canonical_path) {
+            let restore = fs::rename(&backup_path, canonical_path);
+            return Err(match restore {
+                Ok(()) => error,
+                Err(restore_error) => io::Error::new(
+                    restore_error.kind(),
+                    format!("{error}; failed to restore the previous source index: {restore_error}"),
+                ),
+            });
+        }
+        fs::remove_file(&backup_path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result?;
+    Ok(true)
 }
 
 /// Inspect source registration belonging to one Vapor Installation.
