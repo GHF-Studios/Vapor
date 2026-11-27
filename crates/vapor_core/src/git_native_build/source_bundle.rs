@@ -4,10 +4,9 @@ use super::{
     sha256_bytes, sha256_file, validate_archive_paths,
 };
 use serde::Serialize;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs::{self, Metadata}, path::{Path, PathBuf}};
+#[cfg(unix)]
+use std::collections::BTreeMap;
 
 const RECIPE_FILES: &[(&str, &[u8])] = &[
     (
@@ -30,8 +29,28 @@ struct SourceBundleManifest {
     build_features: Vec<String>,
     redistribution_review: String,
     components: Vec<SourceBundleComponent>,
+    payload_files: Vec<PayloadFile>,
     notice_files: Vec<SourceBundleNotice>,
     recipe_files: Vec<SourceBundleRecipeFile>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PayloadFile {
+    path: String,
+    kind: &'static str,
+    bytes: Option<u64>,
+    sha256: Option<String>,
+    mode: Option<String>,
+    link_target: Option<String>,
+    hardlink_to: Option<String>,
+    components: Vec<&'static str>,
+    statically_linked_components: Vec<&'static str>,
+}
+
+struct ScannedPayloadFile {
+    record: PayloadFile,
+    #[cfg(unix)]
+    hardlink_key: Option<(u64, u64)>,
 }
 #[derive(Debug, Clone, Serialize)]
 struct SourceBundleComponent {
@@ -74,6 +93,7 @@ pub(super) fn write_source_bundle(
     entry_root: &Path,
     sources: &[SourceArchiveInput<'_>],
     compiler_identity: &str,
+    install_root: &Path,
 ) -> Result<(String, u64), GitNativeBuildError> {
     let staging = entry_root.join("source-bundle.staging");
     let bundle = entry_root.join(SOURCE_BUNDLE_NAME);
@@ -261,8 +281,9 @@ pub(super) fn write_source_bundle(
                     .to_owned(),
             ));
         }
+        let payload_files = payload_inventory(install_root)?;
         let manifest = SourceBundleManifest {
-            schema: 2,
+            schema: 3,
             target: GIT_TARGET.to_owned(),
             git_version: GIT_VERSION.to_owned(),
             recipe_revision: RECIPE_REVISION.to_owned(),
@@ -271,8 +292,9 @@ pub(super) fn write_source_bundle(
                 .iter()
                 .map(|feature| (*feature).to_owned())
                 .collect(),
-            redistribution_review: "incomplete: source texts and notice files are collected; binary-to-component mapping and legal review are still required".to_owned(),
+            redistribution_review: "incomplete: installed paths are attributed to producing/runtime components; license scope, notices, corresponding-source sufficiency, and redistribution terms still require review".to_owned(),
             components,
+            payload_files,
             notice_files,
             recipe_files,
         };
@@ -298,7 +320,7 @@ pub(super) fn write_source_bundle(
             })?;
         fs::write(
             staging.join("README.txt"),
-            "This archive contains the exact hash-pinned upstream source archives used by the matching Vapor-managed Linux Git build, extracted upstream license/notice texts, the exact Vapor Core build-recipe source files, and a machine-readable component inventory. Recipe-file and notice digests are recorded in components.json. The inventory is intentionally marked incomplete until every installed binary and linked component is mapped and redistribution obligations are reviewed. It is not a release approval.\n",
+            "This archive contains the exact hash-pinned upstream source archives used by the matching Vapor-managed Linux Git build, extracted upstream license/notice texts, the exact Vapor Core build-recipe source files, and a machine-readable component inventory. Recipe-file and notice digests are recorded in components.json. The inventory maps installed paths to their producing component and records statically linked runtime components; license scope, notices, corresponding-source sufficiency, and redistribution terms remain subject to review. It is not a release approval.\n",
         )
         .map_err(|error| io_error("write Git source bundle README", &staging.join("README.txt"), error))?;
 
@@ -348,6 +370,131 @@ pub(super) fn write_source_bundle(
     }
     let _ = remove_path(&staging);
     result
+}
+
+fn payload_inventory(root: &Path) -> Result<Vec<PayloadFile>, GitNativeBuildError> {
+    let root = fs::canonicalize(root)
+        .map_err(|error| io_error("resolve Git payload inventory", root, error))?;
+    let mut scanned = Vec::new();
+    scan_payload_directory(&root, &root, &mut scanned)?;
+    scanned.sort_by(|left, right| left.record.path.cmp(&right.record.path));
+
+    #[cfg(unix)]
+    let mut hardlink_owners: BTreeMap<(u64, u64), String> = BTreeMap::new();
+    let mut records = Vec::with_capacity(scanned.len());
+    for mut file in scanned {
+        #[cfg(unix)]
+        if let Some(key) = file.hardlink_key {
+            if let Some(owner) = hardlink_owners.get(&key) {
+                file.record.hardlink_to = Some(owner.clone());
+            } else {
+                hardlink_owners.insert(key, file.record.path.clone());
+            }
+        }
+        records.push(file.record);
+    }
+    if records.is_empty() {
+        return Err(GitNativeBuildError::Metadata(
+            "Git payload inventory contains no installed entries".to_owned(),
+        ));
+    }
+    Ok(records)
+}
+
+fn scan_payload_directory(
+    root: &Path,
+    directory: &Path,
+    records: &mut Vec<ScannedPayloadFile>,
+) -> Result<(), GitNativeBuildError> {
+    let mut children = fs::read_dir(directory)
+        .map_err(|error| io_error("read Git payload inventory", directory, error))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| io_error("read Git payload entry", directory, error))?;
+    children.sort();
+    for path in children {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| GitNativeBuildError::InventoryEscapesRoot(path.clone()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| io_error("inspect Git payload entry", &path, error))?;
+        if metadata.is_dir() {
+            scan_payload_directory(root, &path, records)?;
+        } else if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&path)
+                .map_err(|error| io_error("read Git payload symlink", &path, error))?;
+            let target = target.to_string_lossy().replace('\\', "/");
+            if target.starts_with('/') || target.split('/').any(|part| part == "..") {
+                return Err(GitNativeBuildError::InvalidInstallSymlink(path));
+            }
+            records.push(ScannedPayloadFile {
+                record: PayloadFile {
+                    path: relative,
+                    kind: "symlink",
+                    bytes: None,
+                    sha256: None,
+                    mode: None,
+                    link_target: Some(target),
+                    hardlink_to: None,
+                    components: vec!["Git"],
+                    statically_linked_components: Vec::new(),
+                },
+                #[cfg(unix)]
+                hardlink_key: None,
+            });
+        } else if metadata.is_file() {
+            records.push(payload_file_record(path, relative, &metadata)?);
+        } else {
+            return Err(GitNativeBuildError::UnsupportedInstallEntry(path));
+        }
+    }
+    Ok(())
+}
+
+fn payload_file_record(
+    path: PathBuf,
+    relative: String,
+    metadata: &Metadata,
+) -> Result<ScannedPayloadFile, GitNativeBuildError> {
+    let digest = sha256_file(&path)
+        .map_err(|error| io_error("hash Git payload file", &path, error))?;
+    let mut magic = [0u8; 4];
+    use std::io::Read as _;
+    let read = fs::File::open(&path)
+        .and_then(|mut file| file.read(&mut magic))
+        .map_err(|error| io_error("inspect Git payload file", &path, error))?;
+    let is_elf = read == magic.len() && magic == *b"\x7fELF";
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt as _;
+        Some(format!("{:04o}", metadata.permissions().mode() & 0o7777))
+    };
+    #[cfg(not(unix))]
+    let mode = None;
+
+    #[cfg(unix)]
+    let hardlink_key = {
+        use std::os::unix::fs::MetadataExt as _;
+        (metadata.nlink() > 1).then(|| (metadata.dev(), metadata.ino()))
+    };
+
+    Ok(ScannedPayloadFile {
+        record: PayloadFile {
+            path: relative,
+            kind: if is_elf { "elf" } else { "file" },
+            bytes: Some(metadata.len()),
+            sha256: Some(digest),
+            mode,
+            link_target: None,
+            hardlink_to: None,
+            components: vec!["Git"],
+            statically_linked_components: Vec::new(),
+        },
+        #[cfg(unix)]
+        hardlink_key,
+    })
 }
 
 fn is_license_or_notice_path(path: &Path) -> bool {

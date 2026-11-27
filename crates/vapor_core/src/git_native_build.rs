@@ -38,7 +38,7 @@ const MAKE_VERSION: &str = "4.4.1";
 const MAKE_SOURCE_URL: &str = "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz";
 const MAKE_SOURCE_SHA256: &str =
     "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3";
-const RECIPE_REVISION: &str = "2026-11-27.17";
+const RECIPE_REVISION: &str = "2026-11-27.18";
 const CACHE_RELATIVE_ROOT: &str = "cache/build/native-tools/git";
 const MARKER_NAME: &str = "vapor-git-native-build.toml";
 const SOURCE_BUNDLE_NAME: &str = "vapor-git-x86_64-linux-musl-source.tar";
@@ -449,6 +449,7 @@ fn build_git_cache_entry(
             entry_root,
             &source_archives,
             compiler_identity,
+            install_root,
         )?;
         let marker = BuildMarker {
             schema: 5,
