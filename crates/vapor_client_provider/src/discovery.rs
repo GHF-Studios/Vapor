@@ -19,7 +19,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
 };
-use vapor_core::{ManagedToolchain, VAPOR_PRODUCT_ROOT_ENV, VaporInstallation};
+use vapor_core::{ManagedToolchain, VAPOR_HOME_ENV, VAPOR_PRODUCT_ROOT_ENV, VaporInstallation};
 
 /// Conventional installation directory containing runtime libraries.
 pub const LIBRARY_DIR: &str = "lib";
@@ -40,6 +40,9 @@ impl EnvironmentPaths {
     pub fn discover_installation() -> Result<InstallationPaths, String> {
         let executable = env::current_exe()
             .map_err(|error| format!("failed to locate the running Vapor application: {error}"))?;
+        if env::var_os(VAPOR_HOME_ENV).is_some_and(|value| !value.is_empty()) {
+            return InstallationPaths::from_application_executable(&executable);
+        }
         InstallationPaths::from_executable(&executable)
     }
 
@@ -172,7 +175,8 @@ impl InstallationPaths {
     /// guessing app-data locations or duplicating Vapor-home discovery.
     pub fn from_application_executable(executable: &Path) -> Result<Self, String> {
         let executable = canonical_file(executable, "Vapor application executable")?;
-        let root = env::var_os("VAPOR_HOME")
+        let root = env::var_os(VAPOR_HOME_ENV)
+            .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .or_else(|| {
                 env::var_os("USERPROFILE")
