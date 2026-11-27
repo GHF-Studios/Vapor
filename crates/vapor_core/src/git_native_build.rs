@@ -1,9 +1,9 @@
 //! Reproducible-input shadow build of upstream Git for Linux.
 //!
-//! This build is deliberately kept in Vapor's disposable native-build cache.
-//! Its current runtime links against the host's libcurl and zlib, so it is
-//! useful for proving Vapor-owned acquisition, compilation, and cache reuse,
-//! but is not an installable or distributable Git provider.
+//! Git, curl, OpenSSL, and zlib are built from pinned source archives with
+//! Vapor-managed Zig for the static musl target. The resulting candidate is
+//! still kept in the disposable build cache: redistribution eligibility also
+//! requires the complete source and license inventory to be reviewed.
 
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
@@ -22,11 +22,23 @@ const GIT_VERSION: &str = "2.56.1";
 const GIT_SOURCE_URL: &str = "https://www.kernel.org/pub/software/scm/git/git-2.56.1.tar.xz";
 const GIT_SOURCE_SHA256: &str =
     "f0b0bf89264b9bd2e1c640363e7529643989da76281600473c50745cd34a607f";
+const CURL_VERSION: &str = "8.23.0";
+const CURL_SOURCE_URL: &str = "https://curl.se/download/curl-8.23.0.tar.xz";
+const CURL_SOURCE_SHA256: &str =
+    "8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5";
+const OPENSSL_VERSION: &str = "3.5.9";
+const OPENSSL_SOURCE_URL: &str = "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz";
+const OPENSSL_SOURCE_SHA256: &str =
+    "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a";
+const ZLIB_VERSION: &str = "1.4";
+const ZLIB_SOURCE_URL: &str = "https://zlib.net/fossils/zlib-1.4.tar.gz";
+const ZLIB_SOURCE_SHA256: &str =
+    "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584";
 const MAKE_VERSION: &str = "4.4.1";
 const MAKE_SOURCE_URL: &str = "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz";
 const MAKE_SOURCE_SHA256: &str =
     "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3";
-const RECIPE_REVISION: &str = "2026-11-27.11";
+const RECIPE_REVISION: &str = "2026-11-27.15";
 const CACHE_RELATIVE_ROOT: &str = "cache/build/native-tools/git";
 const MARKER_NAME: &str = "vapor-git-native-build.toml";
 const MAX_SOURCE_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
@@ -44,6 +56,7 @@ const BUILD_FEATURES: &[&str] = &[
     "no-tcl-tk",
     "zlib",
 ];
+const GIT_TARGET: &str = "x86_64-linux-musl";
 
 #[derive(Debug, Clone)]
 pub struct GitNativeBuildReport {
@@ -60,12 +73,14 @@ pub struct GitNativeBuildReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GitBuildInputs {
     git_source_sha256: String,
+    curl_source_sha256: String,
+    openssl_source_sha256: String,
+    zlib_source_sha256: String,
     make_source_sha256: String,
     recipe_revision: String,
     compiler_identity: String,
     target: String,
     features: Vec<String>,
-    host_identity: String,
     runtime_dependencies: BTreeMap<String, String>,
 }
 
@@ -78,6 +93,9 @@ struct BuildMarker {
     compiler_identity: String,
     recipe_revision: String,
     git_source_sha256: String,
+    curl_source_sha256: String,
+    openssl_source_sha256: String,
+    zlib_source_sha256: String,
     make_source_sha256: String,
     runtime_dependencies: BTreeMap<String, String>,
     runtime_libraries: BTreeMap<String, String>,
@@ -86,12 +104,8 @@ struct BuildMarker {
     distribution_eligible: bool,
 }
 
-/// Build Git from pinned upstream sources into Vapor's non-authoritative cache.
-///
-/// The resulting executable is not activated under `tools/git`: the present
-/// build consumes host libcurl/zlib and records that dependency identity in its
-/// cache key. A later packaging pass must replace this shadow result with a
-/// closed, redistributable dependency bundle.
+/// Build Git and its non-system runtime dependencies from pinned upstream
+/// sources into Vapor's non-authoritative cache.
 pub fn build_linux_shadow(
     installation: &VaporInstallation,
 ) -> Result<GitNativeBuildReport, GitNativeBuildError> {
@@ -116,36 +130,31 @@ pub fn build_linux_shadow(
     }
     let compiler_version = capture(&zig_path, ["version"], None, &[])?;
     let compiler_identity = format!(
-        "zig={};mode=native-host;marker-sha256={}",
+        "zig={};mode=static-musl;marker-sha256={}",
         compiler_version.trim(),
         sha256_bytes(zig_marker.as_bytes())
     );
-    // This is a host-specific shadow build, so invoke Vapor's managed Zig in
-    // its native-host mode. The shared cross-target wrapper deliberately pins
-    // the older distribution ABI and must not consume newer host C headers.
+    // Build the disposable Make executable for this host, then use the same
+    // managed compiler for a static musl Git payload independent of host C
+    // library versions.
     let compiler_path = prepend_path(zig_root.as_path())?;
 
-    let runtime_dependencies = pkg_config_runtime_dependencies()?;
-    let native_cflags = format!(
-        "-O2 -g0 -I{} -I{}",
-        dependency_value(&runtime_dependencies, "libcurl_includedir")?,
-        dependency_value(&runtime_dependencies, "zlib_includedir")?
-    );
-    let native_ldflags = format!(
-        "-L{} -L{}",
-        dependency_value(&runtime_dependencies, "libcurl_libdir")?,
-        dependency_value(&runtime_dependencies, "zlib_libdir")?
-    );
-    let native_libs = dependency_value(&runtime_dependencies, "link_flags")?.to_owned();
-    let host_identity = host_identity()?;
+    let runtime_dependencies = BTreeMap::from([
+        ("curl".to_owned(), CURL_VERSION.to_owned()),
+        ("openssl".to_owned(), OPENSSL_VERSION.to_owned()),
+        ("zlib".to_owned(), ZLIB_VERSION.to_owned()),
+        ("linkage".to_owned(), "static musl".to_owned()),
+    ]);
     let inputs = GitBuildInputs {
         git_source_sha256: GIT_SOURCE_SHA256.to_owned(),
+        curl_source_sha256: CURL_SOURCE_SHA256.to_owned(),
+        openssl_source_sha256: OPENSSL_SOURCE_SHA256.to_owned(),
+        zlib_source_sha256: ZLIB_SOURCE_SHA256.to_owned(),
         make_source_sha256: MAKE_SOURCE_SHA256.to_owned(),
         recipe_revision: RECIPE_REVISION.to_owned(),
         compiler_identity: compiler_identity.clone(),
-        target: "x86_64-unknown-linux-gnu".to_owned(),
+        target: GIT_TARGET.to_owned(),
         features: BUILD_FEATURES.iter().map(|feature| (*feature).to_owned()).collect(),
-        host_identity,
         runtime_dependencies: runtime_dependencies.clone(),
     };
     let cache_key = sha256_bytes(
@@ -158,7 +167,13 @@ pub fn build_linux_shadow(
     let install_root = entry_root.join("install");
     let git_executable = install_root.join("bin/git");
 
-    if let Some(marker) = validate_cache_entry(&entry_root, &cache_key, &git_executable)? {
+    if let Some(marker) = validate_cache_entry(
+        &entry_root,
+        &cache_key,
+        &git_executable,
+        &compiler_identity,
+        &runtime_dependencies,
+    )? {
         return Ok(GitNativeBuildReport {
             git_version: marker.git_version,
             cache_hit: true,
@@ -185,7 +200,13 @@ pub fn build_linux_shadow(
 
     // Recheck after taking the lock in case another process completed while we
     // were waiting to acquire it.
-    if let Some(marker) = validate_cache_entry(&entry_root, &cache_key, &git_executable)? {
+    if let Some(marker) = validate_cache_entry(
+        &entry_root,
+        &cache_key,
+        &git_executable,
+        &compiler_identity,
+        &runtime_dependencies,
+    )? {
         return Ok(GitNativeBuildReport {
             git_version: marker.git_version,
             cache_hit: true,
@@ -203,17 +224,20 @@ pub fn build_linux_shadow(
         .map_err(|source| io_error("create Git source cache", &sources_root, source))?;
     let make_archive = sources_root.join(format!("make-{MAKE_VERSION}.tar.gz"));
     let git_archive = sources_root.join(format!("git-{GIT_VERSION}.tar.xz"));
+    let curl_archive = sources_root.join(format!("curl-{CURL_VERSION}.tar.xz"));
+    let openssl_archive = sources_root.join(format!("openssl-{OPENSSL_VERSION}.tar.gz"));
+    let zlib_archive = sources_root.join(format!("zlib-{ZLIB_VERSION}.tar.gz"));
 
     let marker = build_git_cache_entry(
         &entry_root,
         &install_root,
         &make_archive,
         &git_archive,
+        &curl_archive,
+        &openssl_archive,
+        &zlib_archive,
         &compiler_identity,
         &compiler_path,
-        &native_cflags,
-        &native_ldflags,
-        &native_libs,
         &runtime_dependencies,
         &cache_key,
     )?;
@@ -234,17 +258,20 @@ fn build_git_cache_entry(
     install_root: &Path,
     make_archive: &Path,
     git_archive: &Path,
+    curl_archive: &Path,
+    openssl_archive: &Path,
+    zlib_archive: &Path,
     compiler_identity: &str,
     compiler_path: &str,
-    native_cflags: &str,
-    native_ldflags: &str,
-    native_libs: &str,
     runtime_dependencies: &BTreeMap<String, String>,
     cache_key: &str,
 ) -> Result<BuildMarker, GitNativeBuildError> {
     let result = (|| {
         acquire_source(make_archive, MAKE_SOURCE_URL, MAKE_SOURCE_SHA256)?;
         acquire_source(git_archive, GIT_SOURCE_URL, GIT_SOURCE_SHA256)?;
+        acquire_source(curl_archive, CURL_SOURCE_URL, CURL_SOURCE_SHA256)?;
+        acquire_source(openssl_archive, OPENSSL_SOURCE_URL, OPENSSL_SOURCE_SHA256)?;
+        acquire_source(zlib_archive, ZLIB_SOURCE_URL, ZLIB_SOURCE_SHA256)?;
 
         let build_root = entry_root.join("build");
         let make_source = build_root.join("make-source");
@@ -272,19 +299,45 @@ fn build_git_cache_entry(
             &make_executable,
             &make_prefix,
             compiler_path,
-            native_cflags,
+            "-O2 -g0",
         )?;
+        let dependency_prefix = entry_root.join("dependencies");
+        build_static_dependencies(
+            &build_root,
+            &dependency_prefix,
+            &make_executable,
+            compiler_path,
+            curl_archive,
+            openssl_archive,
+            zlib_archive,
+        )?;
+        let target_cflags = format!("-O2 -g0 -target {GIT_TARGET}");
+        let target_ldflags = format!(
+            "-target {GIT_TARGET} -static -L{}/lib64 -L{}/lib",
+            dependency_prefix.display(),
+            dependency_prefix.display(),
+        );
+        let target_libs = "-lcurl -lssl -lcrypto -lz -ldl -pthread";
+        let pkg_config_libdir = env::join_paths([
+            dependency_prefix.join("lib/pkgconfig"),
+            dependency_prefix.join("lib64/pkgconfig"),
+        ])
+        .map_err(|error| GitNativeBuildError::Metadata(format!("could not construct Git pkg-config path: {error}")))?
+        .to_string_lossy()
+        .into_owned();
         build_and_stage_git(
             git_archive,
             &git_source,
             &make_executable,
+            &dependency_prefix,
             &install_root,
             &staged_install,
             &staged_prefix,
             compiler_path,
-            native_cflags,
-            native_ldflags,
-            native_libs,
+            &pkg_config_libdir,
+            &target_cflags,
+            &target_ldflags,
+            target_libs,
         )?;
 
         remove_path(install_root)?;
@@ -292,15 +345,19 @@ fn build_git_cache_entry(
             .map_err(|source| io_error("promote Git into its shadow cache", install_root, source))?;
         remove_path(&staged_install)?;
         let runtime_libraries = runtime_library_inventory(install_root)?;
+        require_static_runtime(&runtime_libraries)?;
         let inventory_sha256 = inventory_digest(install_root)?;
         let marker = BuildMarker {
-            schema: 2,
+            schema: 3,
             cache_key: cache_key.to_owned(),
             git_version: format!("git version {GIT_VERSION}"),
-            target: "x86_64-unknown-linux-gnu".to_owned(),
+            target: GIT_TARGET.to_owned(),
             compiler_identity: compiler_identity.to_owned(),
             recipe_revision: RECIPE_REVISION.to_owned(),
             git_source_sha256: GIT_SOURCE_SHA256.to_owned(),
+            curl_source_sha256: CURL_SOURCE_SHA256.to_owned(),
+            openssl_source_sha256: OPENSSL_SOURCE_SHA256.to_owned(),
+            zlib_source_sha256: ZLIB_SOURCE_SHA256.to_owned(),
             make_source_sha256: MAKE_SOURCE_SHA256.to_owned(),
             runtime_dependencies: runtime_dependencies.clone(),
             runtime_libraries,
@@ -316,8 +373,193 @@ fn build_git_cache_entry(
         let _ = remove_path(install_root);
         let _ = remove_path(&entry_root.join("install.staging"));
         let _ = remove_path(&entry_root.join(MARKER_NAME));
+        let _ = remove_path(&entry_root.join("dependencies"));
     }
     result
+}
+
+fn build_static_dependencies(
+    build_root: &Path,
+    prefix: &Path,
+    make: &Path,
+    compiler_path: &str,
+    curl_archive: &Path,
+    openssl_archive: &Path,
+    zlib_archive: &Path,
+) -> Result<(), GitNativeBuildError> {
+    let zlib_source = build_root.join("zlib-source");
+    let openssl_source = build_root.join("openssl-source");
+    let curl_source = build_root.join("curl-source");
+    extract_source(zlib_archive, &zlib_source, "zlib-1.4", false)?;
+    extract_source(openssl_archive, &openssl_source, "openssl-3.5.9", false)?;
+    extract_source(curl_archive, &curl_source, "curl-8.23.0", true)?;
+
+    fs::create_dir_all(prefix)
+        .map_err(|source| io_error("create static Git dependency prefix", prefix, source))?;
+    let target_cc = format!("zig cc -target {GIT_TARGET}");
+    let target_ar = "zig ar";
+    let target_ranlib = "zig ranlib";
+    let target_cflags = format!("-O2 -g0 -target {GIT_TARGET} -fPIC");
+    let target_ldflags = format!(
+        "-target {GIT_TARGET} -static -L{}/lib64 -L{}/lib",
+        prefix.display(),
+        prefix.display(),
+    );
+    let base_environment = [
+        ("CC", target_cc.as_str()),
+        ("AR", target_ar),
+        ("RANLIB", target_ranlib),
+        ("CFLAGS", target_cflags.as_str()),
+        ("LDFLAGS", target_ldflags.as_str()),
+        ("PATH", compiler_path),
+    ];
+
+    let prefix_arg = prefix.to_string_lossy().into_owned();
+    let zlib_configure = run_output(
+        "configure pinned static zlib",
+        zlib_source.join("configure"),
+        ["--static", "--prefix", prefix_arg.as_str()],
+        Some(&zlib_source),
+        &base_environment,
+    )?;
+    if !zlib_configure.status.success() {
+        return Err(command_failed("configure pinned static zlib", zlib_configure));
+    }
+    build_and_install(
+        "build pinned static zlib",
+        make,
+        &zlib_source,
+        &["-j", "2"],
+        &["install"],
+        &base_environment,
+    )?;
+
+    let openssl_prefix = format!("--prefix={prefix_arg}");
+    let openssl_dir = "--openssldir=/etc/ssl";
+    let openssl_configure = run_output(
+        "configure pinned static OpenSSL",
+        openssl_source.join("Configure"),
+        [
+            "linux-x86_64",
+            "no-shared",
+            "no-asm",
+            "no-tests",
+            "no-module",
+            "no-dso",
+            openssl_prefix.as_str(),
+            openssl_dir,
+        ],
+        Some(&openssl_source),
+        &base_environment,
+    )?;
+    if !openssl_configure.status.success() {
+        return Err(command_failed("configure pinned static OpenSSL", openssl_configure));
+    }
+    build_and_install(
+        "build pinned static OpenSSL",
+        make,
+        &openssl_source,
+        &["-j", "2"],
+        &["install_sw"],
+        &base_environment,
+    )?;
+
+    let pkg_config_libdir = env::join_paths([prefix.join("lib/pkgconfig"), prefix.join("lib64/pkgconfig")])
+        .map_err(|error| GitNativeBuildError::Metadata(format!("could not construct static dependency pkg-config path: {error}")))?
+        .to_string_lossy()
+        .into_owned();
+    let cppflags = format!("-I{}/include", prefix.display());
+    let curl_environment = [
+        ("CC", target_cc.as_str()),
+        ("AR", target_ar),
+        ("RANLIB", target_ranlib),
+        ("CFLAGS", target_cflags.as_str()),
+        ("CPPFLAGS", cppflags.as_str()),
+        ("LDFLAGS", target_ldflags.as_str()),
+        ("PKG_CONFIG_LIBDIR", pkg_config_libdir.as_str()),
+        ("PATH", compiler_path),
+    ];
+    let curl_host = GIT_TARGET;
+    let with_openssl = format!("--with-openssl={prefix_arg}");
+    let with_zlib = format!("--with-zlib={prefix_arg}");
+    let curl_configure = run_output(
+        "configure pinned static libcurl",
+        curl_source.join("configure"),
+        [
+            format!("--host={curl_host}"),
+            format!("--prefix={prefix_arg}"),
+            "--disable-shared".to_owned(),
+            "--enable-static".to_owned(),
+            with_openssl,
+            with_zlib,
+            "--without-brotli".to_owned(),
+            "--without-zstd".to_owned(),
+            "--without-nghttp2".to_owned(),
+            "--without-nghttp3".to_owned(),
+            "--without-ngtcp2".to_owned(),
+            "--without-libidn2".to_owned(),
+            "--without-libpsl".to_owned(),
+            "--without-libssh2".to_owned(),
+            "--without-gssapi".to_owned(),
+            "--without-libgsasl".to_owned(),
+            "--disable-ftp".to_owned(),
+            "--disable-file".to_owned(),
+            "--disable-ldap".to_owned(),
+            "--disable-ldaps".to_owned(),
+            "--disable-rtsp".to_owned(),
+            "--disable-dict".to_owned(),
+            "--disable-telnet".to_owned(),
+            "--disable-tftp".to_owned(),
+            "--disable-pop3".to_owned(),
+            "--disable-imap".to_owned(),
+            "--disable-mqtt".to_owned(),
+        ],
+        Some(&curl_source),
+        &curl_environment,
+    )?;
+    if !curl_configure.status.success() {
+        return Err(command_failed("configure pinned static libcurl", curl_configure));
+    }
+    build_and_install(
+        "build pinned static libcurl",
+        make,
+        &curl_source,
+        &["-j", "2"],
+        &["install"],
+        &curl_environment,
+    )?;
+
+    for path in [
+        prefix.join("lib/libz.a"),
+        prefix.join("lib64/libssl.a"),
+        prefix.join("lib64/libcrypto.a"),
+        prefix.join("lib/libcurl.a"),
+    ] {
+        if !path.is_file() {
+            return Err(GitNativeBuildError::MissingStaticDependency(path));
+        }
+    }
+    Ok(())
+}
+
+fn build_and_install(
+    operation: &'static str,
+    make: &Path,
+    source: &Path,
+    build_args: &[&str],
+    install_args: &[&str],
+    environment: &[(&str, &str)],
+) -> Result<(), GitNativeBuildError> {
+    let build = run_output(operation, make, build_args.iter().copied(), Some(source), environment)?;
+    if !build.status.success() {
+        return Err(command_failed(operation, build));
+    }
+    let install_operation = "install pinned static Git dependency";
+    let install = run_output(install_operation, make, install_args.iter().copied(), Some(source), environment)?;
+    if !install.status.success() {
+        return Err(command_failed(install_operation, install));
+    }
+    Ok(())
 }
 
 fn build_bootstrap_make(
@@ -367,10 +609,12 @@ fn build_and_stage_git(
     archive: &Path,
     source_root: &Path,
     make: &Path,
+    dependency_prefix: &Path,
     install_root: &Path,
     staged_root: &Path,
     staged_prefix: &Path,
     compiler_path: &str,
+    pkg_config_libdir: &str,
     cflags: &str,
     ldflags: &str,
     libs: &str,
@@ -380,12 +624,21 @@ fn build_and_stage_git(
     // immutable cache location in the executable while DESTDIR stages the
     // installed tree under the cache entry for atomic promotion.
     let final_prefix = install_root.to_string_lossy().into_owned();
+    // Git's configure/build scripts locate libcurl through curl-config. Put
+    // the pinned build prefix first so an ambient host curl-config cannot
+    // silently select distribution libraries for this static candidate.
+    let mut build_paths = vec![dependency_prefix.join("bin")];
+    build_paths.extend(env::split_paths(std::ffi::OsStr::new(compiler_path)));
+    let build_path = env::join_paths(build_paths)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|error| GitNativeBuildError::Metadata(format!("could not construct managed Git build PATH: {error}")))?;
     let environment = [
-        ("CC", "zig cc"),
+        ("CC", "zig cc -target x86_64-linux-musl"),
         ("CFLAGS", cflags),
         ("LDFLAGS", ldflags),
         ("LIBS", libs),
-        ("PATH", compiler_path),
+        ("PKG_CONFIG_LIBDIR", pkg_config_libdir),
+        ("PATH", build_path.as_str()),
     ];
     let configure = run_output(
         "configure source Git",
@@ -483,6 +736,8 @@ fn validate_cache_entry(
     entry_root: &Path,
     expected_key: &str,
     git_executable: &Path,
+    expected_compiler_identity: &str,
+    expected_runtime_dependencies: &BTreeMap<String, String>,
 ) -> Result<Option<BuildMarker>, GitNativeBuildError> {
     let marker_path = entry_root.join(MARKER_NAME);
     if !marker_path.is_file() || !git_executable.is_file() {
@@ -494,13 +749,19 @@ fn validate_cache_entry(
         Ok(marker) => marker,
         Err(_) => return Ok(None),
     };
-    if marker.schema != 2
+    if marker.schema != 3
         || marker.cache_key != expected_key
         || marker.git_version != format!("git version {GIT_VERSION}")
-        || marker.target != "x86_64-unknown-linux-gnu"
+        || marker.target != GIT_TARGET
         || marker.git_source_sha256 != GIT_SOURCE_SHA256
+        || marker.curl_source_sha256 != CURL_SOURCE_SHA256
+        || marker.openssl_source_sha256 != OPENSSL_SOURCE_SHA256
+        || marker.zlib_source_sha256 != ZLIB_SOURCE_SHA256
         || marker.make_source_sha256 != MAKE_SOURCE_SHA256
         || marker.recipe_revision != RECIPE_REVISION
+        || marker.compiler_identity != expected_compiler_identity
+        || marker.runtime_dependencies != *expected_runtime_dependencies
+        || marker.features != BUILD_FEATURES.iter().map(|feature| (*feature).to_owned()).collect::<Vec<_>>()
         || marker.distribution_eligible
         || !is_executable(git_executable)
         || !is_executable(&entry_root.join("install/libexec/git-core/git-remote-https"))
@@ -510,6 +771,7 @@ fn validate_cache_entry(
     if read_git_version(git_executable)? != marker.git_version
         || runtime_library_inventory(&entry_root.join("install"))? != marker.runtime_libraries
         || inventory_digest(&entry_root.join("install"))? != marker.inventory_sha256
+        || !has_static_runtime(&marker.runtime_libraries)
     {
         return Ok(None);
     }
@@ -521,10 +783,34 @@ fn validate_cache_entry(
     Ok(Some(marker))
 }
 
-/// Record the shared objects resolved by the built Git executable and HTTPS
-/// remote helper. The build remains host-specific and non-distributable; this
-/// inventory makes that runtime closure explicit and invalidates a cache hit
-/// if any resolved library changes in place.
+fn require_static_runtime(
+    runtime_libraries: &BTreeMap<String, String>,
+) -> Result<(), GitNativeBuildError> {
+    if has_static_runtime(runtime_libraries) {
+        return Ok(());
+    }
+    let dynamic = runtime_libraries
+        .iter()
+        .filter(|(_, identity)| identity.as_str() != "no dynamic library dependencies")
+        .map(|(image, identity)| format!("{image}: {identity}"))
+        .collect::<Vec<_>>();
+    Err(GitNativeBuildError::RuntimeDependencyProbe(format!(
+        "static musl candidate still has dynamic runtime dependencies: {}",
+        dynamic.join(", ")
+    )))
+}
+
+fn has_static_runtime(runtime_libraries: &BTreeMap<String, String>) -> bool {
+    !runtime_libraries.is_empty()
+        && runtime_libraries
+            .values()
+            .all(|identity| identity == "no dynamic library dependencies")
+}
+
+/// Record shared objects resolved by every executable ELF image in the Git
+/// installation. Static candidates record one empty-closure entry per image;
+/// dynamically linked candidates retain canonical paths and content digests.
+/// Either form invalidates a cache hit if its runtime closure changes.
 fn runtime_library_inventory(root: &Path) -> Result<BTreeMap<String, String>, GitNativeBuildError> {
     let mut executables = Vec::new();
     collect_elf_executables(root, root, &mut executables)?;
@@ -538,7 +824,11 @@ fn runtime_library_inventory(root: &Path) -> Result<BTreeMap<String, String>, Gi
             .replace('\\', "/");
         let output = run_output("inspect native Git runtime dependencies", "ldd", [&executable], None, &[])?;
         if !output.status.success() {
-            let details = String::from_utf8_lossy(&output.stdout);
+            let details = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
             if details.contains("not a dynamic executable") || details.contains("statically linked") {
                 inventory.insert(format!("{relative}:static"), "no dynamic library dependencies".to_owned());
                 continue;
@@ -679,6 +969,8 @@ fn extract_source(
 ) -> Result<(), GitNativeBuildError> {
     let sentinel = if expected_top_level.starts_with("make-") {
         "build.sh"
+    } else if expected_top_level.starts_with("openssl-") {
+        "Configure"
     } else {
         "configure"
     };
@@ -744,49 +1036,6 @@ fn validate_archive_paths(
     Ok(())
 }
 
-fn pkg_config_runtime_dependencies() -> Result<BTreeMap<String, String>, GitNativeBuildError> {
-    let output = capture("pkg-config", ["--modversion", "libcurl", "zlib"], None, &[])?;
-    let values = output.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>();
-    if values.len() != 2 {
-        return Err(GitNativeBuildError::RuntimeDependencyProbe(output));
-    }
-    let curl_version = semver::Version::parse(values[0]).map_err(|_| {
-        GitNativeBuildError::RuntimeDependencyProbe(format!("unrecognized libcurl version: {}", values[0]))
-    })?;
-    if curl_version < semver::Version::new(7, 61, 0) {
-        return Err(GitNativeBuildError::RuntimeDependencyTooOld {
-            dependency: "libcurl",
-            minimum: "7.61.0",
-            actual: values[0].to_owned(),
-        });
-    }
-    let mut dependencies = BTreeMap::from([
-        ("libcurl".to_owned(), values[0].to_owned()),
-        ("zlib".to_owned(), values[1].to_owned()),
-        (
-            "link_flags".to_owned(),
-            capture("pkg-config", ["--libs", "libcurl", "zlib"], None, &[])?
-                .trim()
-                .to_owned(),
-        ),
-    ]);
-    for package in ["libcurl", "zlib"] {
-        for variable in ["includedir", "libdir"] {
-            let value = capture("pkg-config", ["--variable", variable, package], None, &[])?
-                .trim()
-                .to_owned();
-            let path = Path::new(&value);
-            if !path.is_absolute() || !path.is_dir() {
-                return Err(GitNativeBuildError::RuntimeDependencyProbe(format!(
-                    "pkg-config reported an invalid {package} {variable}: {value:?}"
-                )));
-            }
-            dependencies.insert(format!("{package}_{variable}"), value);
-        }
-    }
-    Ok(dependencies)
-}
-
 fn prepend_path(directory: &Path) -> Result<String, GitNativeBuildError> {
     let mut paths = vec![directory.to_path_buf()];
     if let Some(path) = env::var_os("PATH") {
@@ -795,27 +1044,6 @@ fn prepend_path(directory: &Path) -> Result<String, GitNativeBuildError> {
     env::join_paths(paths)
         .map(|path| path.to_string_lossy().into_owned())
         .map_err(|error| GitNativeBuildError::Metadata(format!("could not construct compiler PATH: {error}")))
-}
-
-fn dependency_value<'a>(
-    dependencies: &'a BTreeMap<String, String>,
-    name: &str,
-) -> Result<&'a str, GitNativeBuildError> {
-    dependencies
-        .get(name)
-        .map(String::as_str)
-        .ok_or_else(|| {
-            GitNativeBuildError::RuntimeDependencyProbe(format!(
-                "dependency metadata did not include required field {name}"
-            ))
-        })
-}
-
-fn host_identity() -> Result<String, GitNativeBuildError> {
-    let os_release = fs::read_to_string("/etc/os-release")
-        .map_err(|source| io_error("read Linux host identity", Path::new("/etc/os-release"), source))?;
-    let libc = capture("ldd", ["--version"], None, &[])?;
-    Ok(format!("{}\nldd={}", os_release.trim(), libc.lines().next().unwrap_or("unknown")))
 }
 
 fn program_reports_version(path: &Path, arg: &str, expected: &str) -> Result<bool, GitNativeBuildError> {
@@ -1052,7 +1280,7 @@ pub enum GitNativeBuildError {
     IncompleteSourceTree { archive: PathBuf, expected: PathBuf },
     UnsafeArchivePath(String),
     RuntimeDependencyProbe(String),
-    RuntimeDependencyTooOld { dependency: &'static str, minimum: &'static str, actual: String },
+    MissingStaticDependency(PathBuf),
     UnexpectedToolVersion { tool: &'static str, expected: String, path: PathBuf },
     UnexpectedGitVersion { expected: String, actual: String },
     UnexpectedGitExecPath { expected: PathBuf, actual: String },
@@ -1077,8 +1305,8 @@ impl std::fmt::Display for GitNativeBuildError {
             Self::SourceArchiveTooLarge(url) => write!(formatter, "pinned source archive exceeds the size limit: {url}"),
             Self::IncompleteSourceTree { archive, expected } => write!(formatter, "source archive '{}' did not produce required file '{}'", archive.display(), expected.display()),
             Self::UnsafeArchivePath(path) => write!(formatter, "upstream source archive contains an unsafe path: {path}"),
-            Self::RuntimeDependencyProbe(message) => write!(formatter, "could not resolve the host libcurl/zlib build inputs: {message}"),
-            Self::RuntimeDependencyTooOld { dependency, minimum, actual } => write!(formatter, "{dependency} {actual} is below the required {minimum}"),
+            Self::RuntimeDependencyProbe(message) => write!(formatter, "could not verify the pinned static Git dependencies: {message}"),
+            Self::MissingStaticDependency(path) => write!(formatter, "static Git dependency build did not produce '{}'", path.display()),
             Self::UnexpectedToolVersion { tool, expected, path } => write!(formatter, "{} at '{}' did not report the expected version {expected}", tool, path.display()),
             Self::UnexpectedGitVersion { expected, actual } => write!(formatter, "source Git reported '{actual}', expected git version {expected}"),
             Self::UnexpectedGitExecPath { expected, actual } => write!(formatter, "source Git helper path was '{actual}', expected '{}'", expected.display()),

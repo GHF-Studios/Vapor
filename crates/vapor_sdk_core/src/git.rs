@@ -1,4 +1,4 @@
-//! SDK-owned source build used to prove Vapor's pinned native Git cache.
+//! SDK-owned source build used to produce Vapor's pinned static Linux Git candidate.
 
 use std::fmt;
 use vapor_core::{GitNativeBuildReport, VaporInstallation, build_linux_shadow};
@@ -6,7 +6,7 @@ use vapor_core::{GitNativeBuildReport, VaporInstallation, build_linux_shadow};
 /// Native Git source-build operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitCommand {
-    /// Build upstream Linux Git into the disposable, host-specific shadow cache.
+    /// Build upstream Linux Git and pinned static dependencies in the disposable build cache.
     Build,
 }
 
