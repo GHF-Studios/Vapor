@@ -13,6 +13,11 @@ toolsets, the pinned managed Tracy profiler, and Tracy's saved-trace analysis
 utility. Developer setup is mandatory; the Installer does not offer a partial
 or skipped toolset.
 
+Core bootstraps Rustup into `Vapor User Data/tools/rustup/bin` when it is absent
+or unusable, then installs the pinned toolchain with explicit Vapor-owned
+`RUSTUP_HOME` and `CARGO_HOME`. A Rustup executable found only on `PATH` is not
+adopted as Developer setup; readiness requires the managed executable.
+
 Tracy is a separate process, so its executable is selected for the native host
 platform rather than Vapor's application ABI. On Windows, both MSVC and
 GnuLLVM Vapor builds use the managed native MSVC Tracy profiler and CSV exporter.

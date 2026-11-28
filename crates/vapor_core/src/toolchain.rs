@@ -21,16 +21,26 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::ffi::OsStr;
 use std::fmt;
-use std::fs;
-use std::io;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use reqwest::blocking::{Client, Response};
 
 const LOCAL_RUSTUP_DIR: &str = "tools/rustup/bin";
 
 const INSTALLATION_METADATA_DIR: &str = "metadata";
 const TOOLCHAIN_METADATA_FILE: &str = "toolchain.toml";
 const TOOLCHAIN_METADATA_SCHEMA: u32 = 1;
+const RUSTUP_INIT_LINUX_X86_64: &str =
+    "https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init";
+const RUSTUP_INIT_WINDOWS_X86_64: &str =
+    "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-gnu/rustup-init.exe";
+const MAX_RUSTUP_INIT_BYTES: u64 = 32 * 1024 * 1024;
+static NEXT_RUSTUP_STAGE: AtomicU64 = AtomicU64::new(0);
 pub const WINDOWS_GNU_TARGET: &str = "x86_64-pc-windows-gnullvm";
 pub const LINUX_GNU_TARGET: &str = "x86_64-unknown-linux-gnu";
 pub const DEVELOPER_TARGETS: &[&str] = &[LINUX_GNU_TARGET, WINDOWS_GNU_TARGET];
@@ -280,7 +290,9 @@ impl ManagedToolchain {
     }
 
     pub fn is_installed(&self) -> bool {
-        self.cargo_path.is_file() && self.rustc_path.is_file()
+        self.cargo_path.is_file()
+            && self.rustc_path.is_file()
+            && self.rustup_honors_managed_home(&self.local_rustup_path())
     }
 
     /// Check whether Rustup has installed the Windows GNU ABI target into this
@@ -326,11 +338,7 @@ impl ManagedToolchain {
             source,
         })?;
 
-        let rustup = self
-            .find_rustup()
-            .ok_or_else(|| ToolchainError::RustupUnavailable {
-                expected: self.local_rustup_path(),
-            })?;
+        let rustup = self.ensure_local_rustup(&mut report_output)?;
 
         let mut install = crate::managed_process::background_command(&rustup);
         install
@@ -507,18 +515,93 @@ impl ManagedToolchain {
             .join(executable_name("rustup"))
     }
 
-    fn find_rustup(&self) -> Option<PathBuf> {
+    fn ensure_local_rustup(
+        &self,
+        report_output: &mut impl FnMut(OperationOutputStream, &str, &str),
+    ) -> Result<PathBuf, ToolchainError> {
         let local = self.local_rustup_path();
+        if self.rustup_honors_managed_home(&local) {
+            return Ok(local);
+        }
 
-        let path_candidates = env::var_os("PATH")
-            .into_iter()
-            .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
-            .map(|root| root.join(executable_name("rustup")));
+        let host = current_host_triple()?;
+        let url = rustup_init_url(host).ok_or(ToolchainError::UnsupportedHost)?;
+        report_output(
+            OperationOutputStream::Stdout,
+            "rustup-init",
+            "Downloading the Vapor-managed Rustup bootstrap",
+        );
 
-        std::iter::once(local)
-            .chain(path_candidates)
-            .filter(|candidate| candidate.is_file())
-            .find(|candidate| self.rustup_honors_managed_home(candidate))
+        fs::create_dir_all(&self.rustup_home).map_err(|source| ToolchainError::Io {
+            path: self.rustup_home.clone(),
+            source,
+        })?;
+        fs::create_dir_all(&self.cargo_home).map_err(|source| ToolchainError::Io {
+            path: self.cargo_home.clone(),
+            source,
+        })?;
+
+        let downloads = self.data_root.join("cache/downloads/toolchains");
+        fs::create_dir_all(&downloads).map_err(|source| ToolchainError::Io {
+            path: downloads.clone(),
+            source,
+        })?;
+        let initializer = unique_stage_path(&downloads, "rustup-init");
+
+        let result = (|| {
+            download_rustup_initializer(url, &initializer)?;
+            make_executable(&initializer)?;
+
+            let mut install = crate::managed_process::background_command(&initializer);
+            install
+                .args([
+                    "-y",
+                    "--no-modify-path",
+                    "--profile",
+                    "minimal",
+                    "--default-toolchain",
+                    self.pin.identifier(),
+                    "--default-host",
+                    host,
+                ])
+                .env("RUSTUP_HOME", &self.rustup_home)
+                .env("CARGO_HOME", &self.cargo_home);
+            let status = crate::managed_process::run(&mut install, |stream, text| {
+                report_output(stream, "rustup-init", text)
+            })
+            .map_err(|message| ToolchainError::Process {
+                path: initializer.clone(),
+                message,
+            })?;
+            if !status.success() {
+                return Err(ToolchainError::RustupFailed {
+                    path: initializer.clone(),
+                    status,
+                });
+            }
+
+            let cargo_rustup = self
+                .cargo_home
+                .join("bin")
+                .join(executable_name("rustup"));
+            if !fs::symlink_metadata(&cargo_rustup)
+                .is_ok_and(|metadata| metadata.file_type().is_file())
+            {
+                return Err(ToolchainError::RustupBootstrap(format!(
+                    "rustup-init succeeded but did not create `{}`",
+                    cargo_rustup.display()
+                )));
+            }
+            install_managed_executable(&cargo_rustup, &local)?;
+
+            if !self.rustup_honors_managed_home(&local) {
+                return Err(ToolchainError::RustupUnavailable { expected: local });
+            }
+            Ok(self.local_rustup_path())
+        })();
+
+        let _ = fs::remove_file(&initializer);
+        result
     }
 
     fn rustup_honors_managed_home(&self, rustup: &Path) -> bool {
@@ -539,6 +622,153 @@ impl ManagedToolchain {
 
         reported_home == self.rustup_home
     }
+}
+
+fn rustup_init_url(host: &str) -> Option<&'static str> {
+    match host {
+        "x86_64-unknown-linux-gnu" => Some(RUSTUP_INIT_LINUX_X86_64),
+        // The Windows bootstrap executable is built for GNU, while it installs
+        // the selected MSVC Rust host toolchain using --default-host.
+        "x86_64-pc-windows-msvc" => Some(RUSTUP_INIT_WINDOWS_X86_64),
+        _ => None,
+    }
+}
+
+fn download_rustup_initializer(url: &str, destination: &Path) -> Result<(), ToolchainError> {
+    let client = Client::builder()
+        .user_agent("Vapor managed Rust toolchain")
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(5 * 60))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|error| ToolchainError::RustupBootstrap(error.to_string()))?;
+    let mut response = client
+        .get(url)
+        .send()
+        .and_then(Response::error_for_status)
+        .map_err(|error| ToolchainError::RustupBootstrap(error.to_string()))?;
+    if response.url().scheme() != "https"
+        || response.url().host_str() != Some("static.rust-lang.org")
+    {
+        return Err(ToolchainError::RustupBootstrap(
+            "Rustup bootstrap resolved outside the pinned HTTPS origin".to_owned(),
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RUSTUP_INIT_BYTES)
+    {
+        return Err(ToolchainError::RustupBootstrap(format!(
+            "Rustup bootstrap exceeds the {}-byte download limit",
+            MAX_RUSTUP_INIT_BYTES
+        )));
+    }
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|source| ToolchainError::Io {
+            path: destination.to_path_buf(),
+            source,
+        })?;
+    let bytes = io::copy(
+        &mut response.by_ref().take(MAX_RUSTUP_INIT_BYTES + 1),
+        &mut file,
+    )
+    .map_err(|source| ToolchainError::Io {
+        path: destination.to_path_buf(),
+        source,
+    })?;
+    if bytes == 0 || bytes > MAX_RUSTUP_INIT_BYTES {
+        return Err(ToolchainError::RustupBootstrap(format!(
+            "Rustup bootstrap download has an invalid size ({bytes} bytes)"
+        )));
+    }
+    file.sync_all().map_err(|source| ToolchainError::Io {
+        path: destination.to_path_buf(),
+        source,
+    })
+}
+
+fn install_managed_executable(source: &Path, destination: &Path) -> Result<(), ToolchainError> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| ToolchainError::RustupBootstrap("Rustup path has no parent".to_owned()))?;
+    fs::create_dir_all(parent).map_err(|source| ToolchainError::Io {
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    let staged = unique_stage_path(parent, "rustup");
+    let result = (|| {
+        let mut source_file = File::open(source).map_err(|error| ToolchainError::Io {
+            path: source.to_path_buf(),
+            source: error,
+        })?;
+        let mut staged_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged)
+            .map_err(|source| ToolchainError::Io {
+                path: staged.clone(),
+                source,
+            })?;
+        io::copy(&mut source_file, &mut staged_file).map_err(|source| ToolchainError::Io {
+            path: staged.clone(),
+            source,
+        })?;
+        staged_file.sync_all().map_err(|source| ToolchainError::Io {
+            path: staged.clone(),
+            source,
+        })?;
+        drop(staged_file);
+        make_executable(&staged)?;
+
+        #[cfg(windows)]
+        if fs::symlink_metadata(destination).is_ok() {
+            fs::remove_file(destination).map_err(|source| ToolchainError::Io {
+                path: destination.to_path_buf(),
+                source,
+            })?;
+        }
+
+        fs::rename(&staged, destination).map_err(|source| ToolchainError::Io {
+            path: destination.to_path_buf(),
+            source,
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&staged);
+    }
+    result
+}
+
+fn make_executable(path: &Path) -> Result<(), ToolchainError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)
+            .map_err(|source| ToolchainError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?
+            .permissions();
+        permissions.set_mode(permissions.mode() | 0o755);
+        fs::set_permissions(path, permissions).map_err(|source| ToolchainError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+    Ok(())
+}
+
+fn unique_stage_path(parent: &Path, label: &str) -> PathBuf {
+    let sequence = NEXT_RUSTUP_STAGE.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(
+        ".{label}-{}-{sequence}.staging{}",
+        std::process::id(),
+        env::consts::EXE_SUFFIX
+    ))
 }
 
 fn read_installation_toolchain_metadata(
@@ -618,6 +848,8 @@ pub enum ToolchainError {
         expected: PathBuf,
     },
 
+    RustupBootstrap(String),
+
     RustupFailed {
         path: PathBuf,
         status: ExitStatus,
@@ -685,10 +917,13 @@ impl fmt::Display for ToolchainError {
             Self::RustupUnavailable { expected } => {
                 write!(
                     formatter,
-                    "no usable Rustup installation was found; Vapor looked for `{}` \
-                     and on PATH, but requires Rustup to honor its managed RUSTUP_HOME",
+                    "Vapor could not provision a usable managed Rustup at `{}`",
                     expected.display()
                 )
+            }
+
+            Self::RustupBootstrap(message) => {
+                write!(formatter, "Vapor Rustup bootstrap failed: {message}")
             }
 
             Self::RustupFailed { path, status } => {
