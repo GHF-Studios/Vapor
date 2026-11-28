@@ -117,13 +117,25 @@ pub fn configure_linker_env(
             .env(cargo_archiver_env(target), archiver)
             .env("PATH", path);
     } else if target == LINUX_GNU_TARGET && target != host_runtime_target() {
-        let linker = zig_linker_path(vapor_home, target);
-        let archiver = zig_archiver_path(vapor_home);
-        require_target_tools(target, &[&zig_executable(vapor_home), &linker, &archiver])?;
-        command
-            .env(cargo_linker_env(target), &linker)
-            .env(cargo_compiler_env(target), linker)
-            .env(cargo_archiver_env(target), archiver);
+        if cfg!(windows) {
+            // Core owns the Windows-hosted Zig wrapper contract and installs
+            // these as .cmd/.ps1 files. Keep provider builds on that same
+            // resolver instead of reconstructing Windows paths as .exe files.
+            vapor_core::cross_target_toolchain::configure_runtime_target_linker_env(
+                command,
+                vapor_home,
+                target,
+            )
+            .map_err(|error| error.to_string())?;
+        } else {
+            let linker = zig_linker_path(vapor_home, target);
+            let archiver = zig_archiver_path(vapor_home);
+            require_target_tools(target, &[&zig_executable(vapor_home), &linker, &archiver])?;
+            command
+                .env(cargo_linker_env(target), &linker)
+                .env(cargo_compiler_env(target), linker)
+                .env(cargo_archiver_env(target), archiver);
+        }
     }
     Ok(())
 }
@@ -204,13 +216,17 @@ fn llvm_mingw_clang(vapor_home: &Path) -> PathBuf {
 fn zig_linker_path(vapor_home: &Path, target: &str) -> PathBuf {
     vapor_home
         .join("tools/cross/bin")
-        .join(format!("{target}-zig-cc{}", env::consts::EXE_SUFFIX))
+        .join(format!("{target}-zig-cc{}", cross_wrapper_suffix()))
 }
 
 fn zig_archiver_path(vapor_home: &Path) -> PathBuf {
     vapor_home
         .join("tools/cross/bin")
-        .join(format!("zig-ar{}", env::consts::EXE_SUFFIX))
+        .join(format!("zig-ar{}", cross_wrapper_suffix()))
+}
+
+fn cross_wrapper_suffix() -> &'static str {
+    if cfg!(windows) { ".cmd" } else { "" }
 }
 
 fn cargo_linker_env(target: &str) -> String {
