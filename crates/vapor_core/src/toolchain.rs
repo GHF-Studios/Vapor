@@ -547,7 +547,10 @@ impl ManagedToolchain {
             path: downloads.clone(),
             source,
         })?;
-        let initializer = unique_stage_path(&downloads, "rustup-init");
+        // Rustup dispatches by argv[0]. Keep the downloaded bootstrap's
+        // canonical executable name even while it is staged privately.
+        let initializer_directory = unique_stage_directory(&downloads, "rustup-init")?;
+        let initializer = initializer_directory.join(executable_name("rustup-init"));
 
         let result = (|| {
             download_rustup_initializer(url, &initializer)?;
@@ -624,7 +627,7 @@ impl ManagedToolchain {
             Ok(self.local_rustup_path())
         })();
 
-        let _ = fs::remove_file(&initializer);
+        let _ = fs::remove_dir_all(&initializer_directory);
         result
     }
 
@@ -793,6 +796,21 @@ fn unique_stage_path(parent: &Path, label: &str) -> PathBuf {
         std::process::id(),
         env::consts::EXE_SUFFIX
     ))
+}
+
+fn unique_stage_directory(parent: &Path, label: &str) -> Result<PathBuf, ToolchainError> {
+    loop {
+        let sequence = NEXT_RUSTUP_STAGE.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".{label}-{}-{sequence}.staging",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(source) => return Err(ToolchainError::Io { path, source }),
+        }
+    }
 }
 
 fn read_installation_toolchain_metadata(
