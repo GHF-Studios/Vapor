@@ -40,6 +40,7 @@ const RUSTUP_INIT_LINUX_X86_64: &str =
 const RUSTUP_INIT_WINDOWS_X86_64: &str =
     "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-gnu/rustup-init.exe";
 const MAX_RUSTUP_INIT_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_RUSTUP_FAILURE_OUTPUT_BYTES: usize = 8 * 1024;
 static NEXT_RUSTUP_STAGE: AtomicU64 = AtomicU64::new(0);
 pub const WINDOWS_GNU_TARGET: &str = "x86_64-pc-windows-gnullvm";
 pub const LINUX_GNU_TARGET: &str = "x86_64-unknown-linux-gnu";
@@ -566,7 +567,25 @@ impl ManagedToolchain {
                 ])
                 .env("RUSTUP_HOME", &self.rustup_home)
                 .env("CARGO_HOME", &self.cargo_home);
+            let mut failure_output = String::new();
             let status = crate::managed_process::run(&mut install, |stream, text| {
+                if failure_output.len() < MAX_RUSTUP_FAILURE_OUTPUT_BYTES {
+                    let stream_name = match &stream {
+                        OperationOutputStream::Stdout => "stdout",
+                        OperationOutputStream::Stderr => "stderr",
+                    };
+                    let entry = format!("[{stream_name}] {text}\n");
+                    let remaining = MAX_RUSTUP_FAILURE_OUTPUT_BYTES - failure_output.len();
+                    let end = entry
+                        .char_indices()
+                        .take_while(|(index, character)| {
+                            *index + character.len_utf8() <= remaining
+                        })
+                        .map(|(index, character)| index + character.len_utf8())
+                        .last()
+                        .unwrap_or(0);
+                    failure_output.push_str(&entry[..end]);
+                }
                 report_output(stream, "rustup-init", text)
             })
             .map_err(|message| ToolchainError::Process {
@@ -574,10 +593,15 @@ impl ManagedToolchain {
                 message,
             })?;
             if !status.success() {
-                return Err(ToolchainError::RustupFailed {
-                    path: initializer.clone(),
-                    status,
-                });
+                let detail = if failure_output.is_empty() {
+                    "no output was captured".to_owned()
+                } else {
+                    format!("output:\n{}", failure_output.trim_end())
+                };
+                return Err(ToolchainError::RustupBootstrap(format!(
+                    "initializer `{}` exited with {status}; {detail}",
+                    initializer.display()
+                )));
             }
 
             let cargo_rustup = self
